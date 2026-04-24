@@ -142,22 +142,63 @@ add_float(render, 'Spawnrate', 'Base Spawn Rate (pts/s)',
 add_float(render, 'Burstgain', 'Burst Spawn Gain',
           6.0, 0.0, 20.0, clamp_max=False)
 
+# --- Wavefront emission ---------------------------------------------------
+# Number of sub-emitter points generated per landmark. They're placed along
+# a line perpendicular to the limb's xy velocity so that particles spawn
+# across a "wall" in the direction the limb is cutting through the air
+# rather than all from the same point. Weight is divided evenly across
+# them so total particles/sec per limb is independent of this count.
+# 1 = classic single-point emission (old behaviour).
+add_float(render, 'Spawncount', 'Spawn Sub-emitters per Limb',
+          12, 1, 40, clamp_max=False)
+
+# Max width of the wavefront line in UV units, reached when speed >=
+# Spawnspreadref. At rest the spread collapses to 0 (single point).
+add_float(render, 'Spawnspread', 'Wavefront Width at Full Speed (UV)',
+          0.08, 0.0, 0.3)
+
+# Speed (UV/s) at which the wavefront reaches its full Spawnspread width.
+# Below it, width scales linearly with speed.
+add_float(render, 'Spawnspreadref', 'Wavefront Full-width Speed (UV/s)',
+          2.0, 0.1, 10.0, clamp_max=False)
+
+# Multiplier on the limb's velocity when writing it to each particle's
+# StartPartvel at birth. 1.0 = particles launch at full limb speed
+# (flies off-screen in <1s on fast whips); 0.3 = gentle launch, velocity
+# field and other forces take over from there. Lower values produce a
+# "wavefront that lingers" look; higher values make limbs fling particles
+# further in the motion direction.
+add_float(render, 'Spawnvelscale', 'Spawn Velocity Scale',
+          0.3, 0.0, 1.5, clamp_max=False)
+
+# Angular fan on StartPartvel — tilts the edge sub-emitters' initial
+# velocity outward along the perpendicular direction so the wavefront
+# expands as it travels (cone instead of parallel wall). Center particle
+# (t=0) stays parallel to limb motion; edge particles (t=±0.5) get a
+# perpendicular kick scaled by this * limb_speed. 0 = parallel wavefront,
+# 0.25 = mild curve, 0.5 = pronounced cone.
+add_float(render, 'Spawnvelfan', 'Spawn Velocity Fan (0=parallel, 1=cone)',
+          0.25, 0.0, 1.5, clamp_max=False)
+
 # Velocity field splatter — base radius of each emitter's gaussian kernel
 # (in 0..1 UV space of the velocity-field TOP). Smaller = tighter blob per
 # limb, less dominant force field coverage; good if you want the particle
 # cloud to feel like it emanates from a point rather than a wide zone.
+# With default 0.05, 3-sigma spread is ~0.15 UV (~15% of the frame) —
+# plenty of reach without dominating the scene.
 add_float(render, 'Fieldradius', 'Field Splat Radius',
-          0.09, 0.01, 0.5)
+          0.05, 0.01, 0.5)
 # Multiplier on emitted (vx,vy,vz) when writing into the field (tune this
 # for "how hard do limbs push particles").
 add_float(render, 'Fieldforce', 'Field Force Gain',
           1.5, 0.0, 10.0, clamp_max=False)
 # Persistence of the velocity field between frames (0 = instantaneous,
 # 1 = never fades). Applied externally via a Level TOP in the persistence
-# feedback chain. Small values feel responsive; bigger values leave trails
-# of force in the air.
+# feedback chain. Smaller values = more responsive / less trail buildup —
+# a moving limb won't leave a field ghost 10 frames behind it. Raise
+# toward 0.7 for "smoke trail" visuals; keep low for crisp reactive feel.
 add_float(render, 'Fielddecay', 'Field Decay (0=snap, 1=hold)',
-          0.55, 0.0, 0.99)
+          0.30, 0.0, 0.99)
 # Z → splat size. Negative z (limb toward camera) scales splat radius up;
 # positive z scales it down. The shader clamps the result to [0.25, 1.8]
 # so very-close limbs don't blow up the kernel. 0 disables depth scaling.

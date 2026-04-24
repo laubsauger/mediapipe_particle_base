@@ -236,10 +236,11 @@ Parent pars installed onto two pages:
 - **Sensing**: `Landmarks`, `Visibilitythreshold`, `Trustthreshold`, `Velocitysmooth`,
   `Accelsmooth`, `Speedscale`, `Accelthreshold`, `Accelscale`, `Burstdecay`,
   `Maxjump`, `Settleframes`, `Zspeedweight`, `Blendtime`.
-- **Renderer**: `Spawnrate`, `Burstgain`, `Fieldradius`, `Fieldforce`,
-  `Fielddecay`, `Zgain`, `Velstretch`, `Stretchspeedref`, `Curlgain`,
-  `Curlscale`, `Lifemin`, `Lifemax`, `Feedbackenable`, `Feedbackfade`,
-  `Feedbackzoom`.
+- **Renderer**: `Spawnrate`, `Burstgain`, `Spawncount`, `Spawnspread`,
+  `Spawnspreadref`, `Spawnvelscale`, `Spawnvelfan`, `Fieldradius`,
+  `Fieldforce`, `Fielddecay`, `Zgain`, `Velstretch`, `Stretchspeedref`,
+  `Curlgain`, `Curlscale`, `Lifemin`, `Lifemax`, `Feedbackenable`,
+  `Feedbackfade`, `Feedbackzoom`.
 
 The page split is purely organisational — both pages live on the same COMP, and
 every renderer op reads its pars via `parent().par.*` because `parent()` inside
@@ -254,11 +255,35 @@ name (`left_wrist:x`, etc.) so they don't care about channel order.
 
 ### 1. `emitters_tex` — Script TOP
 
-Feeds the velocity-field shader. Produces an `N × 2` RGBA32F texture:
+Feeds the velocity-field shader. Produces an **`N × 2` RGBA32F** texture:
 
-- Row 0: `(x, y, z, visible)` per landmark — 3D position + vis gate
-- Row 1: `(vx, vy, vz, force_gain)` per landmark — 3D velocity + pre-combined
-  `(emit + Burstgain * burst) * visible` weight
+- **Width `N`**: the landmark count — derived dynamically from
+  `parent().par.Landmarks` inside the Script TOP's callback (same source
+  of truth as every other op in the pipeline). If you change the
+  `Landmarks` par, the texture resizes on the next cook automatically
+  (`copyNumpyArray` sets the TOP's shape from the numpy buffer). You don't
+  need to hardcode N anywhere — the Output Resolution field on the Script
+  TOP is just an initial hint to avoid a one-frame black flash at startup;
+  the runtime size tracks the landmark count. Set it to `5 × 2` for the
+  default landmark set, or just leave it at defaults — the callback will
+  resize on first cook.
+- **Height `2`**: because we pack **8 floats per landmark** into an RGBA
+  texture (4 floats per texel), so 8 / 4 = 2 texels per column. The
+  layout:
+    - Row 0: `(x, y, z, visible)` — 3D position + visibility gate
+    - Row 1: `(vx, vy, vz, force_gain)` — 3D velocity + pre-combined
+      `(emit + Burstgain * burst) * visible` weight
+
+  Why 8 floats? We need `x, y, z` (3), `vx, vy, vz` (3), `visible` (1) and
+  `force_gain` (1) in the shader to do everything it does. Any fewer and
+  we lose a capability (drop z → no depth scaling; drop visible → no
+  dropout gating; drop force_gain → back to separate emit/burst uniforms).
+  8 floats is the minimum for the current feature set, hence 2 rows.
+
+  If you want to extend the shader with more per-landmark data later
+  (per-limb color hint, per-limb custom scale, etc.), you'd bump this to
+  3 rows = 12 floats per landmark and teach the shader to sample the
+  extra row.
 
 Setup:
 
@@ -736,6 +761,75 @@ installation needs it, either:
 `exp(-|d|² / 2r²)` where `d` is in raw UV. That's round in UV space, which
 means slightly elliptical on a non-square render. Rarely visible at the
 default `Fieldradius`; only worth aspect-correcting if you see it as a flaw.
+
+## Emission shape — wavefronts vs trickle
+
+By default `emitters_chop` doesn't just output one point per landmark.
+It outputs `Spawncount` (default 12) sub-emitter points per landmark,
+arranged along a line **perpendicular to the limb's xy velocity vector**,
+with spread width that scales from 0 at rest up to `Spawnspread` UV
+units (default 0.08) when the limb hits `Spawnspreadref` (default 2
+UV/s) or faster. All sub-emitters share the same velocity so they
+launch together — creating a wall of particles moving in the motion
+direction, not a stream of single particles from one point.
+
+| Par | Default | Effect |
+| --- | --- | --- |
+| `Spawncount` | 12 | Sub-emitters per limb. 1 = classic single-point emission. Higher = denser wavefront. |
+| `Spawnspread` | 0.08 | Wavefront width in UV at full speed. Too wide and particles spawn way off from the limb. |
+| `Spawnspreadref` | 2.0 | Speed (UV/s) at which `Spawnspread` is reached. Below, spread scales linearly. |
+| `Spawnvelscale` | 0.3 | Multiplier on limb velocity written to `StartPartvel`. 1.0 = particles fly off-screen fast on whips; 0.3 = gentle launch, velocity field continues to push over time. |
+| `Spawnvelfan` | 0.25 | Angular fan on `StartPartvel` — edge sub-emitters get a perpendicular kick scaled by their position along the spread line times limb speed. Center particle stays parallel to motion; edges tilt outward. 0 = parallel wavefront (all particles fly exactly the same direction — straight line), 0.25 = mild cone, 0.5+ = pronounced fan. Combined with curl noise, this gives organic-looking wavefront curvature instead of a brittle straight line. |
+
+Total emission rate **scales with `Spawncount`** — each sub-emitter
+independently emits `int(w)` particles per frame (Particle POP's
+integer-truncation birth rule means we can't divide `w` across
+sub-emitters without losing everything to rounding). So doubling
+`Spawncount` doubles total particles/sec. Budget accordingly — raise
+Particle POP's **Maximum Particles** ceiling if you crank `Spawncount`
+past ~15 at peak `w`. Rough formula:
+
+```
+peak_alive ≈ n_landmarks × Spawncount × peak_w × fps × Lifemax
+```
+
+With defaults (5 × 12 × 5 × 60 × 3) that's 54000 at max whip across all
+limbs — well over the 10000 Max Particles default. Either:
+- Raise Max Particles to `~100000`
+- Reduce `Spawncount` to `6`
+- Reduce `Burstgain` to `3` (caps peak `w` lower)
+- Shorten `Lifemax` to `1.5s`
+
+**Tuning recipes:**
+
+- **Want a single tight stream per limb (old behaviour):** `Spawncount = 1`.
+- **Want particles to linger near the limb instead of flying off:** drop
+  `Spawnvelscale` toward `0.1`.
+- **Want violent whips that genuinely throw particles far:** raise
+  `Spawnvelscale` to `0.7–1.0`, and raise `Spawnspread` to `0.12` so
+  the wavefront is wider.
+- **Wavefronts too wide / particles spawning off the limb:** drop
+  `Spawnspread` to `0.04` or raise `Spawnspreadref` to `3–4` so full
+  width only engages on extreme motion.
+
+## Velocity-field resolution (if the field looks chunky)
+
+The `velocity_field` GLSL TOP resolution controls how finely the
+gaussian splats get resolved. Default `256 × 256` looks tessellated when
+the splat radius is tight (after the `Fieldradius` default dropped to
+0.09 and close-up limbs shrink past `0.07`, the gaussian's 3-sigma
+spread covers only ~25 pixels at 256, which can read as blocky).
+
+- **Bump to `512 × 512`** on both `velocity_field` (the GLSL TOP) AND
+  the persistence chain that follows (`field_mix`, `field_decay`,
+  `field_out`). The follow-on TOPs inherit their resolution from
+  `velocity_field` by default, so usually only the GLSL TOP needs
+  resizing — check the Common page of each TOP in the chain if in
+  doubt. 512² is the sweet spot; 1024² is wasteful at `Fieldradius` < 0.2.
+- Set `Lookup Texture POP` → **Interpolate: On** (already documented; double-check).
+- If still chunky, shrink `Fieldradius` further (0.06 gets tight; 0.04
+  reads as per-limb pinpoint). Smaller radius + higher resolution = the
+  smoothest look.
 
 ## Quick tuning checklist
 
