@@ -81,18 +81,23 @@ def onCook(scriptOp):
     for i, lm in enumerate(lms):
         x  = _read(src, f'{lm}:x')
         y  = _read(src, f'{lm}:y')
+        z  = _read(src, f'{lm}:z')
         vx = _read(src, f'{lm}:vx')
         vy = _read(src, f'{lm}:vy')
+        vz = _read(src, f'{lm}:vz')
         em = _read(src, f'{lm}:emit')
         bu = _read(src, f'{lm}:burst')
         vi = _read(src, f'{lm}:visible')
 
+        # 3D position and initial velocity — particles get launched with
+        # the limb's current vz as well, so forward/back motion actually
+        # flings them in the z direction through the POP Advance.
         chans['P[0]'][i] = x
         chans['P[1]'][i] = y
-        chans['P[2]'][i] = 0.0
+        chans['P[2]'][i] = z
         chans['v[0]'][i] = vx
         chans['v[1]'][i] = vy
-        chans['v[2]'][i] = 0.0
+        chans['v[2]'][i] = vz
         # Gate by visibility so dropped limbs don't spawn from their last
         # known position.
         chans['w'][i]    = (em + burst_gain * bu) * vi

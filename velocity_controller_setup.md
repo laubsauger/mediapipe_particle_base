@@ -28,12 +28,17 @@ Select CHOP narrows to this experiment's landmarks, you should have, for each of
 the five default landmarks, at minimum:
 
 ```
-left_wrist:x   left_wrist:y    [left_wrist:visible]
-right_wrist:x  right_wrist:y   [right_wrist:visible]
-left_ankle:x   left_ankle:y    [left_ankle:visible]
-right_ankle:x  right_ankle:y   [right_ankle:visible]
-nose:x         nose:y          [nose:visible]
+left_wrist:x   left_wrist:y   [left_wrist:z]    [left_wrist:visible]
+right_wrist:x  right_wrist:y  [right_wrist:z]   [right_wrist:visible]
+left_ankle:x   left_ankle:y   [left_ankle:z]    [left_ankle:visible]
+right_ankle:x  right_ankle:y  [right_ankle:z]   [right_ankle:visible]
+nose:x         nose:y         [nose:z]          [nose:visible]
 ```
+
+`:z` is MediaPipe's depth estimate — same rough unit scale as x, hip-center
+at 0, negative = toward camera, positive = away. Optional (missing → 0,
+pipeline falls back to 2D behavior). Less reliable than x/y since it's
+monocular depth, but usable for forward/back motion detection.
 
 `:visible` is MediaPipe's 0..1 confidence score; anything below
 `Visibilitythreshold` is treated as off-frame. If the channel isn't
@@ -47,10 +52,10 @@ comma separated); the Script CHOP rebuilds its state dict on change.
 Pre-Lag channels from the Script CHOP, in emission order:
 
 Per landmark `<L>`:
-- `<L>:x`, `<L>:y` — pass-through position (0..1)
-- `<L>:vx`, `<L>:vy` — smoothed velocity (1/s in 0..1 space)
-- `<L>:speed` — |v|
-- `<L>:accel` — smoothed |a|
+- `<L>:x`, `<L>:y`, `<L>:z` — pass-through position (3D; z in MediaPipe depth units)
+- `<L>:vx`, `<L>:vy`, `<L>:vz` — smoothed velocity (1/s in MediaPipe-space)
+- `<L>:speed` — 3D magnitude sqrt(vx²+vy²+vz²)
+- `<L>:accel` — smoothed |a| (3D)
 - `<L>:emit` — 0..1 emission rate (`speed / Speedscale`, clamped)
 - `<L>:burst` — 0..1 burst envelope (`|a|` spike above threshold, decays)
 - `<L>:visible` — 0 or 1
@@ -118,6 +123,31 @@ reappearance, raise `Trustthreshold` toward 0.85–0.9 — that's MediaPipe's
 own edge-lock noise, which only a higher confidence threshold can filter
 out at the source.
 
+**3D / z-axis behaviour.** The pipeline tracks MediaPipe's z alongside x/y
+end-to-end. `<L>:z` and `<L>:vz` appear in the output CHOP; 3D speed
+(`sqrt(vx²+vy²+vz²)`) drives `emit` so forward/back motions contribute to
+particle emission the same as side-to-side; 3D acceleration magnitude drives
+`burst` so a sudden forward thrust triggers a puff. On the renderer side:
+
+- `emitters_chop` emits `P[2]=z` and `v[2]=vz`, so particles get launched
+  with 3D initial velocity and the POP Advance integrates motion on all
+  three axes — particles really do get flung forward or back.
+- `emitters_tex` packs z into row 0 and vz into row 1.
+- The velocity-field shader uses the per-limb z to scale each emitter's
+  splat size (closer to camera = bigger splat; `uZGain` controls
+  strength), and outputs RGB = full 3D velocity so the Force POP pushes
+  particles on all three axes.
+- The shader also elongates the gaussian kernel along the limb's velocity
+  direction (`uVelStretch`). A limb moving fast throws a longer "cone" of
+  force ahead of itself, so particles in the direction of motion get
+  shoved further than those to the side. That's what gives the "flung"
+  feel beyond what round kernels alone would produce.
+
+If your input pose CHOP doesn't carry `:z` channels (some wrappers strip
+it), the pipeline falls back to z=0 everywhere — you get the same 2D
+behavior as before, no visual change. You can mix: some landmarks with z,
+some without.
+
 **NaN/Inf resilience.** MediaPipe occasionally emits non-finite position
 or confidence values (first cook of an invisible landmark, tracker
 restart, certain tox builds mid-dropout). The Script CHOP scrubs all
@@ -182,8 +212,9 @@ Parent pars installed onto two pages:
   `Accelsmooth`, `Speedscale`, `Accelthreshold`, `Accelscale`, `Burstdecay`,
   `Maxjump`, `Settleframes`, `Blendtime`.
 - **Renderer**: `Spawnrate`, `Burstgain`, `Fieldradius`, `Fieldforce`,
-  `Fielddecay`, `Curlgain`, `Curlscale`, `Lifemin`, `Lifemax`, `Feedbackenable`,
-  `Feedbackfade`, `Feedbackzoom`.
+  `Fielddecay`, `Zgain`, `Velstretch`, `Stretchspeedref`, `Curlgain`,
+  `Curlscale`, `Lifemin`, `Lifemax`, `Feedbackenable`, `Feedbackfade`,
+  `Feedbackzoom`.
 
 The page split is purely organisational — both pages live on the same COMP, and
 every renderer op reads its pars via `parent().par.*` because `parent()` inside
@@ -200,8 +231,9 @@ name (`left_wrist:x`, etc.) so they don't care about channel order.
 
 Feeds the velocity-field shader. Produces an `N × 2` RGBA32F texture:
 
-- Row 0: `(x, y, vx, vy)` per landmark
-- Row 1: `(emit, burst, visible, speed)` per landmark
+- Row 0: `(x, y, z, visible)` per landmark — 3D position + vis gate
+- Row 1: `(vx, vy, vz, force_gain)` per landmark — 3D velocity + pre-combined
+  `(emit + Burstgain * burst) * visible` weight
 
 Setup:
 
@@ -237,7 +269,14 @@ without recompile.
 | `uNumEmitters` | `len(parent().par.Landmarks.eval().replace(',', ' ').split())` |
 | `uRadius` | `parent().par.Fieldradius` |
 | `uForceGain` | `parent().par.Fieldforce` |
-| `uBurstGain` | `parent().par.Burstgain` |
+| `uZGain` | `parent().par.Zgain` |
+| `uVelStretch` | `parent().par.Velstretch` |
+| `uStretchSpeedRef` | `parent().par.Stretchspeedref` |
+
+The shader's `force_gain` input already bakes in `Burstgain` on the Python
+side (`emitters_tex_script.py` computes `(emit + Burstgain*burst) * visible`
+into the texture's row-1 alpha channel), so the shader no longer needs a
+separate `uBurstGain` uniform.
 
 **External persistence chain** (follows the GLSL TOP, output of the chain is
 what the Force POP samples):

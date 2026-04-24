@@ -1,4 +1,4 @@
-"""
+﻿"""
 install_velocity_params.py
 ==========================
 
@@ -133,19 +133,33 @@ add_float(render, 'Spawnrate', 'Base Spawn Rate (pts/s)',
 add_float(render, 'Burstgain', 'Burst Spawn Gain',
           6.0, 0.0, 20.0, clamp_max=False)
 
-# Velocity field splatter — radius of each emitter's gaussian kernel (in
-# 0..1 UV space of the velocity-field TOP).
+# Velocity field splatter — base radius of each emitter's gaussian kernel
+# (in 0..1 UV space of the velocity-field TOP).
 add_float(render, 'Fieldradius', 'Field Splat Radius',
           0.12, 0.01, 0.5)
-# Multiplier on emitted (vx,vy) when writing into the field (tune this for
-# "how hard do limbs push particles").
+# Multiplier on emitted (vx,vy,vz) when writing into the field (tune this
+# for "how hard do limbs push particles").
 add_float(render, 'Fieldforce', 'Field Force Gain',
           1.5, 0.0, 10.0, clamp_max=False)
 # Persistence of the velocity field between frames (0 = instantaneous,
-# 1 = never fades). Small values feel responsive; bigger values leave
-# trails of force in the air.
+# 1 = never fades). Applied externally via a Level TOP in the persistence
+# feedback chain. Small values feel responsive; bigger values leave trails
+# of force in the air.
 add_float(render, 'Fielddecay', 'Field Decay (0=snap, 1=hold)',
           0.55, 0.0, 0.99)
+# Z → splat size. Negative z (limb toward camera) scales splat radius up;
+# positive z scales it down. 0 disables depth scaling.
+add_float(render, 'Zgain', 'Z Size Gain (depth -> radius)',
+          0.6, 0.0, 3.0, clamp_max=False)
+# Anisotropic kernel stretch along velocity direction. 0 = round splat;
+# larger = elongated cone of force in the direction of motion, so
+# particles ahead of a fast-moving limb get shoved further.
+add_float(render, 'Velstretch', 'Velocity Stretch (0=round)',
+          0.8, 0.0, 3.0, clamp_max=False)
+# Reference speed (UV/s) at which full Velstretch is applied. Below this,
+# stretch scales linearly with speed so gentle motion stays round.
+add_float(render, 'Stretchspeedref', 'Stretch Speed Reference (UV/s)',
+          2.0, 0.1, 10.0, clamp_max=False)
 
 # Idle curl-noise drift so particles don't freeze when performer is still.
 add_float(render, 'Curlgain', 'Curl Noise Gain',

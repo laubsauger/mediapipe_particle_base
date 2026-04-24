@@ -15,15 +15,17 @@
 # Input channel contract (rename upstream via Select CHOP / Rename CHOP to
 # match — these are MediaPipe's standard pose channel names):
 #   <L>:x, <L>:y                (required, 0..1 source space)
+#   <L>:z                       (optional, MediaPipe depth — hip-centered,
+#                                negative = toward camera. Missing -> 0.)
 #   <L>:visible                 (optional, 0..1 confidence from MediaPipe)
 # for each landmark in parent.par.Landmarks (comma-separated).
 #
 # Default landmarks: left_wrist, right_wrist, left_ankle, right_ankle, nose
 #
 # Output channel contract (pre-Lag):
-#   <L>:x   <L>:y                pass-through position
-#   <L>:vx  <L>:vy               smoothed velocity, 1/s in 0..1 space
-#   <L>:speed                    |v|
+#   <L>:x   <L>:y   <L>:z        pass-through position (3D)
+#   <L>:vx  <L>:vy  <L>:vz       smoothed velocity, 1/s in MediaPipe-space
+#   <L>:speed                    3D magnitude sqrt(vx²+vy²+vz²)
 #   <L>:accel                    smoothed |a|
 #   <L>:emit                     0..1 emission rate (speed / Speedscale)
 #   <L>:burst                    0..1 burst envelope
@@ -146,10 +148,16 @@ def onCook(scriptOp):
         ych = _find_chan(scriptOp, f'{lm}:y')
         if xch is None or ych is None:
             # Missing position channel -> treat as invisible but still decay.
-            samples[lm] = (0.0, 0.0, False, False)
+            samples[lm] = (0.0, 0.0, 0.0, False, False)
             continue
         x = _finite(xch[0], 0.0)
         y = _finite(ych[0], 0.0)
+        # z is optional — MediaPipe pose does emit it, but some toxes strip
+        # it or remap to depth in meters. If missing, z=0 and the logic
+        # behaves identically to the previous 2D version.
+        zch = _find_chan(scriptOp, f'{lm}:z')
+        z = _finite(zch[0], 0.0) if zch is not None else 0.0
+
         vch = _find_chan(scriptOp, f'{lm}:visible')
         # :visible is MediaPipe's 0..1 confidence. Two zones:
         #   visible = confidence >= vis_thresh   (output gate)
@@ -158,9 +166,9 @@ def onCook(scriptOp):
         # Non-finite confidence -> treat as zero (landmark effectively off).
         if vch is not None:
             v = _finite(vch[0], 0.0)
-            samples[lm] = (x, y, v >= vis_thresh, v >= trust_thresh)
+            samples[lm] = (x, y, z, v >= vis_thresh, v >= trust_thresh)
         else:
-            samples[lm] = (x, y, True, True)
+            samples[lm] = (x, y, z, True, True)
 
     # ---- Update logic ----------------------------------------------------
     per_landmark, globals_out = logic.update(state, samples, dt, params)

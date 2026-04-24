@@ -73,13 +73,16 @@ def _finite(v, default=0.0):
 
 def _scrub_sample(sample):
     """Mutate one landmark's state dict, replacing any non-finite scalars
-    with safe defaults. last_good_x/y may legitimately be None — leave
+    with safe defaults. last_good_{x,y,z} may legitimately be None — leave
     those alone. Called on every update() cook to heal any corruption that
     sneaked in on a previous frame."""
-    for k in ("vx", "vy", "prev_vx", "prev_vy", "accel", "burst"):
+    for k in ("vx", "vy", "vz",
+              "prev_vx", "prev_vy", "prev_vz",
+              "accel", "burst"):
         sample[k] = _finite(sample.get(k, 0.0), 0.0)
     # Position-like fields: None is valid, non-finite numbers are not.
-    for k in ("prev_x", "prev_y", "last_good_x", "last_good_y"):
+    for k in ("prev_x", "prev_y", "prev_z",
+              "last_good_x", "last_good_y", "last_good_z"):
         v = sample.get(k, None)
         if v is None:
             continue
@@ -110,9 +113,9 @@ LANDMARKS = (
 # Per-landmark channel suffixes (emitted in this fixed order per landmark)
 # ---------------------------------------------------------------------------
 PER_LANDMARK_CHANS = (
-    "x", "y",
-    "vx", "vy",
-    "speed",
+    "x", "y", "z",
+    "vx", "vy", "vz",
+    "speed",         # 3D magnitude sqrt(vx²+vy²+vz²)
     "accel",
     "emit",
     "burst",
@@ -137,14 +140,18 @@ def _fresh_landmark_state():
     return {
         "prev_x":         None,  # previous position, None = uninitialised
         "prev_y":         None,
+        "prev_z":         None,
         "vx":             0.0,   # smoothed velocity
         "vy":             0.0,
+        "vz":             0.0,
         "prev_vx":        0.0,   # previous smoothed velocity (for accel)
         "prev_vy":        0.0,
-        "accel":          0.0,   # smoothed |a|
+        "prev_vz":        0.0,
+        "accel":          0.0,   # smoothed |a|  (3D)
         "burst":          0.0,   # burst envelope (0..1, decays)
         "last_good_x":    None,  # last trusted position, held on dropout
         "last_good_y":    None,
+        "last_good_z":    None,
         "settle_counter": 0,     # consecutive trusted frames since last dropout
     }
 
@@ -230,21 +237,21 @@ def _clamp01(v):
 # Core update: called once per cook per landmark
 # ---------------------------------------------------------------------------
 
-def update_landmark(sample, x, y, visible, trusted, dt, params):
+def update_landmark(sample, x, y, z, visible, trusted, dt, params):
     """
     Advance one landmark's state by one frame.
 
-    sample   : dict entry from state[lm] — mutated in place
-    x, y     : new position in 0..1 (MediaPipe-space)
-    visible  : bool — True if MediaPipe confidence ≥ Visibilitythreshold
-                      (output gate — drives the `visible` channel).
-    trusted  : bool — True if MediaPipe confidence ≥ Trustthreshold,
-                      i.e. high enough to cache this position as last-good.
-                      Always implies `visible` (Trustthreshold ≥ Visibilitythreshold).
-    dt       : seconds since previous cook
-    params   : dict with keys
-                 velocity_smooth, accel_smooth, speed_scale,
-                 accel_threshold, accel_scale, burst_decay, max_jump
+    sample    : dict entry from state[lm] — mutated in place
+    x, y, z   : new position. x/y are 0..1 MediaPipe-space. z is MediaPipe's
+                depth estimate in roughly-same-unit-as-x (hip-center ~0,
+                negative = toward camera, positive = away). Less reliable
+                than x/y, but usable for direction.
+    visible   : bool — output gate
+    trusted   : bool — state-commit gate
+    dt        : seconds since previous cook
+    params    : dict with keys
+                  velocity_smooth, accel_smooth, speed_scale,
+                  accel_threshold, accel_scale, burst_decay, max_jump
 
     Three zones
     -----------
@@ -288,7 +295,12 @@ def update_landmark(sample, x, y, visible, trusted, dt, params):
             and params.get("max_jump", 0.0) > 0.0):
         dx = x - sample["prev_x"]
         dy = y - sample["prev_y"]
-        if (dx * dx + dy * dy) > (params["max_jump"] * params["max_jump"]):
+        # z is noisier than xy; down-weight it in the jump check so a
+        # wobbly depth estimate doesn't trigger false teleport rejection.
+        # max_jump still applies primarily in the image plane.
+        prev_z = sample["prev_z"] if sample["prev_z"] is not None else z
+        dz = (z - prev_z) * 0.3
+        if (dx * dx + dy * dy + dz * dz) > (params["max_jump"] * params["max_jump"]):
             jumped = True
 
     # A jumped frame is demoted out of the trusted zone but keeps its
@@ -305,35 +317,38 @@ def update_landmark(sample, x, y, visible, trusted, dt, params):
         # Any non-trusted frame re-arms the settle grace period.
         sample["settle_counter"] = 0
         if not visible:
-            # Invisible — decay everything toward 0.
+            # Invisible — decay all three velocity axes + accel toward 0.
             alpha_v = _ema_alpha(dt, params["velocity_smooth"])
             sample["vx"] *= (1.0 - alpha_v)
             sample["vy"] *= (1.0 - alpha_v)
+            sample["vz"] *= (1.0 - alpha_v)
             sample["prev_vx"] = sample["vx"]
             sample["prev_vy"] = sample["vy"]
+            sample["prev_vz"] = sample["vz"]
             alpha_a = _ema_alpha(dt, params["accel_smooth"])
             sample["accel"] *= (1.0 - alpha_a)
             sample["prev_x"] = None
             sample["prev_y"] = None
+            sample["prev_z"] = None
         else:
-            # Marginal — pin position, but don't aggressively decay velocity
-            # (the limb might still be moving; we just don't trust these
-            # specific samples). Blank prev_x/y so the next trusted frame
-            # doesn't compute velocity against the stale-held position.
+            # Marginal — pin position, don't aggressively decay velocity.
             sample["prev_x"] = None
             sample["prev_y"] = None
+            sample["prev_z"] = None
 
         # Output last_good if we have one, else raw (first-frame fallback).
         if sample["last_good_x"] is not None:
             out_x = sample["last_good_x"]
             out_y = sample["last_good_y"]
+            out_z = sample["last_good_z"] if sample["last_good_z"] is not None else 0.0
         else:
-            out_x, out_y = x, y
-        return _emit(sample, out_x, out_y, visible, params)
+            out_x, out_y, out_z = x, y, z
+        return _emit(sample, out_x, out_y, out_z, visible, params)
 
     # ---- Zone 1: trusted. Commit last_good and run normal velocity math. --
     sample["last_good_x"] = x
     sample["last_good_y"] = y
+    sample["last_good_z"] = z
     # Count consecutive trusted frames so the settle grace naturally
     # expires after `settle_frames` frames of stable tracking.
     sample["settle_counter"] = sample.get("settle_counter", 0) + 1
@@ -344,24 +359,30 @@ def update_landmark(sample, x, y, visible, trusted, dt, params):
         # because prev == 0).
         sample["prev_x"] = x
         sample["prev_y"] = y
+        sample["prev_z"] = z
         sample["vx"] = 0.0
         sample["vy"] = 0.0
+        sample["vz"] = 0.0
         sample["prev_vx"] = 0.0
         sample["prev_vy"] = 0.0
+        sample["prev_vz"] = 0.0
         sample["accel"] = 0.0
-        return _emit(sample, x, y, visible, params)
+        return _emit(sample, x, y, z, visible, params)
 
     raw_vx = (x - sample["prev_x"]) / dt
     raw_vy = (y - sample["prev_y"]) / dt
+    raw_vz = (z - sample["prev_z"]) / dt
 
     alpha_v = _ema_alpha(dt, params["velocity_smooth"])
     new_vx = sample["vx"] + alpha_v * (raw_vx - sample["vx"])
     new_vy = sample["vy"] + alpha_v * (raw_vy - sample["vy"])
+    new_vz = sample["vz"] + alpha_v * (raw_vz - sample["vz"])
 
-    # ---- Acceleration magnitude via diff of smoothed velocity -------------
+    # ---- Acceleration magnitude (3D) via diff of smoothed velocity --------
     raw_ax = (new_vx - sample["prev_vx"]) / dt
     raw_ay = (new_vy - sample["prev_vy"]) / dt
-    raw_a_mag = math.sqrt(raw_ax * raw_ax + raw_ay * raw_ay)
+    raw_az = (new_vz - sample["prev_vz"]) / dt
+    raw_a_mag = math.sqrt(raw_ax * raw_ax + raw_ay * raw_ay + raw_az * raw_az)
 
     alpha_a = _ema_alpha(dt, params["accel_smooth"])
     smoothed_a = sample["accel"] + alpha_a * (raw_a_mag - sample["accel"])
@@ -379,30 +400,38 @@ def update_landmark(sample, x, y, visible, trusted, dt, params):
     # ---- Commit state for next cook ---------------------------------------
     sample["prev_x"] = x
     sample["prev_y"] = y
+    sample["prev_z"] = z
     sample["prev_vx"] = sample["vx"]
     sample["prev_vy"] = sample["vy"]
+    sample["prev_vz"] = sample["vz"]
     sample["vx"] = new_vx
     sample["vy"] = new_vy
+    sample["vz"] = new_vz
     sample["accel"] = smoothed_a
 
-    return _emit(sample, x, y, visible, params)
+    return _emit(sample, x, y, z, visible, params)
 
 
-def _emit(sample, x, y, visible, params):
+def _emit(sample, x, y, z, visible, params):
     # Final safety net: even though update()/update_landmark() sanitize
     # inputs and state, clamp every outbound value to a finite float so
     # the Script CHOP can never emit NaN into the Lag CHOP.
     vx    = _finite(sample["vx"], 0.0)
     vy    = _finite(sample["vy"], 0.0)
+    vz    = _finite(sample["vz"], 0.0)
     accel = _finite(sample["accel"], 0.0)
     burst = _finite(sample["burst"], 0.0)
-    speed = math.sqrt(vx * vx + vy * vy)
+    # Speed is 3D magnitude — so a forward/back motion contributes to emit
+    # the same as a side-to-side motion. Particles react to depth motion.
+    speed = math.sqrt(vx * vx + vy * vy + vz * vz)
     emit  = _clamp01(speed / max(params["speed_scale"], 1e-6))
     return {
         "x":       _finite(x, 0.0),
         "y":       _finite(y, 0.0),
+        "z":       _finite(z, 0.0),
         "vx":      vx,
         "vy":      vy,
+        "vz":      vz,
         "speed":   speed,
         "accel":   accel,
         "emit":    emit,
@@ -418,12 +447,14 @@ def _emit(sample, x, y, visible, params):
 def update(state, samples, dt, params):
     """
     state   : dict from new_state()
-    samples : dict {landmark_name: (x, y, visible_bool, trusted_bool)}
+    samples : dict {landmark_name: tuple}
+              Accepted tuple forms (back-compat first):
+                (x, y, visible)                     → z=0, trusted=visible
+                (x, y, visible, trusted)            → z=0
+                (x, y, z, visible, trusted)         → full 3D (preferred)
               `visible` gates the output (emit/burst can still fire).
               `trusted` governs whether to update last_good and run velocity
               math on this frame — should be stricter than `visible`.
-              For back-compat, a 3-tuple (x, y, visible) is also accepted;
-              trusted is then assumed equal to visible.
               Missing landmarks are skipped (their state still decays).
     dt      : seconds since previous cook
     params  : dict — see update_landmark()
@@ -445,16 +476,20 @@ def update(state, samples, dt, params):
             s = samples[lm]
             if len(s) == 3:
                 x, y, vis = s
-                trust = vis
-            else:
+                z, trust = 0.0, vis
+            elif len(s) == 4:
                 x, y, vis, trust = s
+                z = 0.0
+            else:
+                x, y, z, vis, trust = s
             # Scrub inputs too — MediaPipe can send NaN for invisible joints.
             x = _finite(x, 0.0)
             y = _finite(y, 0.0)
+            z = _finite(z, 0.0)
         else:
             # No sample — decay envelopes, emit zeros.
-            x, y, vis, trust = 0.0, 0.0, False, False
-        out = update_landmark(st, x, y, vis, trust, dt, params)
+            x, y, z, vis, trust = 0.0, 0.0, 0.0, False, False
+        out = update_landmark(st, x, y, z, vis, trust, dt, params)
         per_landmark[lm] = out
         total_motion += out["speed"]
         total_burst  += out["burst"]
@@ -671,6 +706,28 @@ if __name__ == "__main__":
         assert math.isfinite(float(o[k])), f"{k} stayed non-finite after recovery"
     print(f"  recovered cleanly: vx={o['vx']:.4f} accel={o['accel']:.4f}")
 
+    # 3D velocity test: motion purely along z (hand moving forward/back)
+    # should show up in vz, contribute to 3D speed, and fire burst when
+    # the z-velocity snaps. x/y stay constant.
+    print("\n--- 3D velocity: forward/back motion (z only) ---")
+    state6 = new_state(("left_wrist",))
+    # Build stable tracking at (0.5, 0.5, z=0.0)
+    for _ in range(10):
+        update(state6, {"left_wrist": (0.5, 0.5, 0.0, True, True)}, dt, params)
+    o = None
+    # Push hand forward toward camera over 5 frames: z goes 0.0 → -0.5
+    for i in range(5):
+        zv = -0.1 * (i + 1)
+        per, _ = update(state6,
+                        {"left_wrist": (0.5, 0.5, zv, True, True)}, dt, params)
+        o = per["left_wrist"]
+        print(f"  f{i}: z={zv:+.2f} vz={o['vz']:+.3f} vx={o['vx']:+.3f} "
+              f"speed={o['speed']:.3f} burst={o['burst']:.3f}")
+    # Expect vz negative (moving toward camera), vx/vy ~0.
+    assert o["vz"] < -0.3, f"vz should track z motion, got {o['vz']}"
+    assert abs(o["vx"]) < 0.01 and abs(o["vy"]) < 0.01, "xy should stay still"
+    assert o["speed"] > 0.3, "3D speed should include vz contribution"
+
     print("\nOK — invisible hold, envelope decay, teleport rejection,")
-    print("     marginal freeze, re-acquisition, settle grace, and NaN/Inf")
-    print("     resilience all pass.")
+    print("     marginal freeze, re-acquisition, settle grace, NaN/Inf")
+    print("     resilience, and 3D z-axis tracking all pass.")

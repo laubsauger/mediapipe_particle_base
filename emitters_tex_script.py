@@ -11,11 +11,11 @@
 # output shape inside onCook so the setup is self-healing.
 #
 # Output layout (N landmarks = N columns, 2 rows):
-#   Row 0 (v=0.25): RGBA = (x, y, vx, vy)
-#   Row 1 (v=0.75): RGBA = (emit, burst, visible, speed)
-#
-# Both `velocity_field.frag` and the Source POP's spawn texture path sample
-# this layout directly — don't change row/column order without updating both.
+#   Row 0 (v=0.25): RGBA = (x, y, z, visible)
+#   Row 1 (v=0.75): RGBA = (vx, vy, vz, force_gain)
+# where force_gain = (emit + Burstgain * burst) * visible — lets the shader
+# skip the burst/emit math and just read one number for "how hard to push".
+# `velocity_field.frag` samples both rows; update both if this layout changes.
 
 import numpy as np
 
@@ -62,25 +62,31 @@ def onCook(scriptOp):
         scriptOp.copyNumpyArray(np.zeros((1, 1, 4), dtype=np.float32))
         return
 
-    # Build (height=2, width=n, RGBA) array. Note: TOP convention is the
-    # array is indexed [row][col][channel], and the first row is the
-    # BOTTOM of the image in UV space (v=0). We pack row0=(x,y,vx,vy) into
-    # the array row that corresponds to v=0.25, i.e. the FIRST row (index 0)
-    # because TD flips it on upload. If your GLSL sampling looks mirrored,
-    # swap the two row indices below.
+    # Build (height=2, width=n, RGBA) array. TD indexes [row][col][channel];
+    # the first row is v=0 at the bottom of the image in UV space. We pack
+    # row0 into index 0 (shader samples at v=0.25 = first row center).
     buf = np.zeros((2, n, 4), dtype=np.float32)
+
+    # Burst gain is combined into the pre-computed force_gain so the shader
+    # doesn't need to know about it. Fetch from parent par once per cook.
+    try:
+        burst_gain = float(parent().par.Burstgain.eval())
+    except Exception:
+        burst_gain = 1.0
 
     for i, lm in enumerate(lms):
         x  = _read(src, f'{lm}:x')
         y  = _read(src, f'{lm}:y')
+        z  = _read(src, f'{lm}:z')
         vx = _read(src, f'{lm}:vx')
         vy = _read(src, f'{lm}:vy')
+        vz = _read(src, f'{lm}:vz')
         em = _read(src, f'{lm}:emit')
         bu = _read(src, f'{lm}:burst')
         vi = _read(src, f'{lm}:visible')
-        sp = _read(src, f'{lm}:speed')
-        buf[0, i] = (x, y, vx, vy)           # row 0 = position + velocity
-        buf[1, i] = (em, bu, vi, sp)         # row 1 = envelopes
+        force_gain = (em + burst_gain * bu) * vi
+        buf[0, i] = (x, y, z, vi)            # row 0: 3D position + vis gate
+        buf[1, i] = (vx, vy, vz, force_gain) # row 1: 3D velocity + weight
 
     scriptOp.copyNumpyArray(buf)
     return
