@@ -113,6 +113,15 @@ add_float(sensing, 'Maxjump', 'Max Jump (UV/frame, 0=off)',
 add_float(sensing, 'Settleframes', 'Settle Frames (after dropout)',
           5, 0, 30)
 
+# How much the z (depth) velocity contributes to the 3D speed magnitude
+# used for emit rate and burst detection. 1.0 = full 3D; 0.0 = z motion
+# doesn't trigger emit/burst (but vz is still emitted as an output channel
+# for the renderer to use). Default 0.35: depth motion registers but is
+# less spiky than side-to-side motion. MediaPipe's z is noisier than x/y,
+# so this also keeps burst detection robust against depth jitter.
+add_float(sensing, 'Zspeedweight', 'Z Speed Weight (emit/burst sensitivity)',
+          0.35, 0.0, 1.0)
+
 # Downstream single-knob blend (Lag CHOP references this).
 add_float(sensing, 'Blendtime', 'Blend Time (s)',
           0.08, 0.0, 1.0, clamp_max=False)
@@ -134,9 +143,11 @@ add_float(render, 'Burstgain', 'Burst Spawn Gain',
           6.0, 0.0, 20.0, clamp_max=False)
 
 # Velocity field splatter — base radius of each emitter's gaussian kernel
-# (in 0..1 UV space of the velocity-field TOP).
+# (in 0..1 UV space of the velocity-field TOP). Smaller = tighter blob per
+# limb, less dominant force field coverage; good if you want the particle
+# cloud to feel like it emanates from a point rather than a wide zone.
 add_float(render, 'Fieldradius', 'Field Splat Radius',
-          0.12, 0.01, 0.5)
+          0.09, 0.01, 0.5)
 # Multiplier on emitted (vx,vy,vz) when writing into the field (tune this
 # for "how hard do limbs push particles").
 add_float(render, 'Fieldforce', 'Field Force Gain',
@@ -148,9 +159,10 @@ add_float(render, 'Fieldforce', 'Field Force Gain',
 add_float(render, 'Fielddecay', 'Field Decay (0=snap, 1=hold)',
           0.55, 0.0, 0.99)
 # Z → splat size. Negative z (limb toward camera) scales splat radius up;
-# positive z scales it down. 0 disables depth scaling.
+# positive z scales it down. The shader clamps the result to [0.25, 1.8]
+# so very-close limbs don't blow up the kernel. 0 disables depth scaling.
 add_float(render, 'Zgain', 'Z Size Gain (depth -> radius)',
-          0.6, 0.0, 3.0, clamp_max=False)
+          0.35, 0.0, 3.0, clamp_max=False)
 # Anisotropic kernel stretch along velocity direction. 0 = round splat;
 # larger = elongated cone of force in the direction of motion, so
 # particles ahead of a fast-moving limb get shoved further.

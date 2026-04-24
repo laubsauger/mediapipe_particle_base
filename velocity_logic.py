@@ -379,10 +379,14 @@ def update_landmark(sample, x, y, z, visible, trusted, dt, params):
     new_vz = sample["vz"] + alpha_v * (raw_vz - sample["vz"])
 
     # ---- Acceleration magnitude (3D) via diff of smoothed velocity --------
+    # z is down-weighted by z_speed_weight so depth noise doesn't dominate
+    # burst detection — MediaPipe's z is noisier than x/y.
     raw_ax = (new_vx - sample["prev_vx"]) / dt
     raw_ay = (new_vy - sample["prev_vy"]) / dt
     raw_az = (new_vz - sample["prev_vz"]) / dt
-    raw_a_mag = math.sqrt(raw_ax * raw_ax + raw_ay * raw_ay + raw_az * raw_az)
+    zw = params.get("z_speed_weight", 1.0)
+    raw_a_mag = math.sqrt(raw_ax * raw_ax + raw_ay * raw_ay
+                          + (zw * raw_az) * (zw * raw_az))
 
     alpha_a = _ema_alpha(dt, params["accel_smooth"])
     smoothed_a = sample["accel"] + alpha_a * (raw_a_mag - sample["accel"])
@@ -421,9 +425,12 @@ def _emit(sample, x, y, z, visible, params):
     vz    = _finite(sample["vz"], 0.0)
     accel = _finite(sample["accel"], 0.0)
     burst = _finite(sample["burst"], 0.0)
-    # Speed is 3D magnitude — so a forward/back motion contributes to emit
-    # the same as a side-to-side motion. Particles react to depth motion.
-    speed = math.sqrt(vx * vx + vy * vy + vz * vz)
+    # Speed is a weighted 3D magnitude — vz contributes less than vx/vy by
+    # default (z_speed_weight < 1.0) because MediaPipe's z is noisier and
+    # because a small lean toward the camera shouldn't cause the same
+    # emission spike as a full arm whip. Still a 3D signal — just tamer.
+    zw    = params.get("z_speed_weight", 1.0)
+    speed = math.sqrt(vx * vx + vy * vy + (zw * vz) * (zw * vz))
     emit  = _clamp01(speed / max(params["speed_scale"], 1e-6))
     return {
         "x":       _finite(x, 0.0),
@@ -515,6 +522,10 @@ def default_params():
         "burst_decay":     0.35,   # s — burst tail length
         "max_jump":        0.30,   # UV units per frame — over this = teleport
         "settle_frames":   5,      # frames of max_jump-free grace after re-acquisition
+        "z_speed_weight":  0.35,   # how much vz/az contributes to speed & accel
+                                   # for emit/burst purposes. 1.0 = full 3D,
+                                   # 0.0 = z motion doesn't trigger emit/burst
+                                   # (but vz is still emitted as a channel).
     }
 
 
@@ -728,6 +739,42 @@ if __name__ == "__main__":
     assert abs(o["vx"]) < 0.01 and abs(o["vy"]) < 0.01, "xy should stay still"
     assert o["speed"] > 0.3, "3D speed should include vz contribution"
 
+    # Z speed weight: same z-only motion should produce LESS emit and LESS
+    # burst than a comparable xy motion, once z_speed_weight < 1.
+    print("\n--- z_speed_weight tames depth sensitivity ---")
+    # First: xy motion at speed 2.5 (hits emit=1 at default Speedscale).
+    state_xy = new_state(("wrist",))
+    for i in range(5):
+        update(state_xy, {"wrist": (0.5 + 0.04 * i, 0.5, 0.0, True, True)},
+               dt, params)
+    xy_speed = None
+    for i in range(3):
+        per, _ = update(state_xy,
+                        {"wrist": (0.5 + 0.04 * (5 + i), 0.5, 0.0, True, True)},
+                        dt, params)
+        xy_speed = per["wrist"]["speed"]
+
+    # Same magnitude of motion but purely in z.
+    state_z = new_state(("wrist",))
+    for i in range(5):
+        update(state_z, {"wrist": (0.5, 0.5, 0.04 * i, True, True)},
+               dt, params)
+    z_speed = None
+    for i in range(3):
+        per, _ = update(state_z,
+                        {"wrist": (0.5, 0.5, 0.04 * (5 + i), True, True)},
+                        dt, params)
+        z_speed = per["wrist"]["speed"]
+    print(f"  xy-only speed: {xy_speed:.3f}")
+    print(f"  z-only  speed: {z_speed:.3f}   (expect ≈ xy_speed * z_weight "
+          f"= {xy_speed * params['z_speed_weight']:.3f})")
+    # z contribution should be scaled by z_weight (0.35 default), so the
+    # z-only speed should be ~0.35x the xy-only speed for the same raw motion.
+    ratio = z_speed / xy_speed
+    assert abs(ratio - params["z_speed_weight"]) < 0.05, \
+        f"z weight not applied: z_speed/xy_speed = {ratio:.3f}"
+
     print("\nOK — invisible hold, envelope decay, teleport rejection,")
     print("     marginal freeze, re-acquisition, settle grace, NaN/Inf")
-    print("     resilience, and 3D z-axis tracking all pass.")
+    print("     resilience, 3D z-axis tracking, and z-speed weighting")
+    print("     all pass.")

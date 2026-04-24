@@ -72,7 +72,11 @@ void main()
         if (gain <= 0.0) continue;
 
         // ---- z-scaled radius. Negative z = closer = bigger splat. ----
-        float size_mult = clamp(1.0 - z * uZGain, 0.2, 3.0);
+        // Upper clamp tightened (1.8 vs the raw 3.0 the linear formula can
+        // hit) so very-close limbs don't blow up the kernel into half the
+        // frame — MediaPipe's z can go well past -0.5 when someone leans in.
+        // Lower clamp at 0.25 keeps far-limbs visible rather than collapsing.
+        float size_mult = clamp(1.0 - z * uZGain, 0.25, 1.8);
         float r_base    = max(uRadius * size_mult, 1e-4);
 
         // ---- Velocity-aligned anisotropic gaussian ----

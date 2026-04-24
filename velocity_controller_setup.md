@@ -148,6 +148,31 @@ it), the pipeline falls back to z=0 everywhere — you get the same 2D
 behavior as before, no visual change. You can mix: some landmarks with z,
 some without.
 
+**Tuning depth sensitivity.** By default, z-axis motion contributes less
+to emit rate and burst detection than x/y motion does — controlled by
+the `Zspeedweight` parameter (Sensing page, default `0.35`). Rationale:
+MediaPipe's z is noisier than x/y, and leaning forward shouldn't produce
+the same emission spike as a full arm whip. The weight multiplies `vz`
+before it enters the speed/accel magnitude calculations, so at 0.35 a
+pure-depth motion produces ≈35% the emit/burst response of the same raw
+motion in-plane. `vz` itself is still emitted as an output channel at
+full fidelity for the renderer to use — the weight only tames *sensing*
+sensitivity, not *output* accuracy.
+
+If depth motion still feels over-reactive (very close performer, noisy
+tracker, etc.), drop `Zspeedweight` toward 0.1–0.2. Set it to 0 to make
+depth motion completely inert for emit/burst while still letting vz push
+particles in the z direction via the velocity field. Crank it up to 1.0
+if you specifically want "lean-in = explosive burst" behaviour.
+
+On the renderer side, the splat-size-from-z formula is also tightened
+against close-up blowup: `size_mult = clamp(1.0 - z * Zgain, 0.25, 1.8)`.
+Very-close limbs (large negative z) get capped at 1.8× the base radius
+rather than the 3× they could hit previously. `Zgain` default lowered to
+0.35 so size variation from depth is noticeable but subtle. `Fieldradius`
+default also lowered to 0.09 so the base blob is tighter — both together
+should keep close-up limbs from dominating the frame.
+
 **NaN/Inf resilience.** MediaPipe occasionally emits non-finite position
 or confidence values (first cook of an invisible landmark, tracker
 restart, certain tox builds mid-dropout). The Script CHOP scrubs all
@@ -210,7 +235,7 @@ Sensing chain wiring:
 Parent pars installed onto two pages:
 - **Sensing**: `Landmarks`, `Visibilitythreshold`, `Trustthreshold`, `Velocitysmooth`,
   `Accelsmooth`, `Speedscale`, `Accelthreshold`, `Accelscale`, `Burstdecay`,
-  `Maxjump`, `Settleframes`, `Blendtime`.
+  `Maxjump`, `Settleframes`, `Zspeedweight`, `Blendtime`.
 - **Renderer**: `Spawnrate`, `Burstgain`, `Fieldradius`, `Fieldforce`,
   `Fielddecay`, `Zgain`, `Velstretch`, `Stretchspeedref`, `Curlgain`,
   `Curlscale`, `Lifemin`, `Lifemax`, `Feedbackenable`, `Feedbackfade`,

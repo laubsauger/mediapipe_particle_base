@@ -139,6 +139,7 @@ def onCook(scriptOp):
         "burst_decay":     par.Burstdecay.eval(),
         "max_jump":        par.Maxjump.eval() if hasattr(par, 'Maxjump') else 0.3,
         "settle_frames":   int(par.Settleframes.eval()) if hasattr(par, 'Settleframes') else 5,
+        "z_speed_weight":  par.Zspeedweight.eval() if hasattr(par, 'Zspeedweight') else 0.35,
     }
 
     # ---- Build samples dict ---------------------------------------------
