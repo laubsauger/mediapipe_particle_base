@@ -65,6 +65,44 @@ Lag CHOP whose `Lag 1` and `Lag 2` both reference `parent().par.Blendtime`. Keep
 Blendtime short (0.05–0.15s) — we already smooth upstream, this is just to remove
 frame-to-frame jitter for the renderer.
 
+**Position-hold on dropout (hysteresis).** Confidence from MediaPipe
+typically degrades *gradually* as a limb leaves the frame — position
+becomes garbage several frames before confidence drops below any single
+threshold. To handle that cleanly, the sensing side uses **two
+thresholds**:
+
+- `Visibilitythreshold` (default 0.5) — the *output gate*. Below this,
+  `<L>:visible` emits 0 and emit/burst envelopes fade out.
+- `Trustthreshold` (default 0.75) — the *commit threshold*. Only frames
+  at or above this confidence update the cached "last good" position and
+  run the velocity math.
+
+That gives three behavioral zones on `:visible`:
+
+| MediaPipe confidence | Zone | Output position | Output `visible` |
+| --- | --- | --- | --- |
+| ≥ Trustthreshold | Trusted | raw `x, y` | 1 |
+| Visibilitythreshold..Trustthreshold | Marginal | last-good (frozen) | 1 |
+| < Visibilitythreshold | Invisible | last-good (held) | 0 |
+
+The key win is the marginal zone: the emitter stays on for spawning but
+is pinned to the last genuinely-trusted position, so it doesn't slide
+toward garbage during the confidence ramp-down. By the time `:visible`
+goes to 0, position is already at the correct last-good — lag1 sees no
+change in position, and the blob fades in place instead of sliding.
+
+`Maxjump` is a secondary safeguard: even within the trusted zone, any
+single-frame position jump larger than `Maxjump` UV units demotes the
+frame to the marginal zone (output last-good, don't commit). Tune against
+your expected fastest legitimate motion: at 60 fps a very fast whip is
+~0.05 UV/frame, so 0.2–0.3 is a safe ceiling. Set to 0 to disable.
+
+**Tuning hierarchy if you still see a teleport:** raise `Trustthreshold`
+first (0.8–0.9 is common for jittery MediaPipe output); then tighten
+`Maxjump` toward 0.15. Don't raise `Visibilitythreshold` unless the joint
+lingers as a fading blob for too long after it actually leaves frame —
+that's what it's for.
+
 ## Inside the `velocity_controller` Base COMP
 
 One COMP, three sub-chains: a sensing CHOP chain, a POP particle sim, and a
@@ -109,8 +147,9 @@ Sensing chain wiring:
   `lag1` directly by name, so `out1` is optional).
 
 Parent pars installed onto two pages:
-- **Sensing**: `Landmarks`, `Visibilitythreshold`, `Velocitysmooth`, `Accelsmooth`,
-  `Speedscale`, `Accelthreshold`, `Accelscale`, `Burstdecay`, `Blendtime`.
+- **Sensing**: `Landmarks`, `Visibilitythreshold`, `Trustthreshold`, `Velocitysmooth`,
+  `Accelsmooth`, `Speedscale`, `Accelthreshold`, `Accelscale`, `Burstdecay`,
+  `Maxjump`, `Blendtime`.
 - **Renderer**: `Spawnrate`, `Burstgain`, `Fieldradius`, `Fieldforce`,
   `Fielddecay`, `Curlgain`, `Curlscale`, `Lifemin`, `Lifemax`, `Feedbackenable`,
   `Feedbackfade`, `Feedbackzoom`.

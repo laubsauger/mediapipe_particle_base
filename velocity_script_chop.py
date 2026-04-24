@@ -82,7 +82,12 @@ def onCook(scriptOp):
     if state is None or set(state.keys()) != set(landmarks):
         # Landmarks changed (or first cook) — rebuild.
         state = logic.new_state(landmarks)
-        comp.store(STORAGE_KEY, state)
+    else:
+        # Same landmarks, but the inner schema may have grown since this
+        # session last stored it (e.g. `last_good_x` added after an update).
+        # ensure_schema backfills any missing keys with defaults.
+        logic.ensure_schema(state, landmarks)
+    comp.store(STORAGE_KEY, state)
 
     # ---- dt from absTime -------------------------------------------------
     now = absTime.seconds
@@ -100,6 +105,13 @@ def onCook(scriptOp):
 
     # ---- Parameters ------------------------------------------------------
     vis_thresh = par.Visibilitythreshold.eval()
+    # Trustthreshold is stricter — only frames at or above this confidence
+    # update last_good and run velocity math. Between the two thresholds
+    # the landmark is "visible but not trusted" (pinned to last_good, but
+    # emit still fires). Clamp trust >= gate so the zones don't invert.
+    trust_thresh = par.Trustthreshold.eval() if hasattr(par, 'Trustthreshold') else max(vis_thresh, 0.75)
+    if trust_thresh < vis_thresh:
+        trust_thresh = vis_thresh
 
     params = {
         "velocity_smooth": par.Velocitysmooth.eval(),
@@ -108,6 +120,7 @@ def onCook(scriptOp):
         "accel_threshold": par.Accelthreshold.eval(),
         "accel_scale":     par.Accelscale.eval(),
         "burst_decay":     par.Burstdecay.eval(),
+        "max_jump":        par.Maxjump.eval() if hasattr(par, 'Maxjump') else 0.3,
     }
 
     # ---- Build samples dict ---------------------------------------------
@@ -117,17 +130,20 @@ def onCook(scriptOp):
         ych = _find_chan(scriptOp, f'{lm}:y')
         if xch is None or ych is None:
             # Missing position channel -> treat as invisible but still decay.
-            samples[lm] = (0.0, 0.0, False)
+            samples[lm] = (0.0, 0.0, False, False)
             continue
         x = float(xch[0])
         y = float(ych[0])
         vch = _find_chan(scriptOp, f'{lm}:visible')
-        # :visible is MediaPipe's 0..1 confidence. Gate on threshold.
-        # If the channel isn't present, assume fully visible.
+        # :visible is MediaPipe's 0..1 confidence. Two zones:
+        #   visible = confidence >= vis_thresh   (output gate)
+        #   trusted = confidence >= trust_thresh (commit last_good & velocity)
+        # If the channel isn't present, assume fully visible and trusted.
         if vch is not None:
-            samples[lm] = (x, y, float(vch[0]) >= vis_thresh)
+            v = float(vch[0])
+            samples[lm] = (x, y, v >= vis_thresh, v >= trust_thresh)
         else:
-            samples[lm] = (x, y, True)
+            samples[lm] = (x, y, True, True)
 
     # ---- Update logic ----------------------------------------------------
     per_landmark, globals_out = logic.update(state, samples, dt, params)

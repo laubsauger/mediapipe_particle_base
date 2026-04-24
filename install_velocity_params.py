@@ -71,8 +71,15 @@ sensing = _page('Sensing')
 add_str(sensing, 'Landmarks', 'Landmarks',
         'left_wrist right_wrist left_ankle right_ankle nose')
 
-add_float(sensing, 'Visibilitythreshold', 'Visibility Threshold',
+add_float(sensing, 'Visibilitythreshold', 'Visibility Threshold (gate)',
           0.5, 0.0, 1.0)
+# Trustthreshold >= Visibilitythreshold gives a hysteresis band. Frames with
+# confidence between the two are "visible but not trusted": emitter stays on
+# but position is pinned to last_good. Above trust: fully commit the sample.
+# Below gate: invisible. Prevents the "slide to garbage" during MediaPipe's
+# confidence ramp-down when a limb leaves the frame.
+add_float(sensing, 'Trustthreshold', 'Trust Threshold (commit last-good)',
+          0.75, 0.0, 1.0)
 
 # Smoothing time constants (seconds). Shorter = snappier, noisier.
 add_float(sensing, 'Velocitysmooth', 'Velocity Smooth (s)',
@@ -92,6 +99,12 @@ add_float(sensing, 'Accelscale', 'Accel Scale (1/s^2 -> 1.0)',
           40.0, 1.0, 200.0, clamp_max=False)
 add_float(sensing, 'Burstdecay', 'Burst Decay (s)',
           0.35, 0.0, 2.0, clamp_max=False)
+
+# Teleport rejection. If raw position jumps more than this in UV space from
+# the last trusted sample, treat as lost tracking: hold last-good position
+# and decay envelopes (same as visible=False). 0 disables the check.
+add_float(sensing, 'Maxjump', 'Max Jump (UV/frame, 0=off)',
+          0.30, 0.0, 1.0)
 
 # Downstream single-knob blend (Lag CHOP references this).
 add_float(sensing, 'Blendtime', 'Blend Time (s)',
