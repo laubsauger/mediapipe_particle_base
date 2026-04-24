@@ -152,33 +152,55 @@ add_float(render, 'Burstgain', 'Burst Spawn Gain',
 add_float(render, 'Spawncount', 'Spawn Sub-emitters per Limb',
           12, 1, 40, clamp_max=False)
 
-# Max width of the wavefront line in UV units, reached when speed >=
-# Spawnspreadref. At rest the spread collapses to 0 (single point).
-add_float(render, 'Spawnspread', 'Wavefront Width at Full Speed (UV)',
+# Maximum along-velocity extent of the emission region at full speed.
+# Sub-emitters scatter pseudo-randomly inside a velocity-aligned region;
+# this is the half-width of that region in the direction of motion,
+# producing a "streak" shape when the limb is moving fast.
+add_float(render, 'Spawnspread', 'Spawn Region Along (UV at full speed)',
           0.08, 0.0, 0.3)
 
-# Speed (UV/s) at which the wavefront reaches its full Spawnspread width.
-# Below it, width scales linearly with speed.
-add_float(render, 'Spawnspreadref', 'Wavefront Full-width Speed (UV/s)',
-          2.0, 0.1, 10.0, clamp_max=False)
+# Speed (UV/s) at which the region reaches its full Spawnspread extent.
+# Below it, size scales linearly with speed down to Spawnspreadmin.
+# Default 0.8 engages the full size at normal hand-waving speed;
+# raise to 2.0 to require violent whips; lower to 0.3 so any motion
+# reaches full size.
+add_float(render, 'Spawnspreadref', 'Spawn Region Full-size Speed (UV/s)',
+          0.8, 0.1, 10.0, clamp_max=False)
+
+# Minimum extent of the emission region in both axes, at rest.
+# Gives the "lump" shape when the limb is stationary (matches the
+# flow-field shader's gaussian-at-rest kernel). Too small = emission
+# from a near-point; too large = always-visible cloud around every
+# limb even when still.
+add_float(render, 'Spawnspreadmin', 'Spawn Region Min (UV at rest)',
+          0.02, 0.0, 0.1)
+
+# Ratio of perpendicular to along-velocity extent at speed. 0 = pure
+# along-velocity line (all sub-emitters on the motion axis), 1 = square
+# region (as wide as it is long), default 0.3 = clearly elongated streak
+# with some width. This is what gives the emission shape its "streak vs
+# lump" feel during fast motion.
+add_float(render, 'Spawnperpratio', 'Spawn Perp/Along Ratio',
+          0.3, 0.0, 1.0)
 
 # Multiplier on the limb's velocity when writing it to each particle's
 # StartPartvel at birth. 1.0 = particles launch at full limb speed
-# (flies off-screen in <1s on fast whips); 0.3 = gentle launch, velocity
-# field and other forces take over from there. Lower values produce a
-# "wavefront that lingers" look; higher values make limbs fling particles
-# further in the motion direction.
+# (flies off-screen in <1s on fast whips); 0.15 default = gentle launch,
+# flowfield and curl noise do most of the work afterward. Lower values
+# produce a "wavefront that lingers" look; higher values make limbs
+# fling particles further in the motion direction.
 add_float(render, 'Spawnvelscale', 'Spawn Velocity Scale',
-          0.3, 0.0, 1.5, clamp_max=False)
+          0.15, 0.0, 1.5, clamp_max=False)
 
 # Angular fan on StartPartvel — tilts the edge sub-emitters' initial
 # velocity outward along the perpendicular direction so the wavefront
 # expands as it travels (cone instead of parallel wall). Center particle
 # (t=0) stays parallel to limb motion; edge particles (t=±0.5) get a
 # perpendicular kick scaled by this * limb_speed. 0 = parallel wavefront,
-# 0.25 = mild curve, 0.5 = pronounced cone.
+# 0.5 = ~27° edge tilt (visible cone), 1.0 = ~45° (strong fan),
+# 1.5+ = explosive burst-outward.
 add_float(render, 'Spawnvelfan', 'Spawn Velocity Fan (0=parallel, 1=cone)',
-          0.25, 0.0, 1.5, clamp_max=False)
+          0.5, 0.0, 2.0, clamp_max=False)
 
 # Velocity field splatter — base radius of each emitter's gaussian kernel
 # (in 0..1 UV space of the velocity-field TOP). Smaller = tighter blob per
@@ -189,9 +211,11 @@ add_float(render, 'Spawnvelfan', 'Spawn Velocity Fan (0=parallel, 1=cone)',
 add_float(render, 'Fieldradius', 'Field Splat Radius',
           0.05, 0.01, 0.5)
 # Multiplier on emitted (vx,vy,vz) when writing into the field (tune this
-# for "how hard do limbs push particles").
+# for "how hard do limbs push particles"). 0.4 default = gentle push
+# ("water" feel where particles drift rather than fly); raise to 1.5+ for
+# big throws ("vacuum" feel), drop toward 0.2 for barely-there drift.
 add_float(render, 'Fieldforce', 'Field Force Gain',
-          1.5, 0.0, 10.0, clamp_max=False)
+          0.4, 0.0, 10.0, clamp_max=False)
 # Persistence of the velocity field between frames (0 = instantaneous,
 # 1 = never fades). Applied externally via a Level TOP in the persistence
 # feedback chain. Smaller values = more responsive / less trail buildup —
@@ -202,8 +226,24 @@ add_float(render, 'Fielddecay', 'Field Decay (0=snap, 1=hold)',
 # Z → splat size. Negative z (limb toward camera) scales splat radius up;
 # positive z scales it down. The shader clamps the result to [0.25, 1.8]
 # so very-close limbs don't blow up the kernel. 0 disables depth scaling.
+# Default 0.2 = subtle depth effect; crank to 0.5+ if you want near/far
+# limbs to have dramatically different splat sizes.
 add_float(render, 'Zgain', 'Z Size Gain (depth -> radius)',
-          0.35, 0.0, 3.0, clamp_max=False)
+          0.2, 0.0, 3.0, clamp_max=False)
+
+# Z → force weight. Scales vz BEFORE it goes into the velocity-field
+# texture, so MediaPipe's noisy depth estimation doesn't produce a
+# constant z-drift on particles when the performer is still. 1.0 = full
+# 3D force (particles feel real forward/back pushes), 0 = field is
+# purely 2D (particles never move in z from field forces, though they
+# can still spawn with vz from StartPartvel). Default 0.3 = strong
+# damping of z-noise, just enough real z-motion to register.
+# This is SEPARATE from Zspeedweight (which controls sensing-side
+# emit/burst sensitivity to z-motion). Lower this one if particles
+# drift forward/back at rest; lower Zspeedweight if leans/depth-motion
+# cause too many particles to spawn.
+add_float(render, 'Zforceweight', 'Z Force Weight (vz -> field)',
+          0.3, 0.0, 1.0)
 # Anisotropic kernel stretch along velocity direction. 0 = round splat;
 # larger = elongated cone of force in the direction of motion, so
 # particles ahead of a fast-moving limb get shoved further.
@@ -214,17 +254,42 @@ add_float(render, 'Velstretch', 'Velocity Stretch (0=round)',
 add_float(render, 'Stretchspeedref', 'Stretch Speed Reference (UV/s)',
           2.0, 0.1, 10.0, clamp_max=False)
 
-# Idle curl-noise drift so particles don't freeze when performer is still.
+# Curl-noise drift — does two jobs: keeps particles moving when the
+# performer is still, AND (more importantly) bends wavefronts organically
+# so they don't read as stiff straight lines. Default 0.5 is meaningful
+# (noticeable curvature on particle trails); drop to 0.1 if you want
+# crisp directional motion, crank to 1.0+ for turbulent / "alive" feel.
 add_float(render, 'Curlgain', 'Curl Noise Gain',
-          0.15, 0.0, 2.0, clamp_max=False)
+          0.5, 0.0, 2.0, clamp_max=False)
+# Period of the noise field (bigger = smoother macro swirls, smaller =
+# tight micro-turbulence). 3.0 is a reasonable middle ground.
 add_float(render, 'Curlscale', 'Curl Noise Scale',
           3.0, 0.1, 20.0, clamp_max=False)
 
-# Particle lifetime (seconds).
+# Particle lifetime (seconds). Shorter = particles die before they can
+# drift off-screen, keeps the visual contained to where the limbs are.
+# Raise if you want long persistent trails.
 add_float(render, 'Lifemin', 'Life Min (s)',
-          1.2, 0.1, 20.0, clamp_max=False)
+          0.8, 0.1, 20.0, clamp_max=False)
 add_float(render, 'Lifemax', 'Life Max (s)',
-          3.0, 0.1, 20.0, clamp_max=False)
+          2.0, 0.1, 20.0, clamp_max=False)
+
+# Bounding box for particle containment. Particle space (MediaPipe 0..1),
+# not render-stretched space. bounds_reflect GLSL POP uses these to clamp
+# P and reflect Partvel at walls.
+add_float(render, 'Boundsminx', 'Bounds Min X', 0.0, -1.0, 1.0, clamp_max=False, clamp_min=False)
+add_float(render, 'Boundsminy', 'Bounds Min Y', 0.0, -1.0, 1.0, clamp_max=False, clamp_min=False)
+add_float(render, 'Boundsminz', 'Bounds Min Z', -0.5, -2.0, 2.0, clamp_max=False, clamp_min=False)
+add_float(render, 'Boundsmaxx', 'Bounds Max X', 1.0, -1.0, 2.0, clamp_max=False, clamp_min=False)
+add_float(render, 'Boundsmaxy', 'Bounds Max Y', 1.0, -1.0, 2.0, clamp_max=False, clamp_min=False)
+add_float(render, 'Boundsmaxz', 'Bounds Max Z', 0.5, -2.0, 2.0, clamp_max=False, clamp_min=False)
+# Restitution — 0 makes particles "stick" at walls (dead stop), 1 is a
+# perfectly elastic bounce. 0.3–0.6 feels like water against a pool wall.
+add_float(render, 'Boundsbounce', 'Bounds Bounce (0=stop, 1=elastic)',
+          0.4, 0.0, 1.0)
+# Small inset so particles visually clamp just inside the wall instead of
+# clipping it. 0 = hard clamp exactly at the wall.
+add_float(render, 'Boundsmargin', 'Bounds Margin (inset)', 0.0, 0.0, 0.1)
 
 # Screen-space feedback TOP (for the smear look on top of the POP render).
 add_toggle(render, 'Feedbackenable', 'Screen-Space Feedback', True)

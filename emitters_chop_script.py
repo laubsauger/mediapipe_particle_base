@@ -15,15 +15,28 @@
 # We use bare `P0 P1 P2 / v0 v1 v2` instead and wire up explicit attribute
 # rows on the CHOP-to-POP (see velocity_controller_setup.md).
 #
-# Wavefront emission
-# ------------------
-# For each landmark we emit N = `Spawncount` sub-emitter points spread
-# along a line PERPENDICULAR to the limb's xy velocity vector. The spread
-# width scales with speed — at rest the N sub-emitters collapse to the
-# landmark's single point (no spread); at full whip they form a wide
-# perpendicular line. Combined with a reduced `StartPartvel` (via
-# `Spawnvelscale`), you get a wall of particles launching together in
-# the velocity direction instead of a single-point trickle.
+# Emission shape — 2D velocity-aligned scatter
+# --------------------------------------------
+# For each landmark we emit N = `Spawncount` sub-emitter points scattered
+# within a 2D region aligned with the limb's xy velocity. Two extents:
+#
+#   half_along = max(Spawnspreadmin, Spawnspread * speed_factor)
+#       — grows with speed, producing a "streak" elongated along velocity
+#   half_perp  = max(Spawnspreadmin, Spawnspread * Spawnperpratio * speed_factor)
+#       — stays smaller (width of the streak) so fast motion produces
+#         an elongated ellipse-ish region, not a square
+#
+# At rest (speed=0): both extents collapse to Spawnspreadmin → small
+#   lump shape (circular-ish, matches the flow-field shader's rest shape).
+# At full speed: ellipse with aspect ratio ~ 1:Spawnperpratio, aligned
+#   with motion direction → streaky, matches the shader's velocity-
+#   stretched kernel.
+#
+# Sub-emitter positions are pseudo-random within that rectangle, using
+# a fixed seed so positions are STABLE per-sub-emitter-index across
+# cooks (no chaotic jitter — same k always lands at the same relative
+# position within the region, which translates as the region rotates
+# with the limb direction).
 #
 # Output:
 #   numSamples = N_landmarks × Spawncount
@@ -79,6 +92,20 @@ def _par(name, default):
         return default
 
 
+# Pseudo-random scatter positions for sub-emitters inside a unit square
+# [-0.5, +0.5]^2. Fixed seed so the same sub-emitter index always lands
+# at the same relative position — no per-frame jitter, just a stable
+# organic-looking cloud that rotates/stretches with the limb velocity.
+# 128 positions is plenty for the expected Spawncount range (up to ~40);
+# higher counts simply reuse the same positions in index order.
+import random as _rnd
+_SCATTER_RNG = _rnd.Random(424242)
+_SCATTER = [(_SCATTER_RNG.uniform(-0.5, 0.5),
+             _SCATTER_RNG.uniform(-0.5, 0.5))
+            for _ in range(128)]
+del _rnd
+
+
 def onCook(scriptOp):
     scriptOp.clear()
     # Time Slice off — we emit the current-frame landmark snapshot. Any
@@ -94,17 +121,22 @@ def onCook(scriptOp):
         scriptOp.numSamples = 0
         return
 
-    burst_gain        = float(_par('Burstgain',       1.0))
-    spawn_count       = max(1, int(_par('Spawncount',       12)))
-    spawn_spread_max  = float(_par('Spawnspread',      0.08))
-    spawn_spread_ref  = max(1e-4, float(_par('Spawnspreadref',  2.0)))
-    spawn_vel_scale   = float(_par('Spawnvelscale',    0.3))
-    # Angular fan: each sub-emitter's StartPartvel gets an outward
-    # perpendicular kick scaled by its t offset. 0 = parallel wavefront
-    # (all particles fly the same direction), higher = fanned/curving
-    # edges. Scaled by limb speed so at rest there's no fan regardless
-    # of this setting. Typical 0.2 = mild curve, 0.5+ = pronounced cone.
-    spawn_vel_fan     = float(_par('Spawnvelfan',      0.25))
+    burst_gain        = float(_par('Burstgain',         1.0))
+    spawn_count       = max(1, int(_par('Spawncount',    12)))
+    spawn_spread_max  = float(_par('Spawnspread',        0.08))
+    spawn_spread_ref  = max(1e-4, float(_par('Spawnspreadref',  0.8)))
+    # Minimum extent at rest — gives a small "lump" shape even when the
+    # limb is stationary (matches the flow-field shader's gaussian-at-rest).
+    spawn_spread_min  = float(_par('Spawnspreadmin',     0.02))
+    # Perpendicular-axis ratio — how wide the emission region is relative
+    # to the along-velocity axis at speed. 0 = pure along-velocity line,
+    # 1 = square region, default 0.3 = visibly elongated streak.
+    spawn_perp_ratio  = float(_par('Spawnperpratio',     0.3))
+    spawn_vel_scale   = float(_par('Spawnvelscale',      0.15))
+    # Angular fan: edge sub-emitters (perpendicular side of the region)
+    # get an outward kick on their StartPartvel. 0 = parallel, higher =
+    # fanned cone. Scaled by limb speed so at rest there's no fan.
+    spawn_vel_fan     = float(_par('Spawnvelfan',        0.5))
 
     total = n_lm * spawn_count
 
@@ -121,10 +153,7 @@ def onCook(scriptOp):
 
     import math
 
-    # Avoid division-by-zero in the t=[-0.5..0.5] spread formula when
-    # Spawncount == 1 (fall back to single point at landmark centre).
-    spread_divisor = max(spawn_count - 1, 1)
-
+    n_scatter = len(_SCATTER)
     idx = 0
     for lm_i, lm in enumerate(lms):
         x  = _read(src, f'{lm}:x')
@@ -137,49 +166,55 @@ def onCook(scriptOp):
         bu = _read(src, f'{lm}:burst')
         vi = _read(src, f'{lm}:visible')
 
-        # Per-sub-emitter weight. We do NOT divide by spawn_count — Particle
-        # POP reads `int(w)` per input point per frame, and a divided
-        # fractional w (e.g., 3.3 / 12 ≈ 0.28) rounds to 0 → zero particles
-        # ever spawn. Instead each sub-emitter independently emits int(w)
-        # per frame. Total density scales with spawn_count: more sub-emitters
-        # = denser wavefront. Tune density via spawn_count + Burstgain (spike
-        # intensity) + Lifemax (how long particles stay alive).
+        # Per-sub-emitter weight — same value for all sub-emitters of a
+        # given limb (see header comment for why we don't divide).
         w_per = (em + burst_gain * bu) * vi
 
-        # Perpendicular direction to the xy velocity (for the spread line).
-        # 2D perpendicular of (vx, vy) is (-vy, vx); we normalise it.
+        # Velocity-aligned basis: `along` points in the direction of
+        # limb motion (fallback to world x if still); `perp` is a 90°
+        # rotation of `along`. Both are unit vectors.
         vmag_xy = math.sqrt(vx * vx + vy * vy)
         if vmag_xy > 1e-4:
-            perp_x = -vy / vmag_xy
-            perp_y =  vx / vmag_xy
+            along_x = vx / vmag_xy
+            along_y = vy / vmag_xy
+            perp_x  = -along_y
+            perp_y  =  along_x
         else:
-            perp_x = 0.0
-            perp_y = 0.0
+            along_x, along_y = 1.0, 0.0
+            perp_x,  perp_y  = 0.0, 1.0
 
-        # Spread width scales from 0 at rest to spawn_spread_max at
-        # Spawnspreadref speed — so gentle motion stays near-point,
-        # fast motion opens into a wavefront. Clamped at the max.
-        spread_scale = min(vmag_xy / spawn_spread_ref, 1.0)
-        half_spread  = spawn_spread_max * spread_scale * 0.5
+        # Spread extents: along grows with speed, perp stays narrower.
+        # At rest both collapse to spawn_spread_min (a small lump).
+        speed_factor = min(vmag_xy / spawn_spread_ref, 1.0)
+        half_along = max(spawn_spread_min,
+                         spawn_spread_max * speed_factor)
+        half_perp  = max(spawn_spread_min,
+                         spawn_spread_max * spawn_perp_ratio * speed_factor)
 
-        # Base velocity (shared by all sub-emitters before the fan is added)
+        # Base velocity (limb direction, scaled down by Spawnvelscale)
         base_svx = vx * spawn_vel_scale
         base_svy = vy * spawn_vel_scale
         svz      = vz * spawn_vel_scale
 
         for k in range(spawn_count):
-            # t ∈ [-0.5, +0.5] across the spread line
-            t = (k / spread_divisor) - 0.5
+            # Stable pseudo-random scatter position within a unit square
+            # (both in [-0.5, 0.5]). Same k always maps to the same
+            # (rel_along, rel_perp) — no cook-to-cook jitter.
+            rel_along, rel_perp = _SCATTER[k % n_scatter]
 
-            # Position offset: perpendicular to velocity, scales with speed.
-            off_x = perp_x * 2.0 * half_spread * t
-            off_y = perp_y * 2.0 * half_spread * t
+            # Scale to actual extents along each local axis.
+            local_along = rel_along * 2.0 * half_along
+            local_perp  = rel_perp  * 2.0 * half_perp
 
-            # Velocity fan: edge sub-emitters get a perpendicular kick
-            # proportional to their t offset and the limb's xy speed.
-            # Center (t=0) stays parallel to limb velocity.
-            fan_vx = perp_x * t * spawn_vel_fan * vmag_xy * spawn_vel_scale
-            fan_vy = perp_y * t * spawn_vel_fan * vmag_xy * spawn_vel_scale
+            # Rotate local offset into world coords.
+            off_x = along_x * local_along + perp_x * local_perp
+            off_y = along_y * local_along + perp_y * local_perp
+
+            # Velocity fan: edge sub-emitters (large |rel_perp|) get a
+            # perpendicular kick. Center (rel_perp=0) stays parallel.
+            # Scaled by limb speed, so at rest there's no fan.
+            fan_vx = perp_x * rel_perp * spawn_vel_fan * vmag_xy * spawn_vel_scale
+            fan_vy = perp_y * rel_perp * spawn_vel_fan * vmag_xy * spawn_vel_scale
 
             chans['P0'][idx] = x + off_x
             chans['P1'][idx] = y + off_y

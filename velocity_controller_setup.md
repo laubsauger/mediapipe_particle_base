@@ -165,6 +165,21 @@ depth motion completely inert for emit/burst while still letting vz push
 particles in the z direction via the velocity field. Crank it up to 1.0
 if you specifically want "lean-in = explosive burst" behaviour.
 
+**Two separate z-axis tamers — know which one to reach for:**
+
+| Par | Layer | What it controls | Lower if you see… |
+| --- | --- | --- | --- |
+| `Zspeedweight` | Sensing | How much `vz` contributes to `speed` & `accel` magnitudes → emit rate & burst triggering | Too many particles spawn when you lean in or out |
+| `Zforceweight` | Renderer | How much `vz` gets written into the force field → per-particle z acceleration | Particles drift forward/back even when you're not moving in z |
+
+MediaPipe's z is noisy enough that at rest it'll often report ±0.05 UV/s
+of spurious vz. `Zforceweight = 0.3` knocks that down to ±0.015 UV/s in
+the field, which is small enough that drag + bounds containment absorb it
+cleanly. If you still see particles wandering in z when standing still,
+drop `Zforceweight` further — `0.1` is fine, `0` makes the field purely
+2D (particles still spawn with initial vz from `StartPartvel`, but the
+flowfield can't accelerate them in z).
+
 On the renderer side, the splat-size-from-z formula is also tightened
 against close-up blowup: `size_mult = clamp(1.0 - z * Zgain, 0.25, 1.8)`.
 Very-close limbs (large negative z) get capped at 1.8× the base radius
@@ -237,10 +252,13 @@ Parent pars installed onto two pages:
   `Accelsmooth`, `Speedscale`, `Accelthreshold`, `Accelscale`, `Burstdecay`,
   `Maxjump`, `Settleframes`, `Zspeedweight`, `Blendtime`.
 - **Renderer**: `Spawnrate`, `Burstgain`, `Spawncount`, `Spawnspread`,
-  `Spawnspreadref`, `Spawnvelscale`, `Spawnvelfan`, `Fieldradius`,
-  `Fieldforce`, `Fielddecay`, `Zgain`, `Velstretch`, `Stretchspeedref`,
-  `Curlgain`, `Curlscale`, `Lifemin`, `Lifemax`, `Feedbackenable`,
-  `Feedbackfade`, `Feedbackzoom`.
+  `Spawnspreadref`, `Spawnspreadmin`, `Spawnperpratio`, `Spawnvelscale`,
+  `Spawnvelfan`, `Fieldradius`, `Fieldforce`, `Fielddecay`, `Zgain`,
+  `Zforceweight`, `Velstretch`, `Stretchspeedref`, `Curlgain`,
+  `Curlscale`, `Lifemin`, `Lifemax`, `Boundsminx`, `Boundsminy`,
+  `Boundsminz`, `Boundsmaxx`, `Boundsmaxy`, `Boundsmaxz`,
+  `Boundsbounce`, `Boundsmargin`, `Feedbackenable`, `Feedbackfade`,
+  `Feedbackzoom`.
 
 The page split is purely organisational — both pages live on the same COMP, and
 every renderer op reads its pars via `parent().par.*` because `parent()` inside
@@ -466,8 +484,10 @@ flowchart LR
     field_out -. 1-frame delay .-> field_fb --> field_decay --> field_mix
     field_out -. TOP param .-> lookup_pop
 
+    bounds_reflect[bounds_reflect<br/>GLSL POP<br/>clamp P to box,<br/>flip Partvel on wall hits]
+
     emitters_chop --> emitters_pop --> particle_pop
-    particle_pop --> lookup_pop --> noise_pop --> math_mix --> bounds_field --> force_null
+    particle_pop --> lookup_pop --> noise_pop --> math_mix --> bounds_reflect --> force_null
     force_null -. Target Particles Update POP ref .-> particle_pop
     particle_pop --> render_null --> particle_geo --> render_top
 ```
@@ -762,24 +782,53 @@ installation needs it, either:
 means slightly elliptical on a non-square render. Rarely visible at the
 default `Fieldradius`; only worth aspect-correcting if you see it as a flaw.
 
-## Emission shape — wavefronts vs trickle
+## Emission shape — 2D velocity-aligned scatter
 
 By default `emitters_chop` doesn't just output one point per landmark.
 It outputs `Spawncount` (default 12) sub-emitter points per landmark,
-arranged along a line **perpendicular to the limb's xy velocity vector**,
-with spread width that scales from 0 at rest up to `Spawnspread` UV
-units (default 0.08) when the limb hits `Spawnspreadref` (default 2
-UV/s) or faster. All sub-emitters share the same velocity so they
-launch together — creating a wall of particles moving in the motion
-direction, not a stream of single particles from one point.
+scattered pseudo-randomly within a **2D region aligned with the limb's
+xy velocity direction**. The region has two independent extents:
+
+- **Along-velocity (length)**: scales from `Spawnspreadmin` (default
+  `0.02` UV) at rest up to `Spawnspread` (default `0.08` UV) when the
+  limb reaches `Spawnspreadref` (default `0.8` UV/s). This is what
+  stretches the emission source into a "streak" when limbs move fast.
+- **Perpendicular (width)**: scales similarly but multiplied by
+  `Spawnperpratio` (default `0.3`). Smaller than along-axis so the
+  region elongates into an ellipse/rectangle rather than staying square.
+
+Shape behaviour:
+
+- **At rest** (speed = 0): both extents collapse to `Spawnspreadmin`,
+  producing a small square-ish "lump" of sub-emitters around the limb.
+  Matches the flow-field shader's gaussian-at-rest kernel.
+- **At full speed**: along extent = `Spawnspread`, perp extent =
+  `Spawnspread × Spawnperpratio`. An elongated ellipse/rectangle
+  aligned with motion direction. Matches the shader's
+  velocity-stretched kernel.
+- **In between**: linear ramp on speed, so gentle motion gives a
+  gently-elongated lump, fast motion gives a pronounced streak.
+
+Sub-emitter positions within the region are pseudo-random with a **fixed
+seed**, so sub-emitter `k` always lands at the same relative position
+within the region — no per-cook jitter, just a stable scatter that
+rotates and stretches with the limb direction. That keeps the visual
+coherent instead of noisy.
+
+Edge sub-emitters (large perpendicular offset) also get a fan kick on
+their initial velocity, so the emission region doesn't just *shape*
+the spawn pattern — it also *aims* particles outward at the edges,
+giving the wavefront a cone-like expansion as it travels.
 
 | Par | Default | Effect |
 | --- | --- | --- |
-| `Spawncount` | 12 | Sub-emitters per limb. 1 = classic single-point emission. Higher = denser wavefront. |
-| `Spawnspread` | 0.08 | Wavefront width in UV at full speed. Too wide and particles spawn way off from the limb. |
-| `Spawnspreadref` | 2.0 | Speed (UV/s) at which `Spawnspread` is reached. Below, spread scales linearly. |
+| `Spawncount` | 12 | Sub-emitters per limb inside the emission region. 1 = single point. Higher = denser fill of the region. |
+| `Spawnspread` | 0.08 | Maximum **along-velocity** extent of the emission region at full speed (streak length). |
+| `Spawnspreadref` | 0.8 | Speed (UV/s) at which `Spawnspread` is fully engaged. Below, size scales linearly. 0.8 engages full size at gentle hand-waving; raise to 2–3 for "only whips open the region"; lower to 0.3 for "any motion = full size". |
+| `Spawnspreadmin` | 0.02 | Minimum extent at rest (lump size). Gives emission a small 2D shape even when the limb is stationary. 0 = collapse to point at rest. |
+| `Spawnperpratio` | 0.3 | Ratio of perpendicular to along-velocity extent at speed. 0 = pure streak along motion direction, 1 = square region, 0.3 = clearly elongated streak with some width. Lower for sleeker streaks, higher for rounder clouds. |
 | `Spawnvelscale` | 0.3 | Multiplier on limb velocity written to `StartPartvel`. 1.0 = particles fly off-screen fast on whips; 0.3 = gentle launch, velocity field continues to push over time. |
-| `Spawnvelfan` | 0.25 | Angular fan on `StartPartvel` — edge sub-emitters get a perpendicular kick scaled by their position along the spread line times limb speed. Center particle stays parallel to motion; edges tilt outward. 0 = parallel wavefront (all particles fly exactly the same direction — straight line), 0.25 = mild cone, 0.5+ = pronounced fan. Combined with curl noise, this gives organic-looking wavefront curvature instead of a brittle straight line. |
+| `Spawnvelfan` | 0.5 | Angular fan on `StartPartvel` — edge sub-emitters get a perpendicular kick scaled by their position along the spread line times limb speed. Center particle stays parallel to motion; edges tilt outward. 0 = parallel wavefront (all particles fly exactly the same direction), 0.25 = subtle, 0.5 = ~27° edge tilt (visible cone), 1.0 = ~45° (strong fan). Combined with curl noise, this gives organic-looking wavefront curvature instead of a straight line. |
 
 Total emission rate **scales with `Spawncount`** — each sub-emitter
 independently emits `int(w)` particles per frame (Particle POP's
@@ -812,6 +861,118 @@ limbs — well over the 10000 Max Particles default. Either:
   `Spawnspread` to `0.04` or raise `Spawnspreadref` to `3–4` so full
   width only engages on extreme motion.
 
+## "Water" vs "vacuum" feel
+
+By default, particles live in a near-vacuum: the flow field pushes them
+with no friction, so they keep flying until their life runs out. That
+feels great for explosive/energetic effects but wrong for anything
+meant to read as "swimming through a medium" or "paint dispersing in
+water".
+
+Three knobs convert vacuum → water:
+
+1. **Particle POP → Velocity Damping** (on the Particle POP itself, NOT
+   on velocity_controller). `1.5` is a good starting point: it multi­
+   plicatively reduces `Partvel` each frame, so a particle at 1 UV/s
+   slows to ~0.22 UV/s in one second and settles within 2–3 seconds.
+   At `0` particles never lose momentum; at `3+` they feel like they're
+   moving through molasses. This is *the* biggest dial for the overall
+   feel.
+2. **Particle POP → Initial Drag** to `0.2`. Gives every newly-spawned
+   particle a baseline friction attribute so it doesn't start life in
+   zero-g while the sim is trying to damp it.
+3. **`Fieldforce` on velocity_controller → drop to `0.4`** (default I
+   just lowered). With damping cranked, you want less aggressive
+   acceleration from the flowfield, or particles still get flung away
+   before damping can catch them.
+
+Recipe summary:
+
+| Feel | Velocity Damping | Initial Drag | Fieldforce | Spawnvelscale |
+| --- | --- | --- | --- | --- |
+| Vacuum (old default) | 0 | 0 | 1.5 | 0.3 |
+| Light breeze | 0.5 | 0.1 | 0.7 | 0.2 |
+| **Water (new default)** | **1.5** | **0.2** | **0.4** | **0.15** |
+| Molasses | 3.0 | 0.5 | 0.2 | 0.1 |
+
+Swap rows to taste. `Velocity Damping` and `Initial Drag` are both on
+the Particle POP's Particles page; the rest live on the COMP pars.
+
+## Bounding-box containment (reflection)
+
+Out of the box, particles that escape the visible area just keep flying
+until their life runs out — they disappear off-screen. The `bounds_field`
+Field POP + Partdeath pattern described earlier *kills* them when they
+exit, but the user experience is a thinning cloud of particles as they
+leave the frame. Most installations want **reflection** instead:
+particles bounce off invisible walls and stay contained.
+
+### Setup — `bounds_reflect` GLSL POP
+
+Add as the **last op** in the force chain, immediately before the
+`force_null` that Particle POP points at via `Target Particles Update POP`.
+
+1. Create a **GLSL POP** named `bounds_reflect` inside
+   `velocity_controller`.
+2. Point its Program parameter at `shaders/bounds_reflect.glsl` (or
+   paste the code into a Text DAT and reference it). The shader
+   clamps each particle's `P` inside a 3D axis-aligned box and flips
+   `Partvel` when the particle hits a wall.
+3. Declare uniforms on the GLSL POP's Vectors 1 / Scalars page, binding
+   each to the corresponding parent par:
+
+    | Uniform | Binding | Meaning |
+    | --- | --- | --- |
+    | `uBoxMin` | `(parent().par.Boundsminx, parent().par.Boundsminy, parent().par.Boundsminz)` | Min corner of the box in particle space |
+    | `uBoxMax` | `(parent().par.Boundsmaxx, parent().par.Boundsmaxy, parent().par.Boundsmaxz)` | Max corner |
+    | `uBounce` | `parent().par.Boundsbounce` | 0 = stick, 1 = elastic, 0.4 = water-like |
+    | `uMargin` | `parent().par.Boundsmargin` | Small inset from walls |
+
+4. Wire `bounds_reflect` into the force chain as the last stage before
+   `force_null`:
+
+    ```
+    Particle POP → Lookup Texture POP → Noise POP → Math/Mix POP
+                 → bounds_reflect GLSL POP → force_null
+    ```
+
+5. **Verify**: the GLSL POP's output POP should show particles clamped
+   to `(0..1, 0..1, -0.5..+0.5)` in particle-space. Drop a Null POP
+   after it, right-click ▸ Info — the `P` attribute's min/max across
+   all particles should match your bounds values. Move a limb
+   aggressively — particles hitting walls should visibly reverse
+   direction rather than escaping.
+
+> **Syntax caveat**: the shader file has placeholder comments like
+> `/* READ P */` and `/* WRITE P */` on the attribute-access lines. The
+> per-point read/write API of TD's GLSL POP varies across builds (some
+> use `inPointAttribs.P` members, some helper functions, some require
+> declaring the attribute layout on the op's pages). The shader's
+> reflection math is standard GLSL and doesn't change — only those
+> four attribute-access lines need adapting. Check
+> docs.derivative.ca/GLSL_POP for your build's exact syntax.
+
+### Simpler alternative if GLSL isn't working
+
+If adapting the shader is fiddly, soft containment via native ops:
+place **six Force Radial POPs in Planar mode** around the box, each
+pushing inward:
+
+| Wall | Translate | Direction | Radius (rolloff) | Strength |
+| --- | --- | --- | --- | --- |
+| Left  | `(0.0, 0.5, 0.0)` | `(+1, 0, 0)` | `0.1` | `8` |
+| Right | `(1.0, 0.5, 0.0)` | `(-1, 0, 0)` | `0.1` | `8` |
+| Bottom | `(0.5, 0.0, 0.0)` | `(0, +1, 0)` | `0.1` | `8` |
+| Top | `(0.5, 1.0, 0.0)` | `(0, -1, 0)` | `0.1` | `8` |
+| Back | `(0.5, 0.5, -0.5)` | `(0, 0, +1)` | `0.1` | `8` |
+| Front | `(0.5, 0.5, +0.5)` | `(0, 0, -1)` | `0.1` | `8` |
+
+Chain all six into the force chain between your existing Math/Mix POP
+and `force_null`. Combined with strong `Velocity Damping`, this makes
+particles slow dramatically as they approach walls, reversing direction
+gradually rather than bouncing instantaneously. Uses only native ops
+but gets you 6 nodes instead of 1.
+
 ## Velocity-field resolution (if the field looks chunky)
 
 The `velocity_field` GLSL TOP resolution controls how finely the
@@ -830,6 +991,101 @@ spread covers only ~25 pixels at 256, which can read as blocky).
 - If still chunky, shrink `Fieldradius` further (0.06 gets tight; 0.04
   reads as per-limb pinpoint). Smaller radius + higher resolution = the
   smoothest look.
+
+## Full settings rundown
+
+All current defaults. These live as custom parent pars on the
+`velocity_controller` COMP (installed via `install_velocity_params.py`,
+forcibly re-applied via `reset_velocity_params.py`).
+
+> **Installer note:** `install_velocity_params.py` is idempotent —
+> existing pars are **not** overwritten. When default values change in
+> the codebase, running the installer again won't update them on
+> already-installed COMPs. To apply current defaults, either: (a) run
+> `reset_velocity_params.py` (forcibly overwrites every par), or (b)
+> use the right-click "Reset to Default" on individual pars after
+> re-running the installer.
+
+### Sensing page
+
+| Par | Default | Range | What it does |
+| --- | --- | --- | --- |
+| `Landmarks` | `left_wrist right_wrist left_ankle right_ankle nose` | — | Space/comma-separated list of MediaPipe landmark names to track. Script CHOP rebuilds state on change. |
+| `Visibilitythreshold` | `0.5` | 0..1 | Output gate. Below this, `<L>:visible` is 0 and emit/burst fade. |
+| `Trustthreshold` | `0.75` | 0..1 | Commit gate. Only above this does `last_good` update and velocity math run. Between gate and trust = marginal zone (output last-good, visible=1). |
+| `Velocitysmooth` | `0.08` s | 0..0.5+ | One-pole EMA time constant on raw velocity. Shorter = snappier, noisier. |
+| `Accelsmooth` | `0.05` s | 0..0.5+ | Same for acceleration. |
+| `Speedscale` | `2.5` UV/s | 0.1..10+ | Raw speed / scale = emit (clamped 0..1). Lower = more emit at gentle motion. |
+| `Accelthreshold` | `8.0` | 0..50+ | Min accel magnitude that arms a burst. |
+| `Accelscale` | `40.0` | 1..200+ | Accel above threshold / scale = burst amplitude (clamped 0..1). |
+| `Burstdecay` | `0.35` s | 0..2+ | Exponential tail length of burst envelope. |
+| `Maxjump` | `0.30` UV/frame | 0..1 | Teleport-rejection threshold inside a trusted stream. 0 disables. |
+| `Settleframes` | `5` | 0..30 | Post-dropout grace period (frames) where Maxjump is skipped to let MediaPipe lock on. |
+| `Zspeedweight` | `0.35` | 0..1 | How much vz/az contribute to speed & accel magnitudes (emit/burst drivers). 1 = full 3D, 0 = z doesn't trigger emission at all. |
+| `Blendtime` | `0.08` s | 0..1+ | Lag CHOP time constant for post-sensing smoothing. |
+
+### Renderer page
+
+| Par | Default | Range | What it does |
+| --- | --- | --- | --- |
+| **Emission** | | | |
+| `Spawnrate` | `5000` pts/s | 0..50000 | Currently informational (Particle POP reads `w` as birth attribute; this is a reserved par for future total-rate scaling). |
+| `Burstgain` | `6.0` | 0..20+ | Multiplier on `burst` when mixing into the spawn-weight `w = emit + Burstgain × burst`. |
+| **Emission region (2D scatter)** | | | |
+| `Spawncount` | `12` | 1..40+ | Sub-emitters per landmark within the region. 1 = single-point. Scales total particle count linearly — watch Max Particles. |
+| `Spawnspread` | `0.08` UV | 0..0.3 | Max along-velocity extent at full speed (streak length). |
+| `Spawnspreadref` | `0.8` UV/s | 0.1..10+ | Speed at which full `Spawnspread` is engaged. |
+| `Spawnspreadmin` | `0.02` UV | 0..0.1 | Minimum extent in both axes at rest (lump size). Matches the flow-field shader's gaussian-at-rest. |
+| `Spawnperpratio` | `0.3` | 0..1 | Perp/along extent ratio at speed. 0 = pure streak, 1 = square, 0.3 = elongated with width. |
+| `Spawnvelscale` | `0.15` | 0..1.5+ | Multiplier on limb velocity → `StartPartvel`. 0.15 = gentle launch (flowfield does the work). 1.0 = particles fly off fast. |
+| `Spawnvelfan` | `0.5` | 0..2 | Perpendicular fan on edge sub-emitters' initial velocity. 0 = parallel, 0.5 = ~27° cone, 1.0 = ~45°. |
+| **Flow field** | | | |
+| `Fieldradius` | `0.05` UV | 0.01..0.5 | Base gaussian sigma. 3-sigma spread = ~15% of frame at default. |
+| `Fieldforce` | `0.4` | 0..10+ | Global multiplier on the velocity vector written into the field. 0.4 = water-feel (default). Raise to 1.5+ for vacuum/explosive feel; lower for barely-drift. |
+| `Fielddecay` | `0.30` | 0..0.99 | Level TOP multiplier in the persistence chain. 0 = instantaneous; higher = longer force trails in the air. |
+| `Zgain` | `0.2` | 0..3+ | Depth → splat size. Negative z (toward camera) scales radius up, clamped to 1.8× in shader. |
+| `Zforceweight` | `0.3` | 0..1 | Scales `vz` before it enters the velocity-field texture. Dampens MediaPipe's depth-estimation jitter (which pushes particles in z even when the performer isn't moving). 0 = pure 2D force field, 1 = full 3D with raw jitter. **Separate from `Zspeedweight`** (sensing-side). |
+| `Velstretch` | `0.8` | 0..3+ | Anisotropic kernel elongation along velocity direction. Makes fast limbs throw a longer cone of force. |
+| `Stretchspeedref` | `2.0` UV/s | 0.1..10+ | Speed at which full `Velstretch` applies. |
+| **Noise drift** | | | |
+| `Curlgain` | `0.5` | 0..2+ | Curl noise amplitude. Bends wavefronts organically per-position. 0.5 = meaningful bending. Crank for turbulent look. |
+| `Curlscale` | `3.0` | 0.1..20+ | Noise period. Bigger = macro swirls, smaller = micro-turbulence. |
+| **Life** | | | |
+| `Lifemin` | `0.8` s | 0.1..20+ | Minimum particle lifetime. |
+| `Lifemax` | `2.0` s | 0.1..20+ | Maximum particle lifetime (drives Particle POP Life Expect + Variance). |
+| **Bounding box (containment via bounds_reflect GLSL POP)** | | | |
+| `Boundsminx/y/z` | `0 / 0 / -0.5` | — | Min corner of the containment box in particle space. |
+| `Boundsmaxx/y/z` | `1 / 1 / +0.5` | — | Max corner. |
+| `Boundsbounce` | `0.4` | 0..1 | Restitution on wall hits. 0 = stop dead, 1 = elastic, 0.4 = water-like. |
+| `Boundsmargin` | `0.0` UV | 0..0.1 | Inset from walls before clamping (stops particles from clipping into walls visually). |
+| **Screen-space feedback smear** | | | |
+| `Feedbackenable` | `On` | toggle | Whole post-render feedback branch enabled. |
+| `Feedbackfade` | `0.92` | 0..0.999 | Per-frame multiply on the feedback texture. Higher = longer ghosts. |
+| `Feedbackzoom` | `1.003` | 0.95..1.05 | Per-frame zoom on the feedback texture for subtle drift. |
+
+### Particle POP parameters (on Particle POP inside your render network, NOT on the velocity_controller COMP)
+
+These aren't installed by `install_velocity_params.py` — you set them
+manually on Particle POP itself:
+
+| Par | Recommended value | Why |
+| --- | --- | --- |
+| Target Particles Update POP | `force_null` | Feedback target — closes the force chain loop. |
+| Create Point Primitives | `On` | Needed for rendering. |
+| Maximum Particles | `~100000` | Budget for 12 sub-emitters × 5 limbs × peak_w × 60fps × 2s life ≈ 43k alive. |
+| Emission from | `Birth Attribute` | Uses per-point `w` instead of a global rate. |
+| Input Birth Attribute | `w` | |
+| Randomize Input Points | `On` | Otherwise particles cycle through input points mechanically. |
+| Life Expect | `parent().par.Lifemax` | |
+| Life Variance (Fraction) | `1 - parent().par.Lifemin / parent().par.Lifemax` | |
+| Initial Velocity | `0 0 0` | Fallback only — real velocity comes from `StartPartvel` attribute. |
+| Initial Mass | `1` | |
+| **Initial Drag** | **`0.2`** | Per-particle drag — gives every particle a baseline friction so they slow as they travel (water feel). Raise toward `0.5` for heavier viscosity. |
+| **Velocity Damping** | **`1.5`** | Per-frame multiplicative velocity reduction. This is **the** water-feel knob. `0` = vacuum (particles coast forever), `1–2` = strong viscous damping (particles decay to rest quickly), `3+` = molasses. Combine with a low `Fieldforce` for the "water" look. |
+| Play | `On` | Drives per-cook integration. No separate "Time Integration" toggle. |
+
+On the **Attributes** page: transfer `v` → `StartPartvel` (not `PartVel`
+— that's reserved).
 
 ## Quick tuning checklist
 
