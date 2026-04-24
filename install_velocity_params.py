@@ -106,6 +106,13 @@ add_float(sensing, 'Burstdecay', 'Burst Decay (s)',
 add_float(sensing, 'Maxjump', 'Max Jump (UV/frame, 0=off)',
           0.30, 0.0, 1.0)
 
+# Settle grace: number of frames after re-acquisition (any dropout ending)
+# during which the Maxjump check is skipped. Lets MediaPipe lock onto the
+# real joint position over the first few trusted frames without our
+# teleport rejection snapping the blob to the re-entry edge. 0 disables.
+add_float(sensing, 'Settleframes', 'Settle Frames (after dropout)',
+          5, 0, 30)
+
 # Downstream single-knob blend (Lag CHOP references this).
 add_float(sensing, 'Blendtime', 'Blend Time (s)',
           0.08, 0.0, 1.0, clamp_max=False)

@@ -36,6 +36,9 @@ STORAGE_KEY = 'velocity_state'
 STORAGE_TIME_KEY = 'velocity_last_t'
 
 
+import math
+
+
 def _find_chan(scriptOp, name):
     for cin in scriptOp.inputs:
         if cin is None:
@@ -46,11 +49,23 @@ def _find_chan(scriptOp, name):
     return None
 
 
+def _finite(v, default):
+    """Coerce v to a finite float, substituting `default` for NaN/Inf.
+    MediaPipe occasionally emits NaN (invisible joints, tracker restart);
+    we reject them at the boundary so nothing NaN ever enters the logic
+    or the Lag CHOP."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    return f if math.isfinite(f) else default
+
+
 def _read(scriptOp, name, default=0.0):
     c = _find_chan(scriptOp, name)
     if c is None:
         return default
-    return float(c[0])
+    return _finite(c[0], default)
 
 
 def _landmark_list(par_value):
@@ -121,6 +136,7 @@ def onCook(scriptOp):
         "accel_scale":     par.Accelscale.eval(),
         "burst_decay":     par.Burstdecay.eval(),
         "max_jump":        par.Maxjump.eval() if hasattr(par, 'Maxjump') else 0.3,
+        "settle_frames":   int(par.Settleframes.eval()) if hasattr(par, 'Settleframes') else 5,
     }
 
     # ---- Build samples dict ---------------------------------------------
@@ -132,15 +148,16 @@ def onCook(scriptOp):
             # Missing position channel -> treat as invisible but still decay.
             samples[lm] = (0.0, 0.0, False, False)
             continue
-        x = float(xch[0])
-        y = float(ych[0])
+        x = _finite(xch[0], 0.0)
+        y = _finite(ych[0], 0.0)
         vch = _find_chan(scriptOp, f'{lm}:visible')
         # :visible is MediaPipe's 0..1 confidence. Two zones:
         #   visible = confidence >= vis_thresh   (output gate)
         #   trusted = confidence >= trust_thresh (commit last_good & velocity)
         # If the channel isn't present, assume fully visible and trusted.
+        # Non-finite confidence -> treat as zero (landmark effectively off).
         if vch is not None:
-            v = float(vch[0])
+            v = _finite(vch[0], 0.0)
             samples[lm] = (x, y, v >= vis_thresh, v >= trust_thresh)
         else:
             samples[lm] = (x, y, True, True)

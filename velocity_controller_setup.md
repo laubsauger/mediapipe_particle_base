@@ -91,11 +91,42 @@ toward garbage during the confidence ramp-down. By the time `:visible`
 goes to 0, position is already at the correct last-good — lag1 sees no
 change in position, and the blob fades in place instead of sliding.
 
-`Maxjump` is a secondary safeguard: even within the trusted zone, any
-single-frame position jump larger than `Maxjump` UV units demotes the
-frame to the marginal zone (output last-good, don't commit). Tune against
-your expected fastest legitimate motion: at 60 fps a very fast whip is
-~0.05 UV/frame, so 0.2–0.3 is a safe ceiling. Set to 0 to disable.
+`Maxjump` is a secondary safeguard: within a *continuous* trusted stream,
+any single-frame position jump larger than `Maxjump` UV units demotes the
+frame to the marginal zone (output last-good, don't commit). The check
+runs against the previous *frame's* position, not the cached last-good,
+so after any dropout / marginal period it's naturally skipped —
+re-acquisition always accepts the new position, even if the joint
+reappears on the opposite side of the frame. (Without that, a joint that
+leaves on the right and returns on the left would get stuck at the old
+right-side cached position forever, because every re-acquisition frame
+exceeds `Maxjump`.) Tune `Maxjump` against your expected fastest
+legitimate motion: at 60 fps a very fast whip is ~0.05 UV/frame, so
+0.2–0.3 is a safe ceiling. Set to 0 to disable.
+
+`Settleframes` (default 5) is a third safeguard layered on top of
+`Maxjump`. For the first N trusted frames after any dropout, the
+`Maxjump` check is suspended. MediaPipe's first trusted frame on
+re-acquisition often lands near the re-entry edge before locking onto the
+real joint position a frame or two later — without the grace, that second
+frame gets rejected as a teleport (it's > `Maxjump` from the edge `prev_x`)
+and the blob would be stuck at the re-entry edge for a cook. During the
+grace window we simply accept whatever MediaPipe sends; normal teleport
+protection resumes once the tracker has had `Settleframes` cooks to lock
+on. If you still see your blob briefly snap from the edge inward after
+reappearance, raise `Trustthreshold` toward 0.85–0.9 — that's MediaPipe's
+own edge-lock noise, which only a higher confidence threshold can filter
+out at the source.
+
+**NaN/Inf resilience.** MediaPipe occasionally emits non-finite position
+or confidence values (first cook of an invisible landmark, tracker
+restart, certain tox builds mid-dropout). The Script CHOP scrubs all
+input channels with `math.isfinite` before the logic sees them, the logic
+scrubs stored state on every cook, and `_emit` guards every outbound
+channel. End result: NaN can never reach the Lag CHOP, and any
+corruption that somehow does land in state heals on the next cook. If
+you previously had to manually reset the Lag CHOP to clear stuck
+accel/burst values, that should no longer happen.
 
 **Tuning hierarchy if you still see a teleport:** raise `Trustthreshold`
 first (0.8–0.9 is common for jittery MediaPipe output); then tighten
@@ -149,7 +180,7 @@ Sensing chain wiring:
 Parent pars installed onto two pages:
 - **Sensing**: `Landmarks`, `Visibilitythreshold`, `Trustthreshold`, `Velocitysmooth`,
   `Accelsmooth`, `Speedscale`, `Accelthreshold`, `Accelscale`, `Burstdecay`,
-  `Maxjump`, `Blendtime`.
+  `Maxjump`, `Settleframes`, `Blendtime`.
 - **Renderer**: `Spawnrate`, `Burstgain`, `Fieldradius`, `Fieldforce`,
   `Fielddecay`, `Curlgain`, `Curlscale`, `Lifemin`, `Lifemax`, `Feedbackenable`,
   `Feedbackfade`, `Feedbackzoom`.

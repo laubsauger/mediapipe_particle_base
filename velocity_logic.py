@@ -46,6 +46,52 @@ module. Same parent-pars-only convention as painting_controller.
 
 import math
 
+
+# ---------------------------------------------------------------------------
+# NaN/Inf scrubbing
+# ---------------------------------------------------------------------------
+# MediaPipe has been observed to emit non-finite values (NaN, ±Inf) on:
+#   - the first cook of an invisible landmark
+#   - mid-dropout confidence jitter
+#   - certain tox builds when the pose worker restarts
+# Once a NaN lands in our stored state, the EMA math preserves it forever
+# (`NaN * (1 - alpha)` is still NaN). The Lag CHOP then latches onto the
+# NaN channel and freezes accel/burst/emit/etc. until it is manually reset.
+# We defend on three layers: at input (Script CHOP _read), at state entry
+# (update scrubs stored state), and at output (_emit clamps returns).
+
+def _finite(v, default=0.0):
+    """Coerce v to a finite float. Non-finite -> default."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(f):
+        return default
+    return f
+
+
+def _scrub_sample(sample):
+    """Mutate one landmark's state dict, replacing any non-finite scalars
+    with safe defaults. last_good_x/y may legitimately be None — leave
+    those alone. Called on every update() cook to heal any corruption that
+    sneaked in on a previous frame."""
+    for k in ("vx", "vy", "prev_vx", "prev_vy", "accel", "burst"):
+        sample[k] = _finite(sample.get(k, 0.0), 0.0)
+    # Position-like fields: None is valid, non-finite numbers are not.
+    for k in ("prev_x", "prev_y", "last_good_x", "last_good_y"):
+        v = sample.get(k, None)
+        if v is None:
+            continue
+        try:
+            f = float(v)
+            if not math.isfinite(f):
+                sample[k] = None
+            else:
+                sample[k] = f
+        except (TypeError, ValueError):
+            sample[k] = None
+
 # ---------------------------------------------------------------------------
 # Default landmark set
 # ---------------------------------------------------------------------------
@@ -89,16 +135,17 @@ def _fresh_landmark_state():
     for the inner-dict schema — `new_state` and `ensure_schema` both use it
     so adding a new field never leaves old sessions in an inconsistent shape."""
     return {
-        "prev_x":      None,  # previous position, None = uninitialised
-        "prev_y":      None,
-        "vx":          0.0,   # smoothed velocity
-        "vy":          0.0,
-        "prev_vx":     0.0,   # previous smoothed velocity (for accel)
-        "prev_vy":     0.0,
-        "accel":       0.0,   # smoothed |a|
-        "burst":       0.0,   # burst envelope (0..1, decays)
-        "last_good_x": None,  # last trusted position, held on dropout
-        "last_good_y": None,
+        "prev_x":         None,  # previous position, None = uninitialised
+        "prev_y":         None,
+        "vx":             0.0,   # smoothed velocity
+        "vy":             0.0,
+        "prev_vx":        0.0,   # previous smoothed velocity (for accel)
+        "prev_vy":        0.0,
+        "accel":          0.0,   # smoothed |a|
+        "burst":          0.0,   # burst envelope (0..1, decays)
+        "last_good_x":    None,  # last trusted position, held on dropout
+        "last_good_y":    None,
+        "settle_counter": 0,     # consecutive trusted frames since last dropout
     }
 
 
@@ -224,15 +271,23 @@ def update_landmark(sample, x, y, visible, trusted, dt, params):
     decay_a = _ema_alpha(dt, params["burst_decay"])
     sample["burst"] *= (1.0 - decay_a)
 
-    # ---- Jump rejection: treat a huge one-frame position jump as untrusted --
-    # even if MediaPipe still flags the landmark trusted. Common when the
-    # joint leaves the frame boundary one cook before confidence has caught up.
+    # ---- Jump rejection: catch a single-frame teleport within a running
+    # trusted stream. Compared against `prev_x/y` (previous frame's position)
+    # NOT `last_good_x/y`, because on re-acquisition we WANT to accept a
+    # faraway new position. Additionally, skip the check entirely for the
+    # first `settle_frames` cooks after a dropout — MediaPipe's first few
+    # trusted frames often land near the re-entry edge before locking onto
+    # the real joint position, and rejecting the second frame as "teleport"
+    # leaves the emitter stuck at the edge for a cook. The settle counter
+    # is reset on every non-trusted frame so any dropout re-arms it.
     jumped = False
+    settling = sample.get("settle_counter", 0) < params.get("settle_frames", 5)
     if (trusted
-            and sample["last_good_x"] is not None
+            and not settling
+            and sample["prev_x"] is not None
             and params.get("max_jump", 0.0) > 0.0):
-        dx = x - sample["last_good_x"]
-        dy = y - sample["last_good_y"]
+        dx = x - sample["prev_x"]
+        dy = y - sample["prev_y"]
         if (dx * dx + dy * dy) > (params["max_jump"] * params["max_jump"]):
             jumped = True
 
@@ -247,6 +302,8 @@ def update_landmark(sample, x, y, visible, trusted, dt, params):
     # ramp-downs. In zone 3 the output `visible` is 0 so downstream gates
     # kill spawning; in zone 2 it's still 1 so emitter stays on, just pinned.
     if not trusted or dt <= 0.0:
+        # Any non-trusted frame re-arms the settle grace period.
+        sample["settle_counter"] = 0
         if not visible:
             # Invisible — decay everything toward 0.
             alpha_v = _ema_alpha(dt, params["velocity_smooth"])
@@ -277,6 +334,9 @@ def update_landmark(sample, x, y, visible, trusted, dt, params):
     # ---- Zone 1: trusted. Commit last_good and run normal velocity math. --
     sample["last_good_x"] = x
     sample["last_good_y"] = y
+    # Count consecutive trusted frames so the settle grace naturally
+    # expires after `settle_frames` frames of stable tracking.
+    sample["settle_counter"] = sample.get("settle_counter", 0) + 1
 
     # ---- Velocity via finite diff + EMA smooth ----------------------------
     if sample["prev_x"] is None:
@@ -329,17 +389,24 @@ def update_landmark(sample, x, y, visible, trusted, dt, params):
 
 
 def _emit(sample, x, y, visible, params):
-    speed = math.sqrt(sample["vx"] * sample["vx"] + sample["vy"] * sample["vy"])
-    emit = _clamp01(speed / max(params["speed_scale"], 1e-6))
+    # Final safety net: even though update()/update_landmark() sanitize
+    # inputs and state, clamp every outbound value to a finite float so
+    # the Script CHOP can never emit NaN into the Lag CHOP.
+    vx    = _finite(sample["vx"], 0.0)
+    vy    = _finite(sample["vy"], 0.0)
+    accel = _finite(sample["accel"], 0.0)
+    burst = _finite(sample["burst"], 0.0)
+    speed = math.sqrt(vx * vx + vy * vy)
+    emit  = _clamp01(speed / max(params["speed_scale"], 1e-6))
     return {
-        "x": x,
-        "y": y,
-        "vx": sample["vx"],
-        "vy": sample["vy"],
-        "speed": speed,
-        "accel": sample["accel"],
-        "emit": emit,
-        "burst": sample["burst"],
+        "x":       _finite(x, 0.0),
+        "y":       _finite(y, 0.0),
+        "vx":      vx,
+        "vy":      vy,
+        "speed":   speed,
+        "accel":   accel,
+        "emit":    emit,
+        "burst":   burst,
         "visible": 1.0 if visible else 0.0,
     }
 
@@ -368,7 +435,12 @@ def update(state, samples, dt, params):
     per_landmark = {}
     total_motion = 0.0
     total_burst = 0.0
+    # Scrub dt once — a non-finite dt would pollute every landmark via
+    # _ema_alpha / velocity division.
+    dt = _finite(dt, 0.0)
     for lm, st in state.items():
+        # Heal any NaN/Inf that sneaked into stored state on a prior frame.
+        _scrub_sample(st)
         if lm in samples:
             s = samples[lm]
             if len(s) == 3:
@@ -376,6 +448,9 @@ def update(state, samples, dt, params):
                 trust = vis
             else:
                 x, y, vis, trust = s
+            # Scrub inputs too — MediaPipe can send NaN for invisible joints.
+            x = _finite(x, 0.0)
+            y = _finite(y, 0.0)
         else:
             # No sample — decay envelopes, emit zeros.
             x, y, vis, trust = 0.0, 0.0, False, False
@@ -385,8 +460,8 @@ def update(state, samples, dt, params):
         total_burst  += out["burst"]
 
     return per_landmark, {
-        "total_motion": total_motion,
-        "total_burst":  total_burst,
+        "total_motion": _finite(total_motion, 0.0),
+        "total_burst":  _finite(total_burst, 0.0),
         "frame_dt":     dt,
     }
 
@@ -404,6 +479,7 @@ def default_params():
         "accel_scale":     40.0,   # 1/s² — full-burst accel above the threshold
         "burst_decay":     0.35,   # s — burst tail length
         "max_jump":        0.30,   # UV units per frame — over this = teleport
+        "settle_frames":   5,      # frames of max_jump-free grace after re-acquisition
     }
 
 
@@ -465,19 +541,29 @@ if __name__ == "__main__":
     assert 0.0 <= o["burst"] <= 1.0
     assert 0.0 <= o["emit"] <= 1.0
 
-    # Teleport test: claim visible=True but throw in a huge jump. Logic
-    # should reject the jump and hold last_good.
-    print("\n--- visible=True but big teleport (should be rejected) ---")
-    print("    expected: out stays at (0.80, 0.50), no burst spike")
-    burst_before = o["burst"]
-    for i in range(5):
-        per, glb = update(state, {"left_wrist": (0.05, 0.95, True)}, dt, params)
-        o = per["left_wrist"]
-        print(f"  f{i}: out=({o['x']:.2f},{o['y']:.2f}) "
-              f"speed={o['speed']:.3f} accel={o['accel']:.3f} "
-              f"burst={o['burst']:.3f}")
-        assert abs(o["x"] - 0.8) < 1e-6, "teleport should be rejected"
-        assert o["burst"] <= burst_before + 1e-6, "teleport should NOT fire a burst"
+    # Intra-continuity teleport test: within a running trusted stream,
+    # inject one frame with a big position jump. Must be rejected as a
+    # single-frame glitch (output stays at last good). Crucial: this is
+    # NOT "after invisibility" — for that case we WANT re-acquisition to
+    # succeed (tested separately below).
+    print("\n--- single-frame teleport inside a trusted stream ---")
+    print("    expected: glitch frame output=last trusted (0.80, 0.50), no burst")
+    state_tele = new_state(("left_wrist",))
+    # Build up trusted continuous tracking at (0.80, 0.50).
+    for _ in range(10):
+        update(state_tele, {"left_wrist": (0.8, 0.5, True, True)}, dt, params)
+    burst_before = state_tele["left_wrist"]["burst"]
+    # Inject one frame of glitch at (0.05, 0.95)
+    per, _ = update(state_tele, {"left_wrist": (0.05, 0.95, True, True)}, dt, params)
+    o = per["left_wrist"]
+    print(f"  glitch frame: out=({o['x']:.2f},{o['y']:.2f}) burst={o['burst']:.3f}")
+    assert abs(o["x"] - 0.8) < 1e-6, "intra-continuity teleport should be rejected"
+    assert o["burst"] <= burst_before + 1e-6, "teleport should NOT fire a burst"
+    # Next frame back at a plausible position — should re-seed and accept.
+    per, _ = update(state_tele, {"left_wrist": (0.81, 0.51, True, True)}, dt, params)
+    o = per["left_wrist"]
+    print(f"  recovery frame: out=({o['x']:.2f},{o['y']:.2f}) (tracking resumed)")
+    assert abs(o["x"] - 0.81) < 1e-6, "stream should recover on next non-glitched frame"
 
     # Hysteresis test: marginal-zone frames with drifting position should
     # NOT update last_good. The blob stays pinned while visibility ramps down.
@@ -506,5 +592,85 @@ if __name__ == "__main__":
     print(f"  invisible: out=({o['x']:.2f},{o['y']:.2f}) visible={o['visible']}")
     assert abs(o["x"] - 0.8) < 1e-6 and o["visible"] == 0.0
 
+    # Re-acquisition test: joint was tracked at (0.8, 0.5), went invisible,
+    # then reappears at (0.2, 0.3) — a big distance from the stale last_good.
+    # Must accept the new position on the first trusted frame, NOT freeze at
+    # last_good forever just because the delta exceeds max_jump.
+    print("\n--- re-acquisition at a faraway position ---")
+    print("    last_good was (0.8, 0.5), joint reappears at (0.2, 0.3)")
+    state3 = new_state(("left_wrist",))
+    # Build up state: tracked at (0.8, 0.5)
+    for _ in range(5):
+        update(state3, {"left_wrist": (0.8, 0.5, True, True)}, dt, params)
+    # Go invisible for a bit
+    for _ in range(10):
+        update(state3, {"left_wrist": (0.0, 1.0, False, False)}, dt, params)
+    # Reappear at a totally different position
+    per, _ = update(state3, {"left_wrist": (0.2, 0.3, True, True)}, dt, params)
+    o = per["left_wrist"]
+    print(f"  first trusted frame after dropout: out=({o['x']:.2f},{o['y']:.2f}) "
+          f"visible={o['visible']}")
+    assert abs(o["x"] - 0.2) < 1e-6, (
+        f"re-acquisition FAILED: output stuck at {o['x']} instead of new pos 0.2")
+    assert abs(o["y"] - 0.3) < 1e-6
+    # Keep tracking at the new position; confirm it follows.
+    for i in range(3):
+        per, _ = update(state3,
+                        {"left_wrist": (0.2 + 0.02 * i, 0.3, True, True)},
+                        dt, params)
+        o = per["left_wrist"]
+        print(f"  follow-up f{i}: out=({o['x']:.2f},{o['y']:.2f})")
+        expected_x = 0.2 + 0.02 * i
+        assert abs(o["x"] - expected_x) < 1e-6, "follow-up not tracking"
+
+    # Settle grace test: after dropout, MediaPipe's first trusted frame lands
+    # near the re-entry edge, then settles to the real joint over the next
+    # few frames. Without the grace period the 2nd trusted frame would be
+    # rejected as a teleport (prev_x was just set to the edge, delta > max_jump)
+    # and the blob would be stuck at the edge for a cook.
+    print("\n--- settle grace after re-acquisition (edge-then-joint) ---")
+    state4 = new_state(("left_wrist",))
+    # Build up tracked state elsewhere, then drop out.
+    for _ in range(5):
+        update(state4, {"left_wrist": (0.5, 0.5, True, True)}, dt, params)
+    for _ in range(15):
+        update(state4, {"left_wrist": (0.0, 1.0, False, False)}, dt, params)
+    # Re-acquisition sequence: frame 0 at edge (0.03, 0.4), next frames at
+    # real joint position (0.35, 0.4). Jump is 0.32, exceeds max_jump=0.3.
+    print("    input: edge (0.03, 0.40) then joint (0.35, 0.40)...")
+    reacq = [(0.03, 0.40), (0.35, 0.40), (0.36, 0.40), (0.37, 0.40), (0.38, 0.40)]
+    for i, (rx, ry) in enumerate(reacq):
+        per, _ = update(state4, {"left_wrist": (rx, ry, True, True)}, dt, params)
+        o = per["left_wrist"]
+        print(f"  f{i}: raw=({rx:.2f},{ry:.2f}) out=({o['x']:.2f},{o['y']:.2f}) "
+              f"settle={state4['left_wrist']['settle_counter']}")
+    # After the settle period we want to be tracking the real joint, NOT
+    # stuck at 0.03 (the edge).
+    assert abs(o["x"] - 0.38) < 1e-6, \
+        f"settle grace failed: still at {o['x']} instead of tracking"
+
+    # NaN/Inf resilience: inject garbage, make sure state doesn't latch.
+    print("\n--- NaN/Inf input resilience ---")
+    state5 = new_state(("left_wrist",))
+    for _ in range(5):
+        update(state5, {"left_wrist": (0.5, 0.5, True, True)}, dt, params)
+    nan = float('nan')
+    inf = float('inf')
+    # Feed NaN/Inf directly through update() — should NOT poison state.
+    per, glb = update(state5, {"left_wrist": (nan, inf, True, True)}, dt, params)
+    o = per["left_wrist"]
+    print(f"  after NaN input: out=({o['x']:.2f},{o['y']:.2f}) "
+          f"speed={o['speed']:.3f} accel={o['accel']:.3f}")
+    for k, v in o.items():
+        assert math.isfinite(float(v)), f"{k} leaked non-finite: {v}"
+    # Follow up with clean frames; pipeline should recover.
+    for _ in range(3):
+        per, _ = update(state5, {"left_wrist": (0.5, 0.5, True, True)}, dt, params)
+    o = per["left_wrist"]
+    for k in ("x", "y", "vx", "vy", "speed", "accel", "emit", "burst"):
+        assert math.isfinite(float(o[k])), f"{k} stayed non-finite after recovery"
+    print(f"  recovered cleanly: vx={o['vx']:.4f} accel={o['accel']:.4f}")
+
     print("\nOK — invisible hold, envelope decay, teleport rejection,")
-    print("     and marginal-zone position freeze all pass.")
+    print("     marginal freeze, re-acquisition, settle grace, and NaN/Inf")
+    print("     resilience all pass.")
