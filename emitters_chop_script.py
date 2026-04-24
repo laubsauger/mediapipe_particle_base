@@ -9,18 +9,20 @@
 # follow the Script CHOP with a stock `CHOP to POP` op named `emitters_pop` —
 # that's what the Source POP takes as input.
 #
-# Why this shape? CHOP to POP recognises the `P[0] P[1] P[2]` bracket
-# convention and rebuilds them as a single vec3 `P` point attribute (same for
-# `v[...]`). Everything else (scalar `w`, int `id`) becomes a plain per-point
-# attribute. One sample per landmark → one point per landmark.
+# TD channel-name note: CHOP channel names can't contain `[` or `]` —
+# TD sanitises those to underscores on the way in, so `appendChan('P[0]')`
+# gets stored as `P_0_` and downstream ops can't match a sensible pattern.
+# We use bare `P0 P1 P2 / v0 v1 v2` instead and wire up explicit attribute
+# rows on the CHOP-to-POP (see velocity_controller_setup.md).
 #
 # Output:
-#   numSamples = N  (one per landmark)
+#   numSamples = N  (one point per landmark)
 #   channels:
-#     P[0], P[1], P[2]   point position (P[2] = 0; we stay in 2D)
-#     v[0], v[1], v[2]   initial velocity (v[2] = 0)
-#     w                  spawn weight = (emit + Burstgain * burst) * visible
-#     id                 landmark index, useful for per-limb coloring
+#     P0, P1, P2    → vec3 `P` attribute on the POP (position, 3D)
+#     v0, v1, v2    → vec3 `v` attribute on the POP (initial velocity, 3D)
+#     w             → float `w` attribute (spawn weight)
+#                     = (emit + Burstgain * burst) * visible
+#     id            → int `id` attribute (landmark index, for per-limb color)
 
 def _landmark_list():
     par = parent().par.Landmarks.eval() if hasattr(parent().par, 'Landmarks') else ''
@@ -73,8 +75,8 @@ def onCook(scriptOp):
     scriptOp.numSamples = n
     scriptOp.rate = me.time.rate
 
-    chan_names = ['P[0]', 'P[1]', 'P[2]',
-                  'v[0]', 'v[1]', 'v[2]',
+    chan_names = ['P0', 'P1', 'P2',
+                  'v0', 'v1', 'v2',
                   'w', 'id']
     chans = {name: scriptOp.appendChan(name) for name in chan_names}
 
@@ -92,15 +94,15 @@ def onCook(scriptOp):
         # 3D position and initial velocity — particles get launched with
         # the limb's current vz as well, so forward/back motion actually
         # flings them in the z direction through the POP Advance.
-        chans['P[0]'][i] = x
-        chans['P[1]'][i] = y
-        chans['P[2]'][i] = z
-        chans['v[0]'][i] = vx
-        chans['v[1]'][i] = vy
-        chans['v[2]'][i] = vz
+        chans['P0'][i] = x
+        chans['P1'][i] = y
+        chans['P2'][i] = z
+        chans['v0'][i] = vx
+        chans['v1'][i] = vy
+        chans['v2'][i] = vz
         # Gate by visibility so dropped limbs don't spawn from their last
         # known position.
-        chans['w'][i]    = (em + burst_gain * bu) * vi
-        chans['id'][i]   = float(i)
+        chans['w'][i]  = (em + burst_gain * bu) * vi
+        chans['id'][i] = float(i)
 
     return

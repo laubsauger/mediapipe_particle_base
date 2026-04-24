@@ -4,7 +4,7 @@ Companion to `painting_controller`, same conventions (parent-pars-only, pure-Pyt
 logic module, Lag CHOP does the smoothing, Select CHOP chooses landmarks upstream).
 **Everything lives inside a single `velocity_controller` Base COMP** — sensing
 chain and rendering chain are siblings inside the same COMP so every GLSL uniform,
-Source POP rate, Feedback TOP fade, etc. can read its parameter locally as
+emitter spawn rates, Feedback TOP fade, etc. can read their parameters locally as
 `parent().par.*` with no custom COMP pointers. Targets TD **2025.30960+**.
 
 ## TL;DR of what this ships
@@ -179,9 +179,9 @@ flowchart LR
     script1[script1<br/>Script CHOP<br/>velocity_logic]
     lag1[lag1<br/>Lag CHOP<br/>Blendtime smooth]
     out1([out1<br/>external consumers])
-    emitters_tex[[emitters_tex<br/>Script TOP<br/>N×2 RGBA32F]]
+    emitters_tex[[emitters_tex<br/>Script TOP<br/>N×2 RGBA32F<br/>→ velocity_field shader]]
     emitters_chop[[emitters_chop<br/>Script CHOP<br/>N samples]]
-    emitters_pop[emitters_pop<br/>CHOP to POP<br/>N points]
+    emitters_pop[emitters_pop<br/>CHOP to POP<br/>N points P/v/w/id<br/>→ Particle POP input]
 
     in1 --> select1 --> script1 --> lag1 --> out1
     lag1 -. reads by name .-> emitters_tex
@@ -306,7 +306,8 @@ Script CHOP has always been reliable) and hand off to a native CHOP-to-POP
 converter for the final conversion. Script CHOP reshapes `lag1`'s
 1-sample-many-channels output into an N-sample-few-channels shape with
 attribute-style channel names; CHOP-to-POP then reads those channels into
-the vec3 / scalar point attributes the Source POP needs.
+the vec3 / scalar point attributes the downstream emission POP needs as
+its emitter input.
 
 **`emitters_chop` — Script CHOP:**
 
@@ -316,12 +317,14 @@ the vec3 / scalar point attributes the Source POP needs.
   inside the callback.
 
 Output CHOP has N samples and these channels (per landmark, one sample
-each):
+each). **Note:** TD doesn't allow `[` or `]` in channel names (it silently
+replaces them with `_`), so we use bare numbered suffixes and wire up
+vec3 grouping explicitly on the CHOP-to-POP.
 
 | Channel | Meaning |
 | --- | --- |
-| `P[0]`, `P[1]`, `P[2]` | Point position (z = 0) |
-| `v[0]`, `v[1]`, `v[2]` | Initial velocity handed to new particles (z = 0) |
+| `P0`, `P1`, `P2` | Point position (x, y, z) |
+| `v0`, `v1`, `v2` | Initial velocity handed to new particles (3D) |
 | `w` | Spawn weight = `(emit + Burstgain * burst) * visible` |
 | `id` | Landmark index, for per-limb color |
 
@@ -330,25 +333,61 @@ samples, each tracking the matching landmark's live position/velocity.
 
 **`emitters_pop` — CHOP to POP:**
 
-- Create a **CHOP to POP** op named `emitters_pop`.
-- Its CHOP input: `emitters_chop`.
-- Default conversion rules are what we want:
-    - Channels named `P[0]`, `P[1]`, `P[2]` coalesce into a vec3 `P`
-      point attribute (the built-in position).
-    - Channels named `v[0]`, `v[1]`, `v[2]` coalesce into a vec3 `v`
-      attribute.
-    - Scalars `w` and `id` become per-point float attributes.
-- If your CHOP-to-POP exposes a "Promote to Position" toggle or
-  "Channel-to-Attribute" override, leave them default — the bracket naming
-  is the de facto convention and TD auto-detects it.
+- Create a **CHOP to POP** op named `emitters_pop`, plug `emitters_chop`
+  into its CHOP input.
+- Configure the parameters page (this is the part that needs to be
+  explicit — CHOP-to-POP doesn't auto-group our channels without help):
 
-That's it. The Source POP downstream takes `emitters_pop` as its input
-points exactly as before — none of the Source POP / Feedback POP / Force
-POP / etc. settings change.
+    - **Connectivity**: `Points`. (Default is "Line Strip" which draws
+      lines between consecutive samples — that's where the lines you see
+      running through the emitter points are coming from. We want
+      isolated points.)
+    - **Specify Position**: `Off`. (Leaving it on generates extra points
+      along a line; we want points directly from the CHOP samples.)
+    - **Channels Selection**: `Specify Channels` (or whatever mode lets
+      you define attribute rows).
+    - **Channel Scope**: `*` (consider all channels from the CHOP).
+
+- Add **four attribute rows** under the "New Attribute" section (use
+  the `+` button to add rows):
+
+    | Row | Attribute Name | Type / Size | Channel Scope | Default Value |
+    | --- | --- | --- | --- | --- |
+    | 0 | `P` | float, size 3 (vec3) | `P0 P1 P2` | `0 0 0` |
+    | 1 | `v` | float, size 3 (vec3) | `v0 v1 v2` | `0 0 0` |
+    | 2 | `w` | float, size 1 | `w` | `0` |
+    | 3 | `id` | int, size 1 | `id` | `0` |
+
+  Row 0's attribute name `P` is special — TD recognises it as the
+  built-in point position, so the POP viewport will place points at the
+  landmark coordinates. Rows 1–3 become per-point custom attributes.
+
+  The **Default Value** is only used if the Channel Scope fails to match
+  any channel. With our config it never falls back, but TD requires the
+  field to be set. All zeros here is a safe failure mode — if something
+  ever misfires, the worst you get is a dead emitter at origin, not a
+  runaway spawn at a weird position. (Ignore the `0.5 0.5 0.5 1` or
+  `v[0]` placeholders TD pre-fills when you first add a row — those are
+  suggestions, type the real values over them.)
+
+- Verify via right-click ▸ Info on `emitters_pop`: you should see one
+  point per landmark with `P` (vec3), `v` (vec3), `w` (float), `id`
+  (int) attributes. No warnings.
+
+That's it. `emitters_pop` is now a 5-point POP with `P`, `v`, `w`, `id`
+attributes — a stable, well-formed emitter feed for whatever spawn/respawn
+POP op you hook up next. The downstream sim reads `P` as spawn position,
+`v` as initial velocity, and `w` to choose which emitter fires on each
+respawn event.
 
 ### 4. POP spawn + advect chain
 
-All POPs, all inside `velocity_controller`:
+All POPs, all inside `velocity_controller`. The real TD 2025 Particle POP
+architecture is hub-based: **Particle POP itself handles spawn, lifetime,
+and integration** — no separate source/advance/feedback ops needed. Forces
+live in a feedback chain that adds to the `PartForce` attribute, which
+Particle POP's Time Integration converts to `PartVel → P` internally each
+frame.
 
 ```mermaid
 flowchart LR
@@ -362,73 +401,260 @@ flowchart LR
     emitters_chop[[emitters_chop<br/>Script CHOP<br/>N samples]]
     emitters_pop[emitters_pop<br/>CHOP to POP<br/>N points]
 
-    source_pop[source_pop<br/>Source POP]
-    feedback_pop[feedback_pop<br/>Feedback POP]
-    force_pop[force_pop<br/>Force POP<br/>sample field_out at P]
-    noise_pop[noise_pop<br/>Noise POP<br/>curl drift]
-    advance_pop[advance_pop<br/>integrate v → P]
-    limit_pop[limit_pop<br/>Limit POP]
-    render_pop([render_pop<br/>Render POP<br/>→ raster TOP])
+    particle_pop[particle_pop<br/>Particle POP<br/>input: emitters_pop<br/>Target Update POP: force_null]
+    lookup_pop[field_sample<br/>Lookup Texture POP<br/>writes fieldforce]
+    noise_pop[curl_noise<br/>Noise POP<br/>writes curlforce]
+    math_mix[add_to_force<br/>Math/Mix POP<br/>Partforce = fieldforce + curlforce]
+    bounds_field[bounds_field<br/>Field POP<br/>Weight = 1 inside box]
+    force_null[force_null<br/>Null POP<br/>= feedback target]
+
+    render_null[render_null<br/>Null POP<br/>side-tee for rendering]
+    particle_geo["particle_geo<br/>Geometry COMP<br/>instanced from render_null<br/>Translate ← P, Color ← id"]
+    render_top([render_top<br/>Render TOP<br/>→ raster particle visual])
 
     emitters_tex --> velocity_field --> field_mix --> field_out
     field_out -. 1-frame delay .-> field_fb --> field_decay --> field_mix
-    field_out --> force_pop
+    field_out -. TOP param .-> lookup_pop
 
-    emitters_chop --> emitters_pop --> source_pop --> feedback_pop
-    feedback_pop --> force_pop --> noise_pop --> advance_pop
-    advance_pop -. iterate .-> feedback_pop
-    advance_pop --> limit_pop --> render_pop
+    emitters_chop --> emitters_pop --> particle_pop
+    particle_pop --> lookup_pop --> noise_pop --> math_mix --> bounds_field --> force_null
+    force_null -. Target Particles Update POP ref .-> particle_pop
+    particle_pop --> render_null --> particle_geo --> render_top
 ```
 
-Two inputs into the sim: the **point stream** (`emitters_pop` → `source_pop`)
-seeds new particles at the right places, and the **force field**
-(`emitters_tex` → `velocity_field` → `force_pop`) pushes existing particles
-around once they're alive.
+Two feeds into the sim: the **emitter point stream**
+(`emitters_pop` → Particle POP's input) provides birth positions and the
+`w` birth-rate attribute; the **force field** (`emitters_tex` →
+`velocity_field` → sampled by Lookup Texture POP's TOP parameter) gets
+baked into `Partforce` via the force chain that Particle POP reads back
+through its `Target Particles Update POP` reference.
 
-Per-node setup:
+**Crucial wiring point:** every op in the force chain (Lookup Texture POP,
+Math/Mix POP, Noise POP, …) takes the *particle stream* as its POP input.
+Lookup Texture POP needs both a POP input (the particles, providing `P`
+for sampling) AND the TOP reference (the field to sample) — assigning only
+the TOP throws "not enough sources". Wire the previous op's output into
+POP input 0 on every force-chain node.
 
-- **`source_pop`** (Source POP)
-    - Spawn From: `Input Points`
-    - Rate Mode: `Per-Second (Weighted)`
-    - Weight Attribute: `w`
-    - Total Rate: `parent().par.Spawnrate`
-    - Initial Velocity: `From Input Attribute`, attribute `v`
-    - Life Min/Max: `parent().par.Lifemin` / `parent().par.Lifemax`
+**The Null POP at the end closes the loop.** The force chain doesn't
+terminate at Render POP — it terminates at a Null POP that's referenced
+in Particle POP's `Target Particles Update POP` parameter. That's how
+per-cook `Partforce` accumulations actually get consumed by the next
+integration. Skip this (leave `Target Particles Update POP` empty) and
+particles emit but never react to any force in the chain. Render POP is
+a side branch off Particle POP's direct output.
 
-- **`force_pop`** (Force POP) — inside the feedback loop
-    - Field Source: `From TOP`
-    - TOP: `field_out` (the Null TOP at the end of the persistence chain, NOT
-      the raw `velocity_field` — you want the persistent field the Level TOP
-      is fading)
-    - Sample Mode: `At Position` (uses `P.xy` as UV)
-    - Gain: `1.0`
+### Node-by-node setup
 
-- **`noise_pop`** (Noise POP) — inside the feedback loop
-    - Mode: `Curl`
-    - Gain: `parent().par.Curlgain`
-    - Period: `parent().par.Curlscale`
+- **`particle_pop`** — [Particle POP](https://derivative.ca/UserGuide/Particle_POP)
+    - **Input (emitters):** `emitters_pop`. (Particle POP has a single
+      POP input for the birth source; the force feedback comes back in
+      via the `Target Particles Update POP` parameter below, not a
+      second cable.)
+    - **Target Particles Update POP** *(on the Particles page)*: set to
+      the Null POP at the end of the force chain (`force_null` in the
+      diagram). This is how the feedback loop closes — that Null POP's
+      output is what Particle POP reads back as "the current particle
+      state with all `Partforce` contributions summed" on the next cook.
+      **If this is empty, particles emit but don't react to any force
+      chain** — they just fall through Time Integration with no forces
+      applied beyond your Initial Velocity.
+    - **Emission from**: `Birth Attribute`. **Input Birth Attribute**:
+      `w`. Each input point then emits `int(w)` particles per frame, so
+      a silent frame with all `w=0` spawns nothing; a whip with `w≈6`
+      on one limb spawns ~6 particles from that limb per frame.
+    - **Randomize Input Points**: `On`. Without this, successive births
+      cycle through the input points deterministically, which reads as
+      mechanical.
+    - **Attributes** page: transfer `v` → **`StartPartvel`** so newborn
+      particles inherit the spawning limb's current velocity (fast-moving
+      limbs throw particles with initial momentum, not from rest).
+      `P` is transferred automatically (it's the built-in position).
 
-- **`advance_pop`** (Advance POP) — inside the feedback loop
-    - Integrates velocity into `P` each frame. Default settings are fine.
+      *Gotcha:* don't rename it to `PartVel` — that's a reserved
+      attribute name Particle POP uses for the current-velocity state
+      it updates every cook. TD will warn and auto-rename to
+      `StartPartvel` anyway. The `Start*` prefix is the convention for
+      "seed value at birth"; use it directly to avoid the warning.
+      See *"Reserved attribute names"* below.
 
-- **`feedback_pop`** (Feedback POP)
-    - Target: `advance_pop` (the output of the loop body)
-    - This is what makes the chain iterative across frames.
+    - **Initial Velocity** *(on the Particles page)*: `0 0 0`. This is
+      the fallback when a particle is born without a `StartPartvel`
+      attribute — since we always provide `StartPartvel` via the
+      Attributes transfer, the fallback never fires. A nonzero value
+      here would add to every particle's starting velocity uniformly,
+      which isn't what you want.
+    - **Life Expect**: `parent().par.Lifemax`.
+      **Life Variance (Fraction)**: `1 - parent().par.Lifemin / parent().par.Lifemax`.
+      With those two, effective life range ≈ `[Lifemin, Lifemax]`.
+    - **Maximum Particles**: `10000` default is fine (headroom for
+      ~5 emitters × ~6 peak `w` × 60 fps × 3 s life ≈ 5400 alive).
+    - **Play**: `On`. This is what drives the per-cook integration
+      (`Partforce → Partvel → P`). There's no separate "Time
+      Integration" toggle in the UI — Play On is the equivalent. Use
+      Play Off to pause the sim.
 
-- **`limit_pop`** (Limit POP)
-    - Kill particles whose `P.x` or `P.y` fall outside `[0, 1]`.
+#### Reserved attribute names on Particle POP
 
-- **`render_pop`** (Render POP)
-    - Style: `Point` (or `Sprite` for softer blobs).
-    - Size: 2–4 px (scale up if the scene feels sparse).
-    - Color: gradient on age, or bind `id` attribute to a LUT for per-limb
-      color signatures.
+Particle POP owns these names internally — they're the per-cook sim
+state and get overwritten every frame by Time Integration. Don't write
+directly to them; use the `Start*` prefix for seed values at birth:
 
-> **Why `noise_pop` *and* `force_pop`?** Force POP sampled from the velocity
-> field gives directed motion from limb movement. Noise POP (curl mode) gives
-> particles somewhere to drift when the performer is still — otherwise the
-> visual freezes on every pause. Default curl gain is low (0.15) so limbs
-> dominate when someone's actually moving.
+| Reserved (internal state) | Seed equivalent (user-provided at birth) |
+| --- | --- |
+| `Partvel` — current velocity | `StartPartvel` — initial velocity |
+| `Partmass` — current mass | `StartPartmass` — initial mass |
+| `Partage` — current age | (not seeded; always starts at 0) |
+| `Partforce` — per-cook force accumulator | (not seeded; resets each cook) |
+| `Partdeath` — death flag | (not seeded; usually set via kill ops) |
+
+If you accidentally transfer an input attribute to a reserved name, TD
+prepends `Start` automatically and emits a warning. The renamed
+attribute works correctly for seeding, but the cleaner move is to set
+the target name explicitly. Custom attributes with no reserved collision
+(`w`, `id`, your own `fieldforce`, etc.) pass through untouched.
+
+- **`field_sample`** — [Lookup Texture POP](https://docs.derivative.ca/Lookup_Texture_POP)
+    - **Attribute Class**: `Point`
+    - **TOP**: `field_out` (the Null TOP at the end of the persistence
+      chain — *not* the raw `velocity_field`).
+    - **Lookup Index Attribute U / V**: `P(0)` / `P(1)`. W empty.
+    - **Lookup Index Units**: `Normalized` (our P is in 0..1, matches).
+    - **Input Extend Mode**: `Zero` on all axes (particles outside the
+      field get no force rather than wrapping).
+    - **Interpolate**: `On` (bilinear).
+    - **Channel Mask**: R, G, B on; A off (we want RGB → vec3, alpha is
+      debug-only from the shader).
+    - **Output Attribute Scope**: `fieldforce`, size 3, float.
+    - The "Attribute already exists and will be overwritten" warning is
+      expected — feedback loop means `fieldforce` persists from last
+      cook. Harmless.
+
+- **`curl_noise`** — [Noise POP](https://derivative.ca/UserGuide/Experimental:Noise_POP), curl output
+    - **Noise page:**
+        - **Noise Lookup Attribute**: `P` (each particle samples noise
+          at its own position, so the drift has spatial coherence)
+        - **Type**: `Simplex 4D (GPU)`
+        - **Noise Size**: `3` (vec3 field, needed for 3D curl)
+        - **Period**: `parent().par.Curlscale`
+        - **Amplitude**: `parent().par.Curlgain`
+        - **Harmonics / Spread / Gain**: `2 / 2 / 0.7` defaults are
+          fine; bump Harmonics to 4 for more chaotic turbulence
+        - **Positive Only**: `Off` (curl needs both directions)
+        - **Attribute Class**: `Point`
+    - **Output page:**
+        - Enable **Curl** (or "Curl 3D" depending on label)
+        - Name the output attribute **`curlforce`** (not the default
+          `NoiseCurl` — keeps the downstream Math/Mix expression cleaner)
+
+- **`add_to_force`** — Math/Mix POP (or Math POP)
+    - Sums `fieldforce + curlforce → Partforce`. That's where both
+      contributions finally land on the reserved `Partforce` attribute
+      that Particle POP's integration consumes.
+    - Operation: `Add`. Inputs: `fieldforce`, `curlforce`. Output: `Partforce`.
+    - Put this AFTER both the Lookup Texture POP and the Noise POP
+      (chain order: `particle_pop → field_sample → curl_noise → add_to_force → bounds_field (opt) → force_null`).
+
+- **`bounds_field`** — [Field POP](https://derivative.ca/UserGuide/Field_POP) for bounding-box death
+    - **Shape**: `Box`
+    - **Translate**: `0.5 0.5 0.0` (center of the MediaPipe (0..1, 0..1)
+      plane, z=0 for the hip-center reference)
+    - **Scale**: `1.0 1.0 1.0` (1×1×1 box — x/y cover the full 0..1
+      range, z covers −0.5 to +0.5 which is the typical MediaPipe z
+      extent; tighten or loosen depending on how much depth you want
+      to allow particles to drift into/out of)
+    - **Invert**: `Off` — Weight=1 inside the box, 0 outside, which is
+      what we want for the "inside = alive" semantic.
+    - The op outputs a `Weight` attribute per particle.
+    - **Kill-outside pattern:** follow `bounds_field` with a small
+      Math/Mix POP (or Attribute POP) that sets
+      `Partdeath = max(Partdeath, 1 - Weight)`. Particles outside the
+      box get `Weight=0` → `1 - Weight = 1` → marked dying, Particle POP
+      removes them on the next integration cook.
+    - **Soft-mask pattern (alternative):** if you don't want to kill
+      out-of-bounds particles but just let them drift freely without
+      force, multiply `Partforce` by `Weight` instead. Particles outside
+      the box get zero force and coast with residual velocity, but
+      aren't removed.
+    - Skip this node entirely if your `Lifemax` already short enough
+      that off-screen particles age out before becoming visible noise.
+
+- **Optional: per-emitter `Force Radial POP`** — if you want each limb
+  to *also* push particles radially away from it (in addition to the
+  velocity-field advection), chain in a
+  [Force Radial POP](https://derivative.ca/UserGuide/Force_Radial_POP).
+  Axial mode along the limb's velocity vector gives a directional push
+  on top of the field sampling. Not needed for the basic effect — the
+  Lookup Texture POP path already captures all directional motion via
+  the shader's kernel — but it adds a stronger "shove" feel near each
+  limb if you want more impact.
+
+- **`force_null`** — Null POP, end of force chain
+    - Nothing to configure — it's just a passthrough. Its job is to be
+      the op `particle_pop`'s `Target Particles Update POP` points at.
+
+### Rendering — Geometry COMP instancing
+
+There's no Render POP. TD renders POPs by using a [Geometry COMP with
+instancing](https://docs.derivative.ca/Geometry_COMP) — one instance of
+a small piece of geometry per particle, position/scale/color driven by
+POP attributes. A Render TOP then rasters the instanced scene.
+
+**Setup:**
+
+1. **`particle_geo`** — Geometry COMP inside `velocity_controller`.
+2. Inside `particle_geo`, drop a minimal per-instance shape:
+    - `Rectangle SOP` for flat sprite quads (cheapest, textures well), or
+    - `Circle SOP` for round billboards, or
+    - `Sphere SOP` (low resolution) for volumetric dots.
+
+   Wire it to an `Out SOP` so the COMP has renderable content.
+3. On `particle_geo`'s **Instance page**:
+    - **Instancing**: `On`
+    - **Instance OP**: point at your final particle POP — usually a
+      `render_null` teed off `particle_pop`'s direct output (*not* the
+      force-chain `force_null`, which is for feedback only).
+    - **Translate X**: `P` attribute, component 0
+    - **Translate Y**: `P` attribute, component 1
+    - **Translate Z**: `P` attribute, component 2
+    - **Scale X / Y / Z**: either a small constant (e.g. `0.01`) for
+      uniform particle size, or bind to a per-particle `Partage` or
+      custom `size` attribute for age-driven shrink.
+    - **Color R / G / B**: bind to `id` via a Lookup Texture TOP for
+      per-limb palette, or to `Partage` for an age gradient.
+4. **`particle_cam`** — Camera COMP with orthographic projection so
+   MediaPipe's normalized (0..1) UV space maps straight to screen.
+   - **Projection**: `Orthographic`
+   - **Orthographic Width**: `1.0`, centered so the view covers (0,0)
+     to (1,1). (Or place camera at z = some offset looking at z=0.)
+5. **`render_top`** — Render TOP.
+   - **Geometry**: `particle_geo`
+   - **Camera**: `particle_cam`
+   - **Resolution**: target display size, e.g. `1920×1080`.
+
+`render_top`'s output is then what feeds into the screen-space smear
+chain (Composite + Feedback TOP) to produce `out_render`.
+
+**Per-instance attribute mapping cheat-sheet:**
+
+| Instance slot | POP attribute | Purpose |
+| --- | --- | --- |
+| Translate X / Y / Z | `P(0)` / `P(1)` / `P(2)` | 3D particle position |
+| Scale X / Y / Z | `Partage` or custom `size` | Age-driven shrink = life tail |
+| Rotate | derive from `Partvel` if you want motion-aligned sprites | optional |
+| Color | `id` via lookup TOP, or `Partage` gradient | per-limb palette |
+
+**Quick sanity check before full instancing:** you can also wire any
+POP directly into a Render TOP's `POPs` list — that renders each point
+as a single pixel (no instanced geometry). Fast "are particles alive
+and moving?" verification before setting up the instancing plumbing.
+
+> **Why the Lookup Texture POP *and* the Noise POP?** The Lookup Texture POP
+> applies directed motion from the limb velocity field (particles near a
+> moving limb inherit direction from that limb). The Noise POP in curl mode
+> gives particles somewhere to drift when the performer is still — otherwise
+> the visual freezes on every pause. Default `Curlgain` is low (0.15) so
+> limbs dominate when someone's actually moving.
 
 ### 5. Screen-space feedback smear
 
@@ -500,12 +726,14 @@ default `Fieldradius`; only worth aspect-correcting if you see it as a flaw.
 5. **Screen is a solid white after a few seconds.** `Feedbackfade` too high —
    pull it down toward 0.88.
 6. **Particles spawn in the corner, not at the limbs.** The `P` attribute
-   on `emitters_pop` is stuck at origin. Drop a Trail CHOP on `emitters_chop`
-   first — you should see `P[0]`, `P[1]` tracking live. If those look right
-   but the POP is still at origin, the issue is in the CHOP-to-POP: check
-   that it's actually recognising the `P[n]` naming (some builds need
-   "Channel Scope" set to `*` or "Name Match" mode enabled to pick up
-   bracketed channels).
+   on `emitters_pop` is stuck at origin. Drop a Trail CHOP on
+   `emitters_chop` first — you should see `P0`, `P1`, `P2` tracking live.
+   If those look right but the POP is still at origin, the CHOP-to-POP's
+   attribute row for `P` isn't picking up the channels — double-check
+   that row has `Channel Scope = P0 P1 P2` and `Attribute Type = float
+   size 3`. TD's automatic name detection doesn't work here (bracket
+   naming isn't allowed in channel names), so the rows have to be set
+   manually.
 7. **`emitters_tex` is all zero.** Open its Viewer — pixels 0..4 on row 0
    should have non-zero R/G. If the Script TOP is erroring, check its
    textport: most likely `op('lag1')` returned None because the sensing chain
