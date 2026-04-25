@@ -216,14 +216,27 @@ class Game:
                 else:
                     break   # notes sorted by time; no later ones spawn yet
 
-        # 5. Advance active note positions. Notes travel from z_spawn → 0
-        #    over beatmap.travel_time. Past t = note.time, z continues
-        #    negative until the miss window elapses and we clean them up.
+        # 5. Advance active note positions.
+        #
+        #   note.z = z_spawn * (1 - progress)
+        #
+        # With z_spawn = -10 and progress in [0, 1], z animates from -10
+        # (spawn, far down the tunnel) to 0 (hit plane). Past progress=1
+        # the formula naturally extends z past 0 toward positive — i.e.
+        # the note continues flying TOWARD the camera at z=+3 and
+        # eventually past it. We keep advancing the z for *missed*
+        # notes too, so they visually fly past the player instead of
+        # freezing on the slash plane (which felt like they were
+        # waiting there). Hit notes stop updating — they vanish
+        # instantly on contact (notes_chop filters them out).
         travel = self.beatmap.travel_time if self.beatmap is not None else 2.0
         for note in self.active_notes.values():
-            if note.state in ("hit", "missed"):
+            if note.state == "hit":
+                # Don't move hit notes — they're about to be cleaned
+                # up. notes_chop won't render them anyway.
                 continue
-            # Fraction of travel from spawn_time to hit_time.
+            # Includes spawned + missed notes. Missed notes keep flying
+            # past the hit plane until cleanup removes them.
             progress = (t - note.spawn_time) / max(travel, 1e-6)
             note.z = note.z_spawn * (1.0 - progress)
 
@@ -282,15 +295,28 @@ class Game:
                 self.score.register_miss()
                 self.events.misses.append(note.id)
 
-        # 8. Cleanup: drop hit/missed notes older than a cleanup window so
-        #    the active dict stays bounded. Keep them briefly so VFX can
-        #    still see them this frame.
-        cleanup_age = 0.3  # seconds after hit/miss before forgetting
+        # 8. Cleanup: drop notes when they're done.
+        #
+        # HIT notes: dropped on the next cook (cleanup_age=0). They
+        # disappear instantly from the rendered scene the moment the
+        # saber slashes through them.
+        #
+        # MISSED notes: kept around long enough to fly past the camera.
+        # With z_spawn=-10 and travel_time=2s, a note's z continues at
+        # the same linear rate after progress=1: z(t) = z_spawn * (1 -
+        # (t - spawn_time) / travel_time). At progress=1.5 (0.5s after
+        # hit time) z = +5; at progress=1.6 (0.6s after) z = +6, so it
+        # passes the camera at z=+3 around progress=1.3 (i.e. ~0.6s
+        # past the hit window). We give 0.8s past the hit time before
+        # cleanup so the note is comfortably past the camera before
+        # disappearing.
+        hit_cleanup_age  = 0.0   # disappear immediately on hit
+        miss_cleanup_age = 0.8   # fly past the camera (z=+3) and beyond
         to_drop = []
         for note_id, note in self.active_notes.items():
-            if note.state == "hit" and t - note.hit_time > cleanup_age:
+            if note.state == "hit" and t - note.hit_time >= hit_cleanup_age:
                 to_drop.append(note_id)
-            elif note.state == "missed" and t - note.time > cleanup_age + miss_window:
+            elif note.state == "missed" and t - note.time > miss_cleanup_age:
                 to_drop.append(note_id)
         for note_id in to_drop:
             del self.active_notes[note_id]

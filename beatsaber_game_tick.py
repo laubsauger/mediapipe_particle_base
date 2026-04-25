@@ -120,9 +120,19 @@ def _read(scriptOp, name, default=0.0):
 # Game construction / beatmap hot-reload
 # ---------------------------------------------------------------------------
 
+STORAGE_KEY_BEATMAP_MTIME = 'beatsaber_beatmap_mtime'
+
+
 def _get_or_build_game(comp):
     """Fetch the singleton Game from COMP storage, building it lazily.
-    Rebuilds if the Beatmapfile par changed."""
+    Rebuilds when:
+      - the Beatmapfile par's path changes, OR
+      - the file's modification time has changed since we last loaded it.
+
+    The mtime check is what makes 'edit JSON, save, see effect on next
+    cook' work without forcing the user to unstore the cached Game by
+    hand. Without it, an in-place edit to the JSON is invisible because
+    the cached Game still holds the pre-edit Beatmap object."""
     if _bs_game is None or _bs_beatmap is None:
         return None
 
@@ -133,8 +143,19 @@ def _get_or_build_game(comp):
 
     game = comp.fetch(STORAGE_KEY_GAME, None)
     cached_path = comp.fetch(STORAGE_KEY_BEATMAP, None)
+    cached_mtime = comp.fetch(STORAGE_KEY_BEATMAP_MTIME, None)
 
-    if game is None or cached_path != beatmap_abs:
+    # Stat the file. If it's missing the load below will fail loudly.
+    try:
+        current_mtime = os.path.getmtime(beatmap_abs)
+    except OSError:
+        current_mtime = None
+
+    needs_rebuild = (game is None
+                     or cached_path != beatmap_abs
+                     or (current_mtime is not None
+                         and cached_mtime != current_mtime))
+    if needs_rebuild:
         # First run, or beatmap changed — build fresh.
         try:
             bm = _bs_beatmap.Beatmap.from_json_file(beatmap_abs)
@@ -157,6 +178,7 @@ def _get_or_build_game(comp):
             game.start()
         comp.store(STORAGE_KEY_GAME, game)
         comp.store(STORAGE_KEY_BEATMAP, beatmap_abs)
+        comp.store(STORAGE_KEY_BEATMAP_MTIME, current_mtime)
     return game
 
 

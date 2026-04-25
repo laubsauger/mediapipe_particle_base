@@ -429,11 +429,31 @@ timeline state.
 
 ## Parameters rundown
 
-Only one custom par on `beatsaber_renderer` itself:
+Custom pars on `beatsaber_renderer`:
 
 | Par | Page | Default | Role |
 | --- | --- | --- | --- |
 | `Controller` | Renderer | `../beatsaber_controller` | COMP pointer used by the Script ops to resolve the controller's `game_tick` CHOP and `notes_chop`. |
+| `Worldscale` | Renderer | `2.5` | Uniform scale applied to both `sabers_geo` and `notes_geo` (Sx & Sy, pivoted at world `(0.5, 0.5, 0)`). The MediaPipe-UV (0..1) world is small relative to the camera's visible region (FOV 50° at distance 3 sees a ~5×2.8 unit window), so the sabres' 1×1 reach would only cover ~20% of screen width without scaling. 2.5× brings reach to ~50% of width and ~90% of height; 3.0 ≈ full width. The scale also enlarges sabre and note GEOMETRY proportionally, which is what you want — bigger reach AND bigger visible sabres. Game logic still operates in unscaled (0..1) coords, so collision detection, beatmap files, and scoring are unaffected. |
+
+### Adjusting hand reach manually (for existing renderers built before Worldscale)
+
+If your renderer was bootstrapped before `Worldscale` was added, the
+parameter won't exist. Two ways to add reach:
+
+**Quick fix (no par, just direct values)**: open each Geometry COMP's
+**Xform** tab and set:
+
+- `sabers_geo.par.sx = 2.5`, `sy = 2.5`, `sz = 1`, `px = 0.5`, `py = 0.5`, `pz = 0`
+- `notes_geo.par.sx = 2.5`, `sy = 2.5`, `sz = 1`, `px = 0.5`, `py = 0.5`, `pz = 0`
+
+**Full upgrade (re-add the Worldscale par)**: re-run
+`bootstrap_beatsaber_renderer.py`. It's idempotent — your existing ops
+are reused, and the `Worldscale` par + the Sx/Sy expression bindings
+are added.
+
+In either case, both Geometry COMPs MUST share the same scale and pivot
+so sabres and notes line up consistently in screen space.
 
 If you want the renderer to work with a non-sibling controller (e.g.,
 testing two simultaneous games on different COMPs), point `Controller`

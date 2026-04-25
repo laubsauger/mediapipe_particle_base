@@ -619,15 +619,21 @@ def update(state, samples, dt, params):
 
 def default_params():
     return {
-        # Sabre geometry — hilt + blade. Defaults sum to 0.25 UV (about
-        # a quarter of the frame), with a short hilt segment so the blade
-        # visibly emerges from a closed fist.
-        "hilt_length":   0.04,
-        "blade_length":  0.21,
+        # Sabre geometry — hilt + blade. Defaults sum to ~0.65 UV which
+        # at the default camera distance (cam at z=+3, sabre at z=0,
+        # fov=50°) renders the blade at roughly 22% of frame width —
+        # visually substantial without dominating. Hilt is a short
+        # stub so the blade appears to emerge from a closed fist.
+        "hilt_length":   0.08,
+        "blade_length":  0.55,
         "hilt_plane_z":  0.0,
         # Forearm fallback tilt — saber points slightly into the tunnel
-        # when only the elbow→wrist signal is available.
-        "z_extrusion":   0.3,
+        # when only the elbow→wrist signal is available. Kept small
+        # (0.1) so a long blade doesn't pull its tip far enough into
+        # -z to miss notes at z=0. With blade_length=0.55 and this
+        # extrusion, the tip's z-offset is only ~0.055, well within
+        # the default note's ±0.075 z extent.
+        "z_extrusion":   0.1,
         # Orientation fusion + smoothing.
         "hand_weight":   1.0,    # 1 = trust hand basis fully when present;
                                  # 0 = ignore hand, use forearm only.

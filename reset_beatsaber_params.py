@@ -56,11 +56,13 @@ SENSING = {
 # Saber page
 # ---------------------------------------------------------------------------
 SABER = {
-    # Geometry — hilt + blade. The two sum to ~0.25 UV by default
-    # (about a quarter of the frame width), with a short hilt segment
-    # so the blade visibly emerges from a closed fist.
-    'Hiltlength':   0.04,
-    'Bladelength':  0.21,
+    # Geometry — hilt + blade. The two sum to ~0.63 UV by default
+    # (about two-thirds of the frame width in world units, which at the
+    # default camera distance renders ~22% of the screen width), with
+    # a short hilt segment so the blade visibly emerges from a closed
+    # fist.
+    'Hiltlength':   0.08,
+    'Bladelength':  0.55,
     # Hand basis dominance vs forearm fallback. 1.0 = trust the
     # hand-knuckle basis fully when present, 0.0 = ignore the hand and
     # always use the forearm.
@@ -70,7 +72,11 @@ SABER = {
     # smoother at the cost of perceptible roll lag on fast twists.
     'Orientsmooth': 0.03,
     # Forearm fallback -Z tilt (ignored when the hand basis is active).
-    'Zextrusion':   0.3,
+    # Kept small so a long blade's tip stays close to the hit plane
+    # (z=0) where notes live; a larger tilt with the default blade
+    # length would push the tip past the note's z-extent and notes
+    # would never register hits.
+    'Zextrusion':   0.1,
     # Z of the hilt base in game world. 0 = on the hit plane.
     'Hiltplanez':   0.0,
     # Legacy par from the previous geometry model. The runtime no

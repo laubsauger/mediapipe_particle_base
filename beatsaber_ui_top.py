@@ -1,11 +1,13 @@
 # beatsaber_ui_top.py
 # ===================
 # Script TOP callback — renders the UI overlay (score, combo, multiplier,
-# accuracy, event flashes) as an RGBA image. Composites over the main
-# render downstream.
+# accuracy, event flashes, scrolling event log) as an RGBA image.
+# Composites over the main render downstream.
 #
 # Uses PIL (comes bundled with TD's Python). If PIL is missing for any
-# reason, the callback degrades gracefully to an empty transparent TOP.
+# reason, the callback degrades to a magenta-tinted "PIL MISSING" buffer
+# instead of being silently transparent — so you can SEE that the
+# callback is firing but PIL needs installing.
 #
 # Paste into a Text DAT called `beatsaber_ui_top` inside the
 # beatsaber_renderer COMP, and attach as the Callbacks DAT of a
@@ -14,14 +16,36 @@
 # Reads from a parent par `Controller` → pointer to beatsaber_controller
 # COMP, same as beatsaber_saber_sop.py. Or falls back to the relative
 # path ../beatsaber_controller/game_tick.
+#
+# Debugging "nothing renders":
+#   - Look at the textport on first cook for a one-time startup print
+#     showing PIL availability + target resolution.
+#   - Right-click the Script TOP ▸ Open Viewer. The image we draw will
+#     show up there even if the downstream Composite TOP isn't wired.
+#   - If you see a magenta "PIL MISSING" tint, install PIL via TD's
+#     Python: pip install Pillow --break-system-packages (or whatever
+#     your TD install uses).
+#   - If the viewer is solid black, the Script TOP's pixel format may
+#     not accept our float32 buffer. Set the Script TOP's "Pixel
+#     Format" to RGBA32Float on the Common page.
+#   - If the viewer is the wrong size, set Resolution → "Custom
+#     Resolution" with width/height of your choice (we draw at whatever
+#     scriptOp.width / scriptOp.height are).
 
 import numpy as np
 
 try:
     from PIL import Image, ImageDraw, ImageFont
     _HAVE_PIL = True
-except Exception:
+except Exception as _pil_err:
     _HAVE_PIL = False
+    _pil_err_msg = str(_pil_err)
+else:
+    _pil_err_msg = ''
+
+# One-time startup announcement to the textport so the user can
+# confirm the callback is wired and see what PIL/numpy state we're in.
+_STARTUP_LOGGED = False
 
 
 # ---------------------------------------------------------------------------
@@ -69,10 +93,20 @@ EVENTLOG_RIGHT_COLOR  = (110, 160, 255, 230)  # blue saber
 EVENTLOG_STORAGE_KEY  = 'beatsaber_eventlog'
 EVENTLOG_RESET_KEY    = 'beatsaber_eventlog_prev_time'
 
-# Event flash tints — full-screen single-frame colour blasts.
-FLASH_HIT      = (0, 255, 120, 100)     # green (kept subtle so it doesn't block gameplay view)
-FLASH_BAD      = (255, 80, 80, 140)     # red (more prominent — it's feedback you need to see)
-FLASH_MISS     = (255, 255, 255, 60)    # dim white flash
+# Event flash tints — full-screen colour blasts that fade over
+# FLASH_FADE_S seconds. Tuple is (R, G, B, A_at_peak); the rendered
+# alpha is A_at_peak * (1 - age/FLASH_FADE_S), so the flash is full
+# strength on the cook the event fires and ramps to 0 over 0.3s.
+FLASH_HIT      = (0, 255, 120, 110)     # green (kept subtle so it doesn't block gameplay view)
+FLASH_BAD      = (255, 80, 80, 150)     # red (more prominent — it's feedback you need to see)
+FLASH_MISS     = (255, 255, 255, 70)    # dim white flash
+FLASH_FADE_S   = 0.30                   # seconds for a flash to fade to fully transparent
+
+# Persistent per-event-kind timestamps so each flash fades independently
+# (a hit followed by a miss within 300 ms shows BOTH fades layered).
+FLASH_KEY_HIT_T  = 'beatsaber_flash_hit_t'
+FLASH_KEY_BAD_T  = 'beatsaber_flash_bad_t'
+FLASH_KEY_MISS_T = 'beatsaber_flash_miss_t'
 
 
 def _controller_comp():
@@ -210,13 +244,67 @@ def onSetupParameters(scriptOp):
     return
 
 
+def _emit_buffer(scriptOp, buf):
+    """copyNumpyArray with friendly diagnostics on failure."""
+    try:
+        scriptOp.copyNumpyArray(buf)
+    except Exception as e:
+        # The most common cause is the TOP's pixel format not matching
+        # the buffer dtype. Log once so the user can see what to do.
+        try:
+            debug(f"beatsaber_ui_top: copyNumpyArray failed ({e}). "
+                  f"Set the Script TOP's pixel format to RGBA32Float "
+                  f"on the Common page.")
+        except Exception:
+            pass
+
+
 def onCook(scriptOp):
-    W = DEFAULT_W
-    H = DEFAULT_H
+    global _STARTUP_LOGGED
+
+    # Use the Script TOP's actual configured resolution so we draw at
+    # whatever the user set. Falls back to 1920x1080 if width/height
+    # haven't been set (Resolution = "Custom" not enabled, etc).
+    W = int(getattr(scriptOp, 'width', 0))  or DEFAULT_W
+    H = int(getattr(scriptOp, 'height', 0)) or DEFAULT_H
+
+    # Layout was authored at 1920x1080 — scale every pixel position by
+    # the target resolution so the same script works at 1280x720,
+    # 3840x2160, etc.
+    sx = W / float(DEFAULT_W)
+    sy = H / float(DEFAULT_H)
+
+    if not _STARTUP_LOGGED:
+        _STARTUP_LOGGED = True
+        try:
+            debug(f"beatsaber_ui_top: cooking. PIL={_HAVE_PIL} "
+                  f"(error: {_pil_err_msg!r}); resolution={W}x{H}; "
+                  f"controller={_controller_comp().path if _controller_comp() else 'NONE'}")
+        except Exception:
+            pass
 
     if not _HAVE_PIL:
-        # Fall back to a transparent buffer so rendering doesn't explode.
-        scriptOp.copyNumpyArray(np.zeros((H, W, 4), dtype=np.float32))
+        # Transparent buffer (no visible tint — keeps the rendered
+        # scene clean). PIL absence is reported via the textport
+        # warning above plus a periodic re-warning below.
+        global _PIL_WARN_COUNT
+        try:
+            _PIL_WARN_COUNT
+        except NameError:
+            _PIL_WARN_COUNT = 0
+        # Re-warn every 600 cooks (~10s at 60 fps) so the user
+        # eventually notices in the textport that PIL needs installing.
+        if (_PIL_WARN_COUNT % 600) == 0:
+            try:
+                debug(f"beatsaber_ui_top: PIL is not importable — UI overlay disabled. "
+                      f"Install Pillow into TD's Python: "
+                      f"`pip install Pillow --break-system-packages` "
+                      f"(in the Python that TD uses; check Edit ▸ Preferences ▸ Python). "
+                      f"Underlying import error: {_pil_err_msg!r}")
+            except Exception:
+                pass
+        _PIL_WARN_COUNT += 1
+        _emit_buffer(scriptOp, np.zeros((H, W, 4), dtype=np.float32))
         return
 
     tick = _controller_tick_op()
@@ -262,46 +350,86 @@ def onCook(scriptOp):
     draw = ImageDraw.Draw(img)
 
     # --- Event flashes (drawn first, underneath text) ------------------------
-    # Each is a full-screen tinted rect with an alpha proportional to the flag.
-    # Since hit_this_frame is boolean per-cook (1 or 0), this is binary — tap
-    # a Lag TOP downstream if you want the flash to fade over multiple frames.
-    if miss_flash > 0.5:
-        draw.rectangle([0, 0, W, H], fill=FLASH_MISS)
-    if bad_flash > 0.5:
-        draw.rectangle([0, 0, W, H], fill=FLASH_BAD)
+    # Per-kind timestamps with a 0.3 s linear fade from full alpha to 0.
+    # Each kind's last-event time is held in renderer-COMP storage so
+    # the fade survives across cooks. A hit followed quickly by a miss
+    # shows both fading independently and additively (Composite TOP
+    # 'over' downstream handles layering with the scene).
+    last_hit_t  = me_comp.fetch(FLASH_KEY_HIT_T,  -1.0)
+    last_bad_t  = me_comp.fetch(FLASH_KEY_BAD_T,  -1.0)
+    last_miss_t = me_comp.fetch(FLASH_KEY_MISS_T, -1.0)
     if hit_flash > 0.5:
-        draw.rectangle([0, 0, W, H], fill=FLASH_HIT)
+        last_hit_t = song_time
+        me_comp.store(FLASH_KEY_HIT_T, last_hit_t)
+    if bad_flash > 0.5:
+        last_bad_t = song_time
+        me_comp.store(FLASH_KEY_BAD_T, last_bad_t)
+    if miss_flash > 0.5:
+        last_miss_t = song_time
+        me_comp.store(FLASH_KEY_MISS_T, last_miss_t)
+
+    def _draw_fading_flash(last_t, base_color):
+        """Draw a full-screen tinted rect whose alpha ramps from
+        base_color[3] at t=last_t down to 0 over FLASH_FADE_S seconds."""
+        if last_t < 0:
+            return
+        age = song_time - last_t
+        if age < 0 or age >= FLASH_FADE_S:
+            return
+        fade = 1.0 - (age / FLASH_FADE_S)
+        a = int(base_color[3] * fade)
+        if a <= 0:
+            return
+        draw.rectangle([0, 0, W, H],
+                       fill=(base_color[0], base_color[1], base_color[2], a))
+
+    # Misses first (dimmest), then bad cuts, then hits — so a hit
+    # within the same cook visibly stacks on top of any older miss
+    # tint. PIL alpha-blends each rectangle additively.
+    _draw_fading_flash(last_miss_t, FLASH_MISS)
+    _draw_fading_flash(last_bad_t,  FLASH_BAD)
+    _draw_fading_flash(last_hit_t,  FLASH_HIT)
+
+    # Helper that scales (x, y) tuples authored at the 1920x1080 reference.
+    def _xy(p):
+        return (int(p[0] * sx), int(p[1] * sy))
+
+    def _font_scaled(base):
+        return _font(max(8, int(base * min(sx, sy))))
 
     # --- Score readout (top-right) ------------------------------------------
     score_str = f"{score:,}"
-    score_font = _font(SCORE_SIZE)
+    score_font = _font_scaled(SCORE_SIZE)
     bbox = draw.textbbox((0, 0), score_str, font=score_font)
     w_score = bbox[2] - bbox[0]
-    draw.text((SCORE_ANCHOR[0] - w_score, SCORE_ANCHOR[1]),
+    sx_anchor, sy_anchor = _xy(SCORE_ANCHOR)
+    draw.text((sx_anchor - w_score, sy_anchor),
               score_str, font=score_font, fill=SCORE_COLOR)
 
     # --- Combo + multiplier --------------------------------------------------
-    combo_str = f"{combo}  ×{mult}"
-    combo_font = _font(COMBO_SIZE)
+    combo_str = f"{combo}  x{mult}"  # plain ASCII × so PIL default font draws it
+    combo_font = _font_scaled(COMBO_SIZE)
     bbox = draw.textbbox((0, 0), combo_str, font=combo_font)
     w_combo = bbox[2] - bbox[0]
-    draw.text((COMBO_ANCHOR[0] - w_combo, COMBO_ANCHOR[1]),
+    cx_anchor, cy_anchor = _xy(COMBO_ANCHOR)
+    draw.text((cx_anchor - w_combo, cy_anchor),
               combo_str, font=combo_font, fill=COMBO_COLOR)
 
     # --- Accuracy ------------------------------------------------------------
     acc_str = f"{accuracy * 100:.1f}%"
-    acc_font = _font(ACC_SIZE)
+    acc_font = _font_scaled(ACC_SIZE)
     bbox = draw.textbbox((0, 0), acc_str, font=acc_font)
     w_acc = bbox[2] - bbox[0]
-    draw.text((ACC_ANCHOR[0] - w_acc, ACC_ANCHOR[1]),
+    ax_anchor, ay_anchor = _xy(ACC_ANCHOR)
+    draw.text((ax_anchor - w_acc, ay_anchor),
               acc_str, font=acc_font, fill=ACC_COLOR)
 
     # --- Song time (top-left) ------------------------------------------------
     minutes = int(song_time // 60)
     seconds = song_time - minutes * 60
     time_str = f"{minutes:02d}:{seconds:05.2f}"
-    time_font = _font(TIME_SIZE)
-    draw.text(TIME_ANCHOR, time_str, font=time_font, fill=TIME_COLOR)
+    time_font = _font_scaled(TIME_SIZE)
+    draw.text(_xy(TIME_ANCHOR), time_str, font=time_font, fill=TIME_COLOR)
 
     # --- Event log (left side, scrolling, no background) --------------------
     # Render the most recent EVENTLOG_MAX_ROWS rows top-down. No filled
@@ -309,19 +437,22 @@ def onCook(scriptOp):
     # game render stays visible behind it. Newest entry at the top of
     # the visible window so the eye lands on the most recent event first.
     if eventlog:
-        log_font = _font(EVENTLOG_FONT_SIZE)
+        log_font = _font_scaled(EVENTLOG_FONT_SIZE)
+        log_x = int(EVENTLOG_X * sx)
+        log_y0 = int(EVENTLOG_Y_TOP * sy)
+        log_dy = int(EVENTLOG_ROW_HEIGHT * sy)
         visible = list(reversed(eventlog[-EVENTLOG_MAX_ROWS:]))
         for i, entry in enumerate(visible):
             body, color = _format_row(entry)
-            y = EVENTLOG_Y_TOP + i * EVENTLOG_ROW_HEIGHT
+            y = log_y0 + i * log_dy
             # Older entries fade slightly so the most recent stands out.
             age_fade = 1.0 - (i / max(1, len(visible))) * 0.55
             faded_color = (color[0], color[1], color[2],
                            int(color[3] * age_fade))
-            draw.text((EVENTLOG_X, y), body, font=log_font, fill=faded_color)
+            draw.text((log_x, y), body, font=log_font, fill=faded_color)
 
     # --- Convert PIL RGBA → numpy float32 expected by Script TOP -------------
     # PIL is row-major top-down; TD TOPs are row-major bottom-up, so flip.
     buf = np.asarray(img, dtype=np.uint8)[::-1, :, :].astype(np.float32) / 255.0
-    scriptOp.copyNumpyArray(buf)
+    _emit_buffer(scriptOp, buf)
     return

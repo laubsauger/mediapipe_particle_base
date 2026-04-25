@@ -148,10 +148,36 @@ def build():
         comp.nodeX = vc.nodeX + 250
         comp.nodeY = vc.nodeY - 300
 
-    # 2. Custom par — `Controller` pointer ------------------------------------
+    # 2. Custom pars — `Controller` pointer + `Worldscale` ------------------
     controller_default = '../beatsaber_controller' if bsc is not None else ''
     _add_comp_par(comp, 'Renderer', 'Controller', 'Controller COMP',
                   controller_default)
+
+    # `Worldscale` — uniform scale on sabers_geo + notes_geo so the
+    # MediaPipe-UV (0..1) world fills more of the rendered viewport.
+    # The default camera (z=+3, FOV=50°) sees a ~5×2.8 world region
+    # at the hit plane; the sabres' 1×1 reach would only cover ~20%
+    # of screen width without this scaling. 2.5× brings reach to
+    # ~50% of width and ~90% of height, with the user able to tune
+    # higher for more reach (3.0 ≈ full width).
+    def _add_float_par(page_name, par_name, label, default,
+                       lo=0.5, hi=4.0):
+        page = None
+        for p in comp.customPages:
+            if p.name == page_name:
+                page = p; break
+        if page is None:
+            page = comp.appendCustomPage(page_name)
+        if hasattr(comp.par, par_name):
+            return getattr(comp.par, par_name)
+        pg = page.appendFloat(par_name, label=label)
+        p = pg[0]
+        p.default = default; p.val = default
+        p.normMin = lo; p.normMax = hi
+        return p
+
+    _add_float_par('Renderer', 'Worldscale',
+                   'World Scale (sabers + notes)', 2.5)
 
     # 3. Synced Text DATs -----------------------------------------------------
     saber_dat = _sync_text_dat(comp, 'beatsaber_saber_sop',
@@ -178,6 +204,32 @@ def build():
     sabers_geo.nodeX = 0
     sabers_geo.nodeY = 0
     sabers_geo.par.render = True
+
+    # Wire Sx/Sy to the renderer COMP's Worldscale par via expression so
+    # tuning Worldscale rescales sabres and notes together. Pivot at
+    # (0.5, 0.5, 0) so the centre of the (0..1) MediaPipe-UV cube stays
+    # screen-centered when scaled.
+    def _bind_worldscale(geo):
+        for axis in ('sx', 'sy'):
+            try:
+                p = getattr(geo.par, axis)
+                p.expr = "parent().par.Worldscale"
+                p.mode = ParMode.EXPRESSION
+            except Exception:
+                # Fallback: set the value directly with the current
+                # Worldscale so we at least scale once. The user can
+                # bind to expression manually later.
+                try:
+                    setattr(geo.par, axis, 2.5)
+                except Exception:
+                    pass
+        for axis, val in (('sz', 1.0), ('px', 0.5), ('py', 0.5), ('pz', 0.0)):
+            try:
+                setattr(geo.par, axis, val)
+            except Exception:
+                pass
+
+    _bind_worldscale(sabers_geo)
 
     # Build the inner SOP chain. The In SOP is the external entry point;
     # we don't connect sabers_sop → In SOP from here (that wiring lives
@@ -297,7 +349,12 @@ def build():
     notes_geo.nodeX = 0
     notes_geo.nodeY = -200
     notes_geo.par.render = True
-    # Per-instance configuration is build-specific; see setup guide.
+    _bind_worldscale(notes_geo)
+    # Per-instance configuration (Instance OP, Translate XYZ attribs,
+    # Color attribs, etc.) is build-specific; see the renderer setup
+    # guide. The Worldscale pivot+scale we just applied affects the
+    # COMP's overall transform, which composes with each instance's
+    # Translate to give the right on-screen position.
 
     # 7. Camera — dedicated game camera, TD-native orientation ---------------
     # Coordinate convention (see beatsaber/saber_logic.py):

@@ -88,16 +88,16 @@ add_float(sensing, 'Visibilitythreshold', 'Visibility Threshold (gate)',
 saber = _page('Saber')
 
 # Hilt segment length — short stub from the wrist to where the blade
-# emerges. Visually, the hilt is what's "in the fist". 0.04 UV ≈ 4% of
+# emerges. Visually, the hilt is what's "in the fist". 0.08 UV ≈ 8% of
 # the frame width is roughly a closed-fist's worth of offset.
 add_float(saber, 'Hiltlength', 'Hilt Length (UV)',
-          0.04, 0.0, 0.2, clamp_max=False)
+          0.08, 0.0, 0.3, clamp_max=False)
 
-# Blade segment length — the bright glowing part. 0.21 UV with the
-# default 0.04 hilt sums to 0.25 UV total, matching the legacy
-# Saberlength default.
+# Blade segment length — the bright glowing part. 0.55 UV with the
+# default 0.08 hilt sums to 0.63 UV total — visually substantial
+# at the default camera distance.
 add_float(saber, 'Bladelength', 'Blade Length (UV)',
-          0.21, 0.05, 0.8, clamp_max=False)
+          0.55, 0.1, 1.5, clamp_max=False)
 
 # Hand-vs-forearm orientation blend. 1.0 = trust the hand-knuckle basis
 # fully when the hand tracker provides data; 0.0 = ignore the hand,
@@ -115,12 +115,15 @@ add_float(saber, 'Orientsmooth', 'Orientation Smooth (s)',
 
 # Z-extrusion: how much the saber tilts into +z (toward approaching notes).
 # 0 = saber flat in the hit plane, 1 = saber pointing straight into the lane.
-# 0.3 gives a natural forward reach without losing the arm-aligned feel.
+# 0.1 keeps the blade close to z=0 so notes (which sit on the hit plane
+# at z=0 with a small ±0.075 thickness) actually intersect the blade
+# during a swing; a larger value with the default blade length would
+# leave the tip too far into the tunnel and notes would miss.
 # Only used by the FOREARM FALLBACK basis — when the hand tracker is
 # providing landmarks the forward axis comes from wrist→middle_MCP and
 # this par doesn't contribute.
 add_float(saber, 'Zextrusion', 'Z Extrusion (forearm fallback only)',
-          0.3, 0.0, 1.0)
+          0.1, 0.0, 1.0)
 
 # Which z the saber hilt sits at. 0 = hit plane (notes arrive here).
 # Negative = hilt in front of hit plane, positive = behind.

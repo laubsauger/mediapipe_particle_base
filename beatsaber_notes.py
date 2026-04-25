@@ -78,7 +78,11 @@ def onCook(scriptOp):
         scriptOp.numSamples = 0
         return
 
-    active = snapshot.get('active_notes', [])
+    # Filter out HIT notes — they should disappear instantly when the
+    # saber slashes through them. Missed notes stay in the renderable
+    # set so they continue flying past the camera.
+    active = [n for n in snapshot.get('active_notes', [])
+              if n.state != 'hit']
     n = len(active)
     if n == 0:
         scriptOp.numSamples = 0

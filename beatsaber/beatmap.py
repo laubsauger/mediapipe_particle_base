@@ -23,12 +23,21 @@ Beatmap file format (JSON):
         "title": "test",
         "bpm": 120,
         "travel_time": 2.0,
-        "z_spawn": 10.0,
+        "z_spawn": -10.0,
         "notes": [
             {"time": 2.0, "x": 0.3, "y": 0.5, "color": "red", "cut": "down"},
             ...
         ]
     }
+
+NOTE on z_spawn sign: it MUST be NEGATIVE under the project's coordinate
+convention (camera at +Z looking down -Z; tunnel lies in -Z; hit plane
+at z=0). With z_spawn = -10, notes spawn 10 units down the tunnel and
+travel toward the camera at z=+3. With z_spawn = +10 (the legacy bug),
+notes spawn behind the camera and travel toward the player by passing
+through them — they appear to fly *away* from the camera once they
+become visible. See CLAUDE.md "Coordinate conventions / Game render
+space" for the full convention.
 
 `travel_time` determines how long a note is visible before it should be
 hit — i.e., spawn_time = time - travel_time. Notes are sorted by time
@@ -129,8 +138,22 @@ class Beatmap:
     def from_dict(cls, d):
         travel_time = float(d.get("travel_time", 2.0))
         z_spawn = float(d.get("z_spawn", -10.0))
+        # z_spawn must be negative under the camera-at-+Z convention.
+        # Auto-correct positive values with a noisy warning so legacy
+        # beatmaps generated when the docs had the wrong sign keep
+        # working, while new ones get nudged toward the right
+        # convention. (See CLAUDE.md → "Game render space".)
+        if z_spawn > 0:
+            print(f"[beatmap] WARNING: z_spawn={z_spawn} is positive; "
+                  f"flipping sign to {-z_spawn} to match the project's "
+                  f"camera-at-+Z convention. Update the JSON to silence "
+                  f"this warning.")
+            z_spawn = -z_spawn
         notes = []
         for raw in d.get("notes", []):
+            note_z = float(raw.get("z_spawn", z_spawn))
+            if note_z > 0:
+                note_z = -note_z   # same auto-correct, per-note level
             notes.append(Note(
                 id=0,                      # will be reassigned in constructor
                 time=raw["time"],
@@ -138,7 +161,7 @@ class Beatmap:
                 y=raw["y"],
                 color=raw["color"],
                 cut=raw.get("cut", "any"),
-                z_spawn=float(raw.get("z_spawn", z_spawn)),
+                z_spawn=note_z,
                 size=float(raw.get("size", 0.15)),
             ))
         return cls(
@@ -206,7 +229,11 @@ def make_test_beatmap():
         title="test map — development",
         bpm=120.0,
         travel_time=2.0,
-        z_spawn=10.0,
+        # Negative — tunnel is at -Z under the camera-at-+Z convention.
+        # The notes' z animates from z_spawn toward 0 (the hit plane).
+        # A POSITIVE value here would put the spawn point *behind* the
+        # camera and notes would visually fly past + away from the player.
+        z_spawn=-10.0,
     )
 
 
