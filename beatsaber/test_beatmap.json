@@ -1,0 +1,26 @@
+{
+    "title": "dev_test_map",
+    "bpm": 120,
+    "travel_time": 2.0,
+    "z_spawn": -10.0,
+    "notes": [
+        {"time":  2.0, "x": 0.30, "y": 0.50, "color": "red",  "cut": "down"},
+        {"time":  3.0, "x": 0.70, "y": 0.50, "color": "blue", "cut": "down"},
+        {"time":  4.0, "x": 0.30, "y": 0.50, "color": "red",  "cut": "down"},
+        {"time":  5.0, "x": 0.70, "y": 0.50, "color": "blue", "cut": "down"},
+
+        {"time":  6.5, "x": 0.20, "y": 0.45, "color": "red",  "cut": "right"},
+        {"time":  7.0, "x": 0.80, "y": 0.45, "color": "blue", "cut": "left"},
+
+        {"time":  8.5, "x": 0.35, "y": 0.35, "color": "red",  "cut": "down_right"},
+        {"time":  9.0, "x": 0.65, "y": 0.35, "color": "blue", "cut": "down_left"},
+
+        {"time": 10.5, "x": 0.30, "y": 0.70, "color": "red",  "cut": "up"},
+        {"time": 11.5, "x": 0.70, "y": 0.25, "color": "blue", "cut": "down"},
+
+        {"time": 13.0, "x": 0.30, "y": 0.50, "color": "red",  "cut": "down"},
+        {"time": 13.4, "x": 0.50, "y": 0.40, "color": "blue", "cut": "down"},
+        {"time": 13.8, "x": 0.70, "y": 0.50, "color": "red",  "cut": "down_left"},
+        {"time": 14.2, "x": 0.50, "y": 0.60, "color": "blue", "cut": "up_right"}
+    ]
+}

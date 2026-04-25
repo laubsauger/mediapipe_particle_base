@@ -133,6 +133,11 @@ def onCook(scriptOp):
     # 1 = square region, default 0.3 = visibly elongated streak.
     spawn_perp_ratio  = float(_par('Spawnperpratio',     0.3))
     spawn_vel_scale   = float(_par('Spawnvelscale',      0.15))
+    # Zforceweight applies to BOTH the flowfield texture's vz (damps z
+    # force) AND the newborn StartPartvel.z (damps z launch velocity).
+    # Single knob so pure horizontal motion never produces z-axis
+    # particle motion regardless of MediaPipe's depth-estimate noise.
+    z_force_weight    = float(_par('Zforceweight',       0.05))
     # Angular fan: edge sub-emitters (perpendicular side of the region)
     # get an outward kick on their StartPartvel. 0 = parallel, higher =
     # fanned cone. Scaled by limb speed so at rest there's no fan.
@@ -154,6 +159,18 @@ def onCook(scriptOp):
     import math
 
     n_scatter = len(_SCATTER)
+
+    # Centering the scatter: uniform random with a fixed seed has nonzero
+    # empirical mean for small Spawncount (e.g., Spawncount=12 with seed
+    # 424242 gives mean ≈ (+0.066, -0.028) = ~7% of the scatter range).
+    # That creates a consistent directional bias on both position and
+    # fan velocity — every spawn gets offset the same way, every cook.
+    # Subtract the mean of the actually-used subset so the distribution
+    # is guaranteed zero-mean regardless of Spawncount.
+    _used = _SCATTER[:spawn_count] if spawn_count <= n_scatter else _SCATTER
+    _mean_along = sum(p[0] for p in _used) / len(_used)
+    _mean_perp  = sum(p[1] for p in _used) / len(_used)
+
     idx = 0
     for lm_i, lm in enumerate(lms):
         x  = _read(src, f'{lm}:x')
@@ -191,16 +208,23 @@ def onCook(scriptOp):
         half_perp  = max(spawn_spread_min,
                          spawn_spread_max * spawn_perp_ratio * speed_factor)
 
-        # Base velocity (limb direction, scaled down by Spawnvelscale)
+        # Base velocity (limb direction, scaled down by Spawnvelscale).
+        # z gets the additional Zforceweight multiplier because MediaPipe's
+        # monocular depth estimate is noisy even during pure xy motion —
+        # without this, newborn particles would inherit spurious z velocity
+        # and drift forward/back on purely horizontal gestures.
         base_svx = vx * spawn_vel_scale
         base_svy = vy * spawn_vel_scale
-        svz      = vz * spawn_vel_scale
+        svz      = vz * spawn_vel_scale * z_force_weight
 
         for k in range(spawn_count):
             # Stable pseudo-random scatter position within a unit square
             # (both in [-0.5, 0.5]). Same k always maps to the same
             # (rel_along, rel_perp) — no cook-to-cook jitter.
-            rel_along, rel_perp = _SCATTER[k % n_scatter]
+            # Subtract empirical mean so the used subset has zero mean.
+            raw_along, raw_perp = _SCATTER[k % n_scatter]
+            rel_along = raw_along - _mean_along
+            rel_perp  = raw_perp  - _mean_perp
 
             # Scale to actual extents along each local axis.
             local_along = rel_along * 2.0 * half_along

@@ -1,4 +1,4 @@
-"""
+﻿"""
 velocity_logic.py
 =================
 
@@ -104,9 +104,8 @@ def _scrub_sample(sample):
 LANDMARKS = (
     "left_wrist",
     "right_wrist",
-    "left_ankle",
-    "right_ankle",
-    "nose",
+    "left_elbow",
+    "right_elbow"
 )
 
 # ---------------------------------------------------------------------------

@@ -61,24 +61,24 @@ RENDERER = {
     'Spawnspreadref':  0.8,    # speed at which full size is reached
     'Spawnspreadmin':  0.02,   # rest size (lump extent in both axes)
     'Spawnperpratio':  0.3,    # perp/along aspect at speed (streak shape)
-    'Spawnvelscale':   0.15,   # gentle initial launch
+    'Spawnvelscale':   0.04,   # near-zero initial launch
     'Spawnvelfan':     0.5,    # visible cone
     # Flow field
     'Fieldradius':     0.05,   # tight splat
-    'Fieldforce':      0.4,    # gentle push ("water" feel)
+    'Fieldforce':      0.05,   # near-zero force — Velocity Damping must be 2+ on Particle POP or particles still fling
     'Fielddecay':      0.30,   # short persistence
     # Z (depth) scaling
     'Zgain':           0.2,    # subtle depth-to-size
-    'Zforceweight':    0.3,    # dampens MediaPipe depth noise in the field
+    'Zforceweight':    0.05,   # nearly zero z-force so depth jitter doesn't fling forward/back
     # Velocity-stretched kernel
     'Velstretch':      0.8,
     'Stretchspeedref': 2.0,
     # Curl noise (idle drift + organic bending)
-    'Curlgain':        0.5,
-    'Curlscale':       3.0,
+    'Curlgain':        0.2,
+    'Curlscale':       0.5,    # < particle extent so curl directions vary across cloud
     # Life
-    'Lifemin':         0.8,
-    'Lifemax':         2.0,
+    'Lifemin':         0.6,
+    'Lifemax':         1.5,
     # Bounding box for containment (particle space, MediaPipe coords)
     'Boundsminx':      0.0,
     'Boundsminy':      0.0,

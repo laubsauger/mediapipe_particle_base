@@ -190,7 +190,7 @@ add_float(render, 'Spawnperpratio', 'Spawn Perp/Along Ratio',
 # produce a "wavefront that lingers" look; higher values make limbs
 # fling particles further in the motion direction.
 add_float(render, 'Spawnvelscale', 'Spawn Velocity Scale',
-          0.15, 0.0, 1.5, clamp_max=False)
+          0.04, 0.0, 1.5, clamp_max=False)
 
 # Angular fan on StartPartvel — tilts the edge sub-emitters' initial
 # velocity outward along the perpendicular direction so the wavefront
@@ -210,12 +210,16 @@ add_float(render, 'Spawnvelfan', 'Spawn Velocity Fan (0=parallel, 1=cone)',
 # plenty of reach without dominating the scene.
 add_float(render, 'Fieldradius', 'Field Splat Radius',
           0.05, 0.01, 0.5)
-# Multiplier on emitted (vx,vy,vz) when writing into the field (tune this
-# for "how hard do limbs push particles"). 0.4 default = gentle push
-# ("water" feel where particles drift rather than fly); raise to 1.5+ for
-# big throws ("vacuum" feel), drop toward 0.2 for barely-there drift.
+# Multiplier on emitted (vx,vy,vz) when writing into the field.
+# 0.05 default = near-zero push — particles mostly drift under their
+# StartPartvel + curl noise + damping. IMPORTANT: the terminal velocity
+# of a particle is roughly Fieldforce / VelocityDamping (the Particle
+# POP parameter). If you don't set Velocity Damping > 1 on Particle POP,
+# even small Fieldforce values will eventually fling particles far over
+# their lifetime. Raise this par past 0.2 only after confirming damping
+# is active.
 add_float(render, 'Fieldforce', 'Field Force Gain',
-          0.4, 0.0, 10.0, clamp_max=False)
+          0.05, 0.0, 10.0, clamp_max=False)
 # Persistence of the velocity field between frames (0 = instantaneous,
 # 1 = never fades). Applied externally via a Level TOP in the persistence
 # feedback chain. Smaller values = more responsive / less trail buildup —
@@ -243,7 +247,7 @@ add_float(render, 'Zgain', 'Z Size Gain (depth -> radius)',
 # drift forward/back at rest; lower Zspeedweight if leans/depth-motion
 # cause too many particles to spawn.
 add_float(render, 'Zforceweight', 'Z Force Weight (vz -> field)',
-          0.3, 0.0, 1.0)
+          0.05, 0.0, 1.0)
 # Anisotropic kernel stretch along velocity direction. 0 = round splat;
 # larger = elongated cone of force in the direction of motion, so
 # particles ahead of a fast-moving limb get shoved further.
@@ -260,19 +264,26 @@ add_float(render, 'Stretchspeedref', 'Stretch Speed Reference (UV/s)',
 # (noticeable curvature on particle trails); drop to 0.1 if you want
 # crisp directional motion, crank to 1.0+ for turbulent / "alive" feel.
 add_float(render, 'Curlgain', 'Curl Noise Gain',
-          0.5, 0.0, 2.0, clamp_max=False)
-# Period of the noise field (bigger = smoother macro swirls, smaller =
-# tight micro-turbulence). 3.0 is a reasonable middle ground.
+          0.2, 0.0, 2.0, clamp_max=False)
+# Period of the noise field. CRITICAL for avoiding directional drift.
+# With Period larger than the particle cloud's spatial extent, every
+# particle samples essentially the same curl vector and feels a
+# consistent push in that direction — which accumulates over time and
+# can't be damped away directionally (damping is magnitude-only).
+# Particle space is ~1 UV, so Period must be SMALLER than 1 to give
+# particles varied curl directions that average to zero across the
+# cloud. 0.5 default = particles sample ~2 cells across the volume;
+# lower for micro-turbulence, higher tends toward biased drift.
 add_float(render, 'Curlscale', 'Curl Noise Scale',
-          3.0, 0.1, 20.0, clamp_max=False)
+          0.5, 0.05, 20.0, clamp_max=False)
 
 # Particle lifetime (seconds). Shorter = particles die before they can
 # drift off-screen, keeps the visual contained to where the limbs are.
 # Raise if you want long persistent trails.
 add_float(render, 'Lifemin', 'Life Min (s)',
-          0.8, 0.1, 20.0, clamp_max=False)
+          0.6, 0.1, 20.0, clamp_max=False)
 add_float(render, 'Lifemax', 'Life Max (s)',
-          2.0, 0.1, 20.0, clamp_max=False)
+          1.5, 0.1, 20.0, clamp_max=False)
 
 # Bounding box for particle containment. Particle space (MediaPipe 0..1),
 # not render-stretched space. bounds_reflect GLSL POP uses these to clamp

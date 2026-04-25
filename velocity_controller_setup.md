@@ -170,15 +170,16 @@ if you specifically want "lean-in = explosive burst" behaviour.
 | Par | Layer | What it controls | Lower if you see… |
 | --- | --- | --- | --- |
 | `Zspeedweight` | Sensing | How much `vz` contributes to `speed` & `accel` magnitudes → emit rate & burst triggering | Too many particles spawn when you lean in or out |
-| `Zforceweight` | Renderer | How much `vz` gets written into the force field → per-particle z acceleration | Particles drift forward/back even when you're not moving in z |
+| `Zforceweight` | Renderer | Scales `vz` on both the flowfield (force on live particles) AND `StartPartvel.z` (launch velocity of newborns) | Particles drift forward/back during pure horizontal motion |
 
-MediaPipe's z is noisy enough that at rest it'll often report ±0.05 UV/s
-of spurious vz. `Zforceweight = 0.3` knocks that down to ±0.015 UV/s in
-the field, which is small enough that drag + bounds containment absorb it
-cleanly. If you still see particles wandering in z when standing still,
-drop `Zforceweight` further — `0.1` is fine, `0` makes the field purely
-2D (particles still spawn with initial vz from `StartPartvel`, but the
-flowfield can't accelerate them in z).
+MediaPipe's monocular depth estimate is noisy even during pure xy
+motion — hand pose changes cause spurious vz readings of several UV/s
+as the learned depth model wobbles. `Zforceweight = 0.05` knocks that
+down to ~5% on both render paths, which makes z-motion essentially
+disappear from the particle visual unless the performer deliberately
+leans in or out at significant speed. Set to `0` if you want the
+pipeline to behave as purely 2D on the render side regardless of what
+MediaPipe reports for z.
 
 On the renderer side, the splat-size-from-z formula is also tightened
 against close-up blowup: `size_mult = clamp(1.0 - z * Zgain, 0.25, 1.8)`.
@@ -863,6 +864,32 @@ limbs — well over the 10000 Max Particles default. Either:
 
 ## "Water" vs "vacuum" feel
 
+> **Critical diagnostic first:** if particles are flying fast and
+> scattering wildly, you almost certainly don't have **Velocity Damping**
+> set on your Particle POP. The flowfield applies a constant force; with
+> no damping, that force accumulates into unbounded velocity over
+> particle lifetime. The terminal velocity of a particle is approximately
+> `Fieldforce / VelocityDamping`. With `VelocityDamping = 0` (Particle
+> POP's default), there is no terminal — particles keep accelerating
+> until they die. Check it in the Textport:
+>
+> ```python
+> pp = op('/project1/velocity_controller/particle1')  # your Particle POP
+> print("Velocity Damping:", pp.par.velocitydamping.eval())
+> print("Initial Drag:    ", pp.par.initialdrag.eval())
+> ```
+>
+> If Velocity Damping is `0`, **nothing on the `velocity_controller` COMP
+> can save you.** Set both on Particle POP:
+>
+> ```python
+> pp.par.velocitydamping = 3.0    # strong water-like drag
+> pp.par.initialdrag    = 0.5
+> ```
+>
+> These live on Particle POP itself, not on velocity_controller, which is
+> why `install_velocity_params` can't set them.
+
 By default, particles live in a near-vacuum: the flow field pushes them
 with no friction, so they keep flying until their life runs out. That
 feels great for explosive/energetic effects but wrong for anything
@@ -952,11 +979,33 @@ Add as the **last op** in the force chain, immediately before the
 > four attribute-access lines need adapting. Check
 > docs.derivative.ca/GLSL_POP for your build's exact syntax.
 
-### Simpler alternative if GLSL isn't working
+### Simplest containment — kill-outside via Field POP + Math POP
 
-If adapting the shader is fiddly, soft containment via native ops:
-place **six Force Radial POPs in Planar mode** around the box, each
-pushing inward:
+No GLSL and no force ops needed. Uses the existing `bounds_field` Field
+POP you may already have in the chain:
+
+1. **Field POP** (`bounds_field`): shape Box, Translate `(0.5, 0.5, 0.0)`,
+   Scale `(1.0, 1.0, 1.0)`, Invert Off. Outputs a `Weight` attribute = 1
+   inside the box, 0 outside.
+2. **Math POP** (or Attribute POP) after it: set `Partdeath = 1 - Weight`.
+   Particles outside the box get `Partdeath = 1` → Particle POP kills
+   them on the next integration.
+
+This doesn't *reflect* — particles just die and disappear when they
+leave the box. But it **contains** the visual, which is usually enough:
+you get a steady stream of fresh particles spawning at limbs and aging
+out cleanly, with nothing escaping off-screen. Combined with a short
+`Lifemax` and the tighter velocity defaults, the scene stays bounded
+without any shader gymnastics.
+
+Use this as the baseline; upgrade to `bounds_reflect` GLSL POP later if
+you specifically want bounce behaviour.
+
+### Force-based soft containment (6 Force Radial POPs)
+
+If adapting the shader is fiddly but you want reflection-like behaviour
+without kills, place **six Force Radial POPs in Planar mode** around
+the box, each pushing inward:
 
 | Wall | Translate | Direction | Radius (rolloff) | Strength |
 | --- | --- | --- | --- | --- |
@@ -1044,12 +1093,12 @@ forcibly re-applied via `reset_velocity_params.py`).
 | `Fieldforce` | `0.4` | 0..10+ | Global multiplier on the velocity vector written into the field. 0.4 = water-feel (default). Raise to 1.5+ for vacuum/explosive feel; lower for barely-drift. |
 | `Fielddecay` | `0.30` | 0..0.99 | Level TOP multiplier in the persistence chain. 0 = instantaneous; higher = longer force trails in the air. |
 | `Zgain` | `0.2` | 0..3+ | Depth → splat size. Negative z (toward camera) scales radius up, clamped to 1.8× in shader. |
-| `Zforceweight` | `0.3` | 0..1 | Scales `vz` before it enters the velocity-field texture. Dampens MediaPipe's depth-estimation jitter (which pushes particles in z even when the performer isn't moving). 0 = pure 2D force field, 1 = full 3D with raw jitter. **Separate from `Zspeedweight`** (sensing-side). |
+| `Zforceweight` | `0.05` | 0..1 | Scales `vz` on **both** render-side paths: (a) into the velocity-field texture (dampens z-force on live particles), and (b) into `StartPartvel.z` (dampens z-velocity on newborn particles). MediaPipe's depth is noisy even during pure horizontal motion — without this, particles would drift forward/back on sideways gestures. 0 = completely flat 2D, 1 = full 3D with raw jitter. **Separate from `Zspeedweight`** (sensing-side, emit/burst). |
 | `Velstretch` | `0.8` | 0..3+ | Anisotropic kernel elongation along velocity direction. Makes fast limbs throw a longer cone of force. |
 | `Stretchspeedref` | `2.0` UV/s | 0.1..10+ | Speed at which full `Velstretch` applies. |
 | **Noise drift** | | | |
 | `Curlgain` | `0.5` | 0..2+ | Curl noise amplitude. Bends wavefronts organically per-position. 0.5 = meaningful bending. Crank for turbulent look. |
-| `Curlscale` | `3.0` | 0.1..20+ | Noise period. Bigger = macro swirls, smaller = micro-turbulence. |
+| `Curlscale` | `0.5` | 0.05..20+ | Noise period. **Critical**: must be < particle cloud extent (~1 UV), otherwise the whole cloud samples one curl direction and drifts consistently. 0.5 gives varied curl across the cloud that averages to zero. Lower = tight micro-turbulence; higher than 1 = everything drifts together. |
 | **Life** | | | |
 | `Lifemin` | `0.8` s | 0.1..20+ | Minimum particle lifetime. |
 | `Lifemax` | `2.0` s | 0.1..20+ | Maximum particle lifetime (drives Particle POP Life Expect + Variance). |

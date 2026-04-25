@@ -1,0 +1,413 @@
+# CLAUDE.md — Project Brief for Continuing in Claude Code
+
+This is a TouchDesigner project that uses MediaPipe pose tracking as the
+input layer for two experiments: a particle/flow-field renderer and a
+Beat Saber-inspired rhythm game. Both consume the same upstream sensing
+COMP and run independently of each other.
+
+If you're picking this up cold, read this whole file first, then the
+two `*_setup.md` guides for whichever subsystem you're touching.
+
+## Architecture at a glance
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  Upstream (third-party)                                          │
+│  ┌───────────────────┐                                           │
+│  │ MediaPipe tox     │  emits <landmark>:x/y/z/visible channels │
+│  │ (blankensmithing) │  in MediaPipe-UV space (0..1)            │
+│  └─────────┬─────────┘                                           │
+└────────────┼─────────────────────────────────────────────────────┘
+             ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  Sensing (this project)                                          │
+│  ┌──────────────────────────────────┐                            │
+│  │ velocity_controller (Base COMP)   │ smooths landmarks, emits  │
+│  │   in1 → select1 → script1 →       │ velocity, accel, burst,   │
+│  │   lag1 → out1                     │ visibility-gated holds    │
+│  └────────┬─────────────────────────┘                            │
+│           │                                                      │
+│           ├────────────────┬─────────────────┐                   │
+│           ▼                ▼                 ▼                   │
+│  ┌─────────────┐  ┌──────────────────┐  ┌──────────────────┐    │
+│  │ Particle    │  │ beatsaber_       │  │ Other consumers  │    │
+│  │ render-     │  │ controller       │  │ via out1         │    │
+│  │ subgraph    │  │ (Base COMP)      │  │                  │    │
+│  │ (lives      │  │ runs Game.tick() │  │                  │    │
+│  │ inside      │  └────────┬─────────┘  │                  │    │
+│  │ velocity_   │           │            │                  │    │
+│  │ controller) │           ▼            │                  │    │
+│  │             │  ┌──────────────────┐  │                  │    │
+│  │             │  │ beatsaber_       │  │                  │    │
+│  │             │  │ renderer         │  │                  │    │
+│  │             │  │ (Base COMP)      │  │                  │    │
+│  │             │  └──────────────────┘  │                  │    │
+│  └─────────────┘                        └──────────────────┘    │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+Independent vertical slices. The two consumer COMPs (particle render +
+beatsaber) read `velocity_controller/out1` by channel name and never
+touch each other.
+
+## The two subsystems
+
+### 1. velocity_controller — sensing + particle render
+
+Inside a single `velocity_controller` Base COMP, two sub-chains:
+
+- **Sensing chain**: `in1 → select1 → script1 (Script CHOP) → lag1 → out1`.
+  `script1` runs `velocity_logic.py` per cook to produce per-landmark
+  position, velocity, acceleration, emit, burst, and visibility channels.
+- **Particle render chain**: `lag1` feeds two Script ops (`emitters_tex`
+  Script TOP and `emitters_chop` Script CHOP) that fan the channel data
+  out into a velocity-field texture and a POP emitter set. A POP network
+  (Particle POP at the centre, force chain → null, render to a TOP via
+  Geometry COMP instancing) produces the particle visual.
+
+The render side has had a long debug history — see "Known issues" below.
+
+**Setup guide**: [`velocity_controller_setup.md`](./velocity_controller_setup.md)
+
+### 2. beatsaber_* — rhythm-game game loop + dedicated renderer
+
+Two Base COMPs:
+
+- **`beatsaber_controller`** consumes `velocity_controller/out1` (it
+  needs `left_wrist/right_wrist/left_elbow/right_elbow` plus their
+  `:visible` channels). Inside, a `game_tick` Script CHOP runs the
+  game loop each cook via the Pure-Python `beatsaber/` package.
+  Stores a snapshot on the COMP that sibling Script ops (`notes_chop`,
+  `events_dat`) read.
+- **`beatsaber_renderer`** is a dedicated, separate Base COMP that
+  consumes `beatsaber_controller`'s outputs and produces a TOP. It
+  has its own perspective camera (NOT shared with anything else),
+  renders the sabers as colored lines, the notes as instanced cubes,
+  and a UI overlay for score/combo/event flashes.
+
+**Setup guides**: [`beatsaber_controller_setup.md`](./beatsaber_controller_setup.md),
+[`beatsaber_renderer_setup.md`](./beatsaber_renderer_setup.md)
+
+## File map
+
+### Top-level Python (TD callbacks + bootstraps + installers)
+
+| File | Role |
+| --- | --- |
+| `velocity_logic.py` | Pure-Python sensing logic (velocity/accel/burst from raw landmarks). Self-testable: `python3 velocity_logic.py`. |
+| `velocity_script_chop.py` | Script CHOP callback that wraps `velocity_logic`. |
+| `install_velocity_params.py` | Idempotent param installer for `velocity_controller` (Sensing + Renderer pages). |
+| `reset_velocity_params.py` | Force-resets every par on `velocity_controller` to current defaults (use after pulling new defaults from disk). |
+| `bootstrap_velocity_controller.py` | One-shot builder for the whole `velocity_controller` COMP skeleton. |
+| `emitters_chop_script.py` | Script CHOP — turns `lag1`'s channels into N points (P/v/w attribs) for the Particle POP. Has 2D scatter logic with bias correction. |
+| `emitters_tex_script.py` | Script TOP — packs `lag1`'s channels into an N×2 RGBA32F texture for the velocity-field shader. |
+| `painting_logic.py`, `painting_script_chop.py`, `install_painting_params.py` | The original first experiment ("painting controller") — predates this work. Kept as reference for the architectural conventions. |
+| `beatsaber_game_tick.py` | Script CHOP callback that runs the Beat Saber game loop. Reads landmark channels, calls `Game.tick()`, stores snapshot. |
+| `beatsaber_notes.py` | Script CHOP callback — emits one sample per active note. |
+| `beatsaber_events.py` | Script DAT callback — emits per-cook events (spawn/hit/miss/bad-cut) as a Table. |
+| `beatsaber_parexec.py` | Parameter Execute DAT — dispatches Start/Pause/Resume/Reset pulses to the Game singleton. |
+| `beatsaber_saber_sop.py` | Script SOP callback — emits two uncolored line polygons (left/right). Color is applied downstream via Primitive SOPs. |
+| `beatsaber_ui_top.py` | Script TOP callback — PIL-rendered RGBA UI overlay (score, combo, accuracy, event flashes). |
+| `install_beatsaber_params.py` | Idempotent param installer for `beatsaber_controller`. |
+| `reset_beatsaber_params.py` | Force-resets every par on `beatsaber_controller` to current defaults (partner to the installer; use after pulling a new code drop or to recover a known baseline). |
+| `bootstrap_beatsaber_renderer.py` | One-shot builder for `beatsaber_renderer` COMP. |
+
+### Shaders (`shaders/`)
+
+| File | Role |
+| --- | --- |
+| `velocity_field.frag` | GLSL TOP — splats per-emitter gaussians with anisotropic kernel into a 2D RGBA force field. |
+| `bounds_reflect.glsl` | GLSL POP — clamps particle P inside a 3D box and reflects Partvel on wall hits. Note: attribute-access lines are flagged in comments because TD's GLSL POP API has slight build-to-build variance. |
+
+### Beat Saber package (`beatsaber/`)
+
+Pure-Python game logic, no TD imports, every module self-testable via
+`python3 -m beatsaber.<name>`.
+
+| Module | Role |
+| --- | --- |
+| `saber_logic.py` | Per-saber state: hilt, tip, dir, velocity, prev_tip (for swept-volume collision). Forearm direction from elbow→wrist with -Z extrusion. |
+| `timeline.py` | Abstract `song_time()` accessor. start/pause/resume/reset. Decoupled from the underlying clock so test-clock vs audio-time is a one-line swap. |
+| `beatmap.py` | Note schema + JSON loader + canned `make_test_beatmap()`. CUT_VECTORS table. |
+| `hit_detection.py` | Swept-volume vs note AABB intersection (slab method). Cut direction error, through-center distance, swing-magnitude scoring. Returns GOOD / BAD_COLOR / BAD_DIRECTION / None. |
+| `score.py` | Combo, multiplier tiers (1× / 2× / 4× / 8×), running totals, accuracy. |
+| `game.py` | Coordinator — `Game.tick(wall_seconds, samples) → (events, snapshot)`. Spawns, advances, collides, scores, cleans up. Has a `loop` flag for auto-restart. |
+| `test_beatmap.json` | 14-note dev test map covering all cut directions and colors. |
+
+### Setup guides (read before touching the corresponding subsystem)
+
+| File | What it covers |
+| --- | --- |
+| `velocity_controller_setup.md` | Sensing pipeline + particle render. Long. Has ASCII history of debug iterations. |
+| `beatsaber_controller_setup.md` | Beat Saber controller setup, channel contracts, troubleshooting. |
+| `beatsaber_renderer_setup.md` | Dedicated renderer setup with explicit camera-verification checklist. |
+
+## Coordinate conventions
+
+### Sensing space (everything pre-render)
+
+- `x`, `y` ∈ `[0, 1]` in MediaPipe-UV. `y = 0` is TOP, `y = 1` is BOTTOM.
+- `z` is MediaPipe's depth, ~`[-0.5, +0.5]`. Positive = away from camera in MediaPipe's convention.
+- The webcam is assumed to be **mirrored** (selfie-cam style) so the user's
+  hand on their right appears on screen-right. This is what makes the
+  first-person illusion work.
+
+### Game render space (Beat Saber)
+
+- Same `x` / `y` as sensing.
+- `z = 0` is the **hit plane** where sabers live.
+- `z < 0` is the approach tunnel. Notes spawn at `z ≈ -10` and travel
+  to `z = 0`.
+- `z > 0` is "behind the player". The game camera sits at `z = +3`
+  with default rotation `(0, 0, 0)` looking down its local `-Z` axis
+  into the tunnel. **No lookAt needed.**
+
+This convention was deliberately chosen to match TD's default camera
+orientation. Older versions of the code had `+z` as the tunnel and
+required a lookAt or rotation hack — that's gone. If you see code or
+docs implying notes spawn at `+z`, it's stale.
+
+### Particle render space (velocity_controller's particle subgraph)
+
+- Same `x` / `y` as sensing.
+- `z` carries MediaPipe's depth signal but is heavily down-weighted
+  (`Zforceweight = 0.05` default) because MediaPipe's monocular depth
+  estimate is noisy. Without that, particles drift in z on purely
+  horizontal motion.
+
+## Architectural conventions
+
+These show up everywhere and you should follow them when adding new code.
+
+### 1. Pure Python logic + thin TD callbacks
+
+Every "module of brain" is a pure Python file with NO TD imports
+(`velocity_logic.py`, `beatsaber/*.py`, etc.). Each is self-testable
+via `python3 -m <module>` (or just `python3 <file>` for the top-level
+ones). TD callbacks (Script CHOP/SOP/TOP/DAT) are thin wrappers that
+read CHOP channels, call into the Python module, and write back to the
+op output.
+
+This pattern matters because:
+- Logic is testable without launching TD.
+- TD callback bugs (channel name typos, op name conflicts) don't
+  pollute the logic.
+- New TD versions changing op APIs don't require rewriting the math.
+
+### 2. Idempotent installers + explicit reset scripts
+
+`install_*_params.py` adds custom pars to a COMP only if they don't
+already exist. Re-running never overwrites tuning. When defaults need
+to be force-applied, `reset_*_params.py` exists as a separate explicit
+script that overwrites every par.
+
+### 3. Bootstrap scripts for COMP scaffolding
+
+For non-trivial COMPs (`velocity_controller`, `beatsaber_renderer`),
+there's a `bootstrap_*.py` that programmatically creates the COMP,
+its child ops, wires the connections, and applies sensible defaults.
+Idempotent. The bootstrap leaves manual touches (specific instance
+configurations, material assignments) for the user but takes care of
+the mechanical 80%.
+
+### 4. Synced Text DATs mirror external .py files
+
+Every TD callback DAT has its `File` parameter set to the relative
+path of its `.py` file under `project.folder` and `Sync File` On.
+This means edits to `.py` files on disk flow into TD on reload, and
+git/diff tools work normally. No copy-paste of code into the
+`.toe` file.
+
+### 5. Custom pars live on the parent COMP, not on Script ops
+
+All user-tunable knobs are custom parent pars on the enclosing Base
+COMP. The Script ops inside read `parent().par.<name>.eval()`. This
+gives a clean per-COMP control surface and makes the COMP portable.
+
+### 6. Single source of truth for state schema
+
+The `_fresh_landmark_state()` (in `velocity_logic.py`) and
+`_fresh_saber_state()` (in `beatsaber/saber_logic.py`) functions
+return the canonical per-element state dict. Adding a new field
+means updating that one function; `ensure_schema()` migrates older
+stored state forward on the next cook.
+
+## How to work on this
+
+### Picking up where we left off
+
+1. Read this file top-to-bottom (you're doing it).
+2. Read the relevant `*_setup.md` for the subsystem you're touching.
+3. Run the self-tests for the relevant Python module(s) to confirm
+   the logic side is healthy:
+   - `python3 velocity_logic.py` — sensing math
+   - `python3 -m beatsaber.saber_logic` — saber state
+   - `python3 -m beatsaber.timeline` — clock
+   - `python3 -m beatsaber.beatmap` — note schema
+   - `python3 -m beatsaber.hit_detection` — collision + scoring math
+   - `python3 -m beatsaber.score` — scoring tiers
+   - `python3 -m beatsaber.game` — full integration replay
+4. Open `MediaPipe_Base.toe` (or `.12.toe`) in TouchDesigner.
+
+### Making a change
+
+1. Edit the `.py` file on disk.
+2. In TD, force-reload the synced Text DAT (or save the project — sync
+   triggers).
+3. Verify behavior in the COMP's Info popup or downstream viewers.
+4. If you changed defaults that the user has already installed, mention
+   in the response that they need to either run `reset_*_params.py` or
+   manually update the par values. The installer alone won't push new
+   defaults onto an existing COMP.
+
+### Adding a new TD callback
+
+Follow the pattern of an existing one (`velocity_script_chop.py` is a
+good reference for Script CHOPs, `beatsaber_saber_sop.py` for Script
+SOPs, etc.). Key things:
+
+- `import sys, os` at top, push `project.folder` onto `sys.path` if you
+  need to import the `beatsaber` package or any other local module.
+- Wrap imports in `try/except` and log with `debug()` so the DAT
+  doesn't hard-fail on first load.
+- Read parent pars via `parent().par.<Name>.eval()`.
+- For state across cooks, use `parent().store(key, value)` /
+  `parent().fetch(key, default)`.
+
+### Running self-tests in CI / from outside TD
+
+All `.py` files under `beatsaber/` and the top-level `velocity_logic.py`
+have `if __name__ == "__main__": ...` self-test blocks. They print "OK
+— …" on success and assert on failure. Wire these into a CI script if
+you want; nothing else is required.
+
+## Known issues / open items
+
+### Particle render
+
+Has had many rounds of tuning. Current state (best of memory):
+
+- **Z-axis sensitivity** had two leak paths (sensing-side `Zspeedweight`
+  and renderer-side `Zforceweight`). Both are now tamed but z is still
+  the most fragile axis.
+- **Particles flying too far** — partly addressed by lowering
+  `Fieldforce` (0.05), `Spawnvelscale` (0.04), and emphasizing
+  `Velocity Damping` on Particle POP itself (must be set ≥ 1.5; the
+  COMP installer can't reach Particle POP's pars).
+- **Bounding-box reflection** (`bounds_reflect.glsl`) — landed but the
+  GLSL POP attribute access syntax is build-dependent. Setup guide
+  flags the four lines that may need adjusting.
+- **Camera aspect/zoom** for the particle render — separate issue from
+  the Beat Saber camera. Particle render uses the user's existing
+  camera setup (whatever they wired in `velocity_controller`'s
+  rendering side, not necessarily a clean `game_cam`).
+
+### Beat Saber
+
+- **Notes flying wrong direction** — was caused by old camera at `tz = -3`
+  combined with new `z_spawn = -10`. Fixed by moving camera to `tz = +3`.
+  If user reports this again, check camera position first
+  (`beatsaber_renderer_setup.md` has a verification checklist).
+- **Auto-start timing bug** — when `Game.start()` was called before the
+  timeline had received a wall clock, `_t0` latched to 0 and song_time
+  jumped to `absTime.seconds` (huge number) on the first cook. Every
+  note immediately spawned + missed + cleaned up. Fixed by priming
+  `timeline.set_wall_clock(absTime.seconds)` before `start()`. Watch
+  for this pattern in any new "build a Game" code path.
+- **Loop** — added on user request, default On. Resets and restarts
+  when `song_time > beatmap.duration() + travel + miss_window + 0.5s`.
+- **Renderer not yet polished** — basic saber lines + cube notes + UI
+  overlay work, but no:
+  - Bloom for the neon look (one Bloom TOP between `render_scene` and
+    `comp_out`)
+  - Saber swept-volume trails (Trail CHOP + CHOP-to-SOP recipe is in
+    the setup guide but not wired)
+  - Cut-direction arrow on each note (would need a GLSL MAT reading
+    instance attribs)
+  - Music sync (currently uses `absTime.seconds`; setup guide explains
+    the one-line swap to Audio File In TOP time)
+
+### Other
+
+- The bootstrap scripts try several common TD parameter naming
+  conventions per op (different TD versions rename pars). When adding
+  new bootstrap logic, defensively `try/except` around par sets.
+- `painting_controller` is the older first experiment and is largely
+  ignored by current development. Don't break it but don't put effort
+  into improving it either unless asked.
+
+## TD-specific gotchas accumulated
+
+A non-exhaustive list of things that wasted real time and shouldn't
+again:
+
+| Gotcha | What to remember |
+| --- | --- |
+| **Script POP doesn't exist** in any TD build. Use Script CHOP + CHOP-to-POP for emitter generation. |
+| **Source POP doesn't exist.** Particle POP is the hub op; the modifier chain feeds back via "Target Particles Update POP". |
+| **Color SOP doesn't exist.** Use Primitive SOP with "Add" color mode. |
+| **Channel names can't contain `[` or `]`** in TD CHOPs. Sanitised to `_`. Use `P0/P1/P2` not `P[0]/P[1]/P[2]`. |
+| **Cameras default to looking down -Z**, not +Z. Place the camera at +Z and the scene at -Z, no lookAt needed. |
+| **Particle POP has no separate "Time Integration" toggle.** `Play: On` is the equivalent. |
+| **Velocity Damping on Particle POP is critical.** Without it, any constant force creates unbounded velocity. The installer can't reach this par because it's on Particle POP, not the COMP. |
+| **`Partvel` etc. are reserved on Particle POP.** Use `Start*` prefix for seed values (`StartPartvel`, `StartPartmass`). Renaming an input attribute to `PartVel` triggers an auto-rename to `StartPartvel` with a warning. |
+| **Script CHOP doesn't cook every frame by default** — only on output demand. If you need per-cook execution, either wire the output to something that does cook (an Out CHOP that's read by another COMP) or set `isTimeSlice = True`. |
+| **Script SOP `Point.Cd` requires `createAttribute(...)`** before assignment, with a version-dependent signature. Sidestep by emitting uncolored geometry and applying color via a downstream Primitive SOP. |
+| **GLSL POP attribute read/write syntax** uses `TDIndex()`, `TDNumElements()`, `TDIn_<AttribName>()`, and writes via something like `TDOutAttrib_<Name>` — but the exact write syntax varies by build. Right-click the GLSL POP ▸ View Compiled Shader to see what the auto-generated output variables are. |
+| **Random number generators with small N have empirical bias**. The `_SCATTER` list in `emitters_chop_script.py` had a 7% directional bias that caused particles to consistently drift toward one corner. Always center the actually-used subset by subtracting its empirical mean. |
+| **Curl noise wavelength must be < cloud extent** or the whole cloud experiences the same gradient and drifts together. Default `Curlscale = 0.5` keeps the noise period below the 1-UV particle volume. |
+| **`install_*_params.py` is intentionally idempotent** — it doesn't update existing par values when defaults change. Use the matching `reset_*_params.py` for force-updates. |
+| **Mirrored webcam is a feature, not a bug.** It's what makes the saber-on-hand visual feel like first-person. Don't add a flip somewhere "to fix" it. |
+
+## Self-test command summary
+
+```bash
+cd /Users/flo/work/TD/MediaPipe_Base
+
+# Sensing math
+python3 velocity_logic.py
+
+# Beat Saber game logic (each independent)
+python3 -m beatsaber.saber_logic
+python3 -m beatsaber.timeline
+python3 -m beatsaber.beatmap
+python3 -m beatsaber.hit_detection
+python3 -m beatsaber.score
+python3 -m beatsaber.game     # full integration: 16s synthetic playthrough
+```
+
+All print `OK — …` on success. They take less than a second total.
+
+## Quick orientation map
+
+If the user says "X is broken", here's where to start looking:
+
+| Symptom | Likely file |
+| --- | --- |
+| Visibility threshold not gating | `velocity_script_chop.py` (channel name match) |
+| Particles flying off-screen | `install_velocity_params.py` (Fieldforce/Spawnvelscale/Lifemax defaults), Particle POP's Velocity Damping (manually set) |
+| Particles drifting in z when only moving horizontally | `Zforceweight` (renderer side, scales `vz` in both `emitters_tex_script.py` and `emitters_chop_script.py`) |
+| Particles biased toward one corner | scatter-list mean centering in `emitters_chop_script.py` + `Curlscale` (must be < cloud extent) |
+| Notes not spawning | `_get_or_build_game()` in `beatsaber_game_tick.py` (must prime wall clock before start), or game not started |
+| Notes flying away from camera | `bootstrap_beatsaber_renderer.py` camera config (must be `tz = 3.0`, not negative) |
+| Sabers wrong color or invisible | Primitive SOP color chain inside `sabers_geo` |
+| Sabers crash with "Cd attribute" error | `beatsaber_saber_sop.py` shouldn't be setting `Cd`; old version of the file |
+| Score/combo not updating | `beatsaber_game_tick.py` — verify it's actually cooking each frame |
+
+## Conventions for new work
+
+When adding a new feature in this style:
+
+1. **Start with pure Python.** Write a module under either the project
+   root (for sensing-style features) or `beatsaber/` (for game-style).
+   Add a `if __name__ == "__main__":` self-test that asserts behavior.
+2. **Then write the TD callback** that wraps it. Read pars, call the
+   Python, write CHOP/DAT/etc output.
+3. **Add an installer entry** for any new pars on the relevant
+   `install_*_params.py`.
+4. **Add to the matching `reset_*_params.py`** so the new default
+   propagates when the user runs the reset.
+5. **Document in the relevant `*_setup.md`** — at minimum: par
+   description in the parameter table, and a tuning hint.
+6. **Update this CLAUDE.md** if you add a new file or significantly
+   change architecture.
