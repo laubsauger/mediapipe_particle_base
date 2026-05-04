@@ -252,10 +252,12 @@ def onCook(scriptOp):
             # x stretches with the aspect ratio — fills the new wider box.
             wx = bx_min + (x + off_x) * bx_w
             wy = by_min + (y + off_y) * by_w
-            # Mediapipe z is roughly [-1, +1] but very noisy. Scale into
-            # the thin slab around the box centre and add a tiny jitter
-            # via off_? would over-spread; just mediapipe z is enough.
-            wz = bz_c + max(-1.0, min(1.0, z)) * bz_h
+            # Mediapipe z is unreliable: monocular depth, narrow range,
+            # often biased one way (e.g. user always closer/farther than
+            # camera reference). Using it directly bunches spawns in a
+            # thin slice. Better: random z within the slab on each spawn.
+            # The field force still owns z motion through Zforceweight.
+            wz = _RNG.uniform(bz_min + margin, bz_max - margin)
             chans['P0'][idx] = _clamp(wx, bx_min + margin, bx_max - margin)
             chans['P1'][idx] = _clamp(wy, by_min + margin, by_max - margin)
             chans['P2'][idx] = _clamp(wz, bz_min + margin, bz_max - margin)
