@@ -197,9 +197,12 @@ class Game:
             "hilt_length":   self.params.get("hilt_length", 0.04),
             "blade_length":  self.params.get("blade_length", 0.21),
             "hilt_plane_z":  self.params.get("hilt_plane_z", 0.0),
-            "z_extrusion":   self.params.get("z_extrusion", 0.3),
+            "z_extrusion":   self.params.get("z_extrusion", 0.1),
             "hand_weight":   self.params.get("hand_weight", 1.0),
-            "orient_smooth": self.params.get("orient_smooth", 0.06),
+            "orient_smooth": self.params.get("orient_smooth", 0.03),
+            # New POV-feel knobs:
+            "forward_lock":  self.params.get("forward_lock", True),
+            "thrust_scale":  self.params.get("thrust_scale", 1.5),
         }
         saber_out = saber_update(self.saber_state, saber_samples,
                                  dt, saber_params)

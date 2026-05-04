@@ -107,7 +107,7 @@ Two Base COMPs:
 | `beatsaber_events.py` | Script DAT callback — emits per-cook events (spawn/hit/miss/bad-cut) as a Table. |
 | `beatsaber_parexec.py` | Parameter Execute DAT — dispatches Start/Pause/Resume/Reset pulses to the Game singleton. |
 | `beatsaber_saber_sop.py` | Script SOP callback — emits two uncolored line polygons (left/right). Color is applied downstream via Primitive SOPs. |
-| `beatsaber_ui_top.py` | Script TOP callback — PIL-rendered RGBA UI overlay (score, combo, accuracy, event flashes). |
+| `beatsaber_hud.py` | Helper module — HUD text formatters (score/combo/accuracy/song_time) + event-log accumulator state machine. Called via expressions on the renderer's Text TOP `text` parameters. No PIL. |
 | `install_beatsaber_params.py` | Idempotent param installer for `beatsaber_controller`. |
 | `reset_beatsaber_params.py` | Force-resets every par on `beatsaber_controller` to current defaults (partner to the installer; use after pulling a new code drop or to recover a known baseline). |
 | `bootstrap_beatsaber_renderer.py` | One-shot builder for `beatsaber_renderer` COMP. |

@@ -202,36 +202,22 @@ def onCook(scriptOp):
         return
 
     # Push latest parameter values into the Game instance each cook.
-    # Cheap enough, and keeps the user's tweaks live. New saber-geometry
-    # pars (Hiltlength + Bladelength) supersede the old single Saberlength
-    # par; for back-compat with existing networks that only have the old
-    # par, derive sensible defaults via a 0.18/0.82 split.
-    def _par_or(name, default):
-        p = getattr(par, name, None)
-        return p.eval() if p is not None else default
-
-    saber_length_legacy = _par_or('Saberlength', None)
-    if saber_length_legacy is None:
-        hilt_length  = _par_or('Hiltlength',  0.04)
-        blade_length = _par_or('Bladelength', 0.21)
-    else:
-        # Legacy param exists — use Hilt/Blade if also installed, else split.
-        hilt_length  = _par_or('Hiltlength',  saber_length_legacy * 0.18)
-        blade_length = _par_or('Bladelength', saber_length_legacy * 0.82)
-
-    game.params["hilt_length"]          = hilt_length
-    game.params["blade_length"]         = blade_length
+    # Cheap enough, and keeps the user's tweaks live. Direct par
+    # access — if any of these AttributeErrors, the controller's
+    # custom pars haven't been installed; run install_beatsaber_params
+    # then reset_beatsaber_params and reload.
+    game.params["hilt_length"]          = par.Hiltlength.eval()
+    game.params["blade_length"]         = par.Bladelength.eval()
     game.params["z_extrusion"]          = par.Zextrusion.eval()
     game.params["hilt_plane_z"]         = par.Hiltplanez.eval()
-    game.params["hand_weight"]          = _par_or('Handweight',   1.0)
-    game.params["orient_smooth"]        = _par_or('Orientsmooth', 0.03)
+    game.params["hand_weight"]          = par.Handweight.eval()
+    game.params["orient_smooth"]        = par.Orientsmooth.eval()
+    game.params["forward_lock"]         = bool(par.Forwardlock.eval())
+    game.params["thrust_scale"]         = par.Thrustscale.eval()
     game.params["angle_tolerance_rad"]  = par.Angletolerancerad.eval()
     game.params["min_swing_speed"]      = par.Minswingspeed.eval()
     game.params["miss_window_seconds"]  = par.Misswindowseconds.eval()
-    # Loop toggle — if on, game auto-resets when the beatmap finishes.
-    loop_par = getattr(par, 'Loop', None)
-    if loop_par is not None:
-        game.loop = bool(loop_par.eval())
+    game.loop                           = bool(par.Loop.eval())
 
     vis_thresh = par.Visibilitythreshold.eval()
 
@@ -276,15 +262,22 @@ def onCook(scriptOp):
     # Hilt anchor: prefer the hand-tracker's wrist (more accurate during
     # rapid motion) over the pose wrist when available. Fall back to pose
     # wrist when hand isn't connected or is not visible.
-    def _hilt_xy(side, hand, hand_vis):
+    #
+    # Returns a 3-tuple (x, y, z). Z is from MediaPipe's depth signal —
+    # negative when the wrist is closer to the camera. Used by
+    # saber_logic's `thrust_scale` to translate the hilt forward into
+    # the tunnel on a hand thrust (POV feel). When `thrust_scale=0`
+    # this z is ignored.
+    def _hilt_xyz(side, hand, hand_vis):
         if hand is not None and hand_vis:
-            return (hand["wrist"][0], hand["wrist"][1])
+            return (hand["wrist"][0], hand["wrist"][1], hand["wrist"][2])
         return (_read(scriptOp, f'{side}_wrist:x', 0.3 if side == 'left' else 0.7),
-                _read(scriptOp, f'{side}_wrist:y', 0.5))
+                _read(scriptOp, f'{side}_wrist:y', 0.5),
+                _read(scriptOp, f'{side}_wrist:z', 0.0))
 
     samples = {
         "left": {
-            "wrist_xy": _hilt_xy('left', left_hand, left_hand_vis),
+            "wrist_xy": _hilt_xyz('left', left_hand, left_hand_vis),
             "elbow_xy": (_read(scriptOp, 'left_elbow:x', 0.3),
                          _read(scriptOp, 'left_elbow:y', 0.7)),
             "wrist_visible": _visible('left_wrist'),
@@ -293,7 +286,7 @@ def onCook(scriptOp):
             "hand_landmarks": left_hand,
         },
         "right": {
-            "wrist_xy": _hilt_xy('right', right_hand, right_hand_vis),
+            "wrist_xy": _hilt_xyz('right', right_hand, right_hand_vis),
             "elbow_xy": (_read(scriptOp, 'right_elbow:x', 0.7),
                          _read(scriptOp, 'right_elbow:y', 0.7)),
             "wrist_visible": _visible('right_wrist'),
@@ -313,7 +306,7 @@ def onCook(scriptOp):
     scriptOp.numSamples = 1
     scriptOp.rate = me.time.rate
 
-    # Per-saber state. 5 vector channels × 3 axes + 1 scalar = 16 per side.
+    # Per-saber state.
     #   hilt     : hilt base at the wrist (xyz)
     #   hilt_top : hilt-blade junction (xyz) — where the blade emerges
     #   tip      : far end of the blade (xyz)
@@ -321,6 +314,12 @@ def onCook(scriptOp):
     #   up       : palm-normal unit vector (xyz) — saber roll axis
     #   vel      : tip velocity over 1 cook (xyz)
     #   hand_active : 1.0 if hand-knuckle basis contributed, 0.0 otherwise
+    #   blade_p<0..4>_<x/y/z> : five sample points along the blade,
+    #       at fractions 0/0.25/0.5/0.75/1.0 from hilt_top to tip.
+    #       p0 == hilt_top, p4 == tip. Designed for a Trail CHOP +
+    #       CHOP-to-SOP "ribbon" visualization in the renderer that
+    #       shows the WHOLE blade's recent motion, not just the tip.
+    BLADE_TRAIL_SAMPLES = 5
     for side in ('left', 'right'):
         s = snapshot['sabers'][side]
         for axis_i, axis in enumerate(('x', 'y', 'z')):
@@ -331,6 +330,16 @@ def onCook(scriptOp):
             scriptOp.appendChan(f'{side}_up_{axis}')[0]       = float(s['up'][axis_i])
             scriptOp.appendChan(f'{side}_vel_{axis}')[0]      = float(s['velocity'][axis_i])
         scriptOp.appendChan(f'{side}_hand_active')[0] = float(s.get('hand_active', 0.0))
+
+        # Blade sample points — interpolate from hilt_top to tip so the
+        # trail covers ONLY the bright glowing part, not the hilt stub.
+        ht = s['hilt_top']
+        tp = s['tip']
+        for i in range(BLADE_TRAIL_SAMPLES):
+            f = i / (BLADE_TRAIL_SAMPLES - 1) if BLADE_TRAIL_SAMPLES > 1 else 0.0
+            for axis_i, axis in enumerate(('x', 'y', 'z')):
+                v = ht[axis_i] + f * (tp[axis_i] - ht[axis_i])
+                scriptOp.appendChan(f'{side}_blade_p{i}_{axis}')[0] = float(v)
 
     # Globals.
     scriptOp.appendChan('song_time')[0]      = float(snapshot['song_time'])

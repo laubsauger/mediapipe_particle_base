@@ -29,13 +29,14 @@ flowchart LR
     gt[game_tick]
     nc[notes_chop]
 
-    sabers_sop[sabers_sop<br/>Script SOP<br/>prim 0 = left, prim 1 = right]
-    sabers_geo["sabers_geo<br/>Geometry COMP<br/>(in → color_left → color_right → out)<br/>Primitive SOPs apply per-prim color"]
+    sabers_sop[sabers_sop<br/>Script SOP<br/>prims 0..3 = hilt+blade per side]
+    sabers_geo["sabers_geo<br/>Geometry COMP<br/>4 Primitive SOPs apply per-prim color"]
+    trail_geos[trail_left_geo + trail_right_geo<br/>Geometry COMPs<br/>per-vertex Cd via Constant MAT]
     notes_geo[notes_geo<br/>Geometry COMP<br/>instanced from notes_chop]
     game_cam[game_cam<br/>Camera COMP<br/>perspective]
     render_scene[render_scene<br/>Render TOP]
-    ui_top[ui_top<br/>Script TOP]
-    comp_out[comp_out<br/>Composite TOP<br/>UI over scene]
+    hud[Text TOPs + flash chain<br/>text bound to beatsaber_hud expressions]
+    comp_out[comp_out<br/>Composite TOP<br/>scene + flashes + text]
     out1([out1<br/>Out TOP])
 
     ctrl --> gt
@@ -43,23 +44,28 @@ flowchart LR
 
     gt -. reads by op ref .-> sabers_sop
     sabers_sop --> sabers_geo
+    sabers_sop -. writes blade history .-> trail_geos
     nc -. Instance OP .-> notes_geo
 
     sabers_geo --> render_scene
+    trail_geos --> render_scene
     notes_geo --> render_scene
     game_cam --> render_scene
 
-    gt -. reads by op ref .-> ui_top
+    gt -. flash trigger channels .-> hud
     render_scene --> comp_out
-    ui_top --> comp_out
+    hud --> comp_out
     comp_out --> out1
 ```
 
-`sabers_sop` reads `game_tick`'s channels directly via an op reference.
-`notes_geo` instances from `notes_chop`. `ui_top` reads `game_tick`
-and renders text. No CHOP input on the renderer — it plumbs via
-internal references so the renderer can be relocated or rewired without
-touching cables.
+`sabers_sop` reads `game_tick`'s channels directly via an op reference
+and maintains the per-side blade history that the trail Geo COMPs read.
+`notes_geo` instances from `notes_chop`. The HUD is a stack of Text
+TOPs whose `text` parameters call helper functions in `beatsaber_hud`,
+plus a Constant-TOP-per-event-kind flash chain whose alpha is bound to
+a Lag CHOP envelope of the per-frame trigger channels. No CHOP input
+on the renderer — it plumbs via internal references so the renderer
+can be relocated or rewired without touching cables.
 
 The camera (`game_cam`) is a purpose-built dedicated game camera —
 it is NOT shared with any particle renderer camera or other scene
@@ -103,7 +109,8 @@ external scripts (same pattern as elsewhere in this project):
 | DAT name | File par |
 | --- | --- |
 | `beatsaber_saber_sop` | `beatsaber_saber_sop.py` |
-| `beatsaber_ui_top` | `beatsaber_ui_top.py` |
+| `beatsaber_trail_sop` | `beatsaber_trail_sop.py` |
+| `beatsaber_hud` | `beatsaber_hud.py` |
 
 Set File + Sync File On + force-reload.
 
@@ -327,47 +334,111 @@ Create `render_scene` Render TOP:
 - **Resolution**: `1920 × 1080` (or whatever your target)
 - **Anti-alias**: 4x or 8x for clean edges on the lines and cube borders
 
-### 7. UI Script TOP
+### 7. HUD overlay — native Text TOPs + flash chain (no PIL)
 
-Create `ui_top` Script TOP:
+The HUD is built from TD's standard ops only — no Python image library
+required. All numeric readouts are **Text TOPs** whose `text` parameter
+is a Python expression calling a helper function in `beatsaber_hud.py`,
+and the hit/miss/bad-cut full-screen flashes are **Constant TOPs**
+whose alpha is bound to a **Lag CHOP** envelope of the per-frame
+trigger channels emitted by `game_tick`.
 
-- **Callbacks DAT**: `beatsaber_ui_top`
-- **Resolution**: `1920 × 1080`
-- **Pixel Format**: `RGBA 8-bit` (or 32F if your downstream chain wants it)
+Sync the helper Text DAT first:
 
-The Script TOP reads `game_tick`'s channels and renders text + event
-flashes to an RGBA image. It uses PIL for text rendering (ships with
-TD's Python). Font fallback tries Helvetica / Segoe UI / DejaVu Sans /
-Liberation Sans in order so it works on Mac / Windows / Linux.
+| DAT name | File par |
+| --- | --- |
+| `beatsaber_hud` | `beatsaber_hud.py` |
 
-What gets drawn:
+Set its **Sync File** = On and Force Reload, same pattern as the other
+synced DATs.
 
-- Top-right: score, combo × multiplier, accuracy.
-- Top-left: song time elapsed.
-- Full-screen tinted flash on hit / bad-cut / miss (single-frame; pipe
-  through a Lag TOP downstream if you want the flash to fade).
-- **Left side, scrolling event log** — every hit, bad cut, and miss
-  appends a row showing `mm:ss.cc  L|R  KIND  details`. Hits are green
-  with brightness shaded by quality (better cut = brighter). Bad cuts
-  are red with `wrong dir` / `wrong color`. Misses are dim grey. The
-  log shows the most recent ~22 rows with older entries fading. No
-  background fill — text overlays the render directly so the scene
-  stays visible behind it. The log auto-clears whenever the game
-  resets (detected by `song_time` jumping backward).
+#### 7a. Text TOPs (one per HUD element)
 
-Log persistence is kept on the renderer COMP via `parent().store`, so
-multiple `ui_top` Script TOPs (e.g. one for the main render, one for a
-secondary monitor view) each maintain independent log views. A reset
-of the log can be forced manually in the textport with
-`op('beatsaber_renderer').unstore('beatsaber_eventlog')`.
+Create five Text TOPs at the renderer-COMP level. For each, set
+**Resolution** = `1920 × 1080`, background alpha = `0`, font size and
+color from the table below, and the `text` parameter as a **Python
+expression** (par mode = Python). The expressions all just call
+helper functions that read the latest game state from the controller:
 
-### 8. Compose UI over scene
+| Text TOP | text expression | Font size | Color RGBA | Align | Offset |
+| --- | --- | --- | --- | --- | --- |
+| `text_score` | `mod('beatsaber_hud').score_text()` | 72 | `(1.0, 1.0, 1.0, 0.9)` | right + top | `(-50, 30)` |
+| `text_combo` | `mod('beatsaber_hud').combo_text()` | 48 | `(1.0, 0.86, 0.39, 0.9)` | right + top | `(-50, 120)` |
+| `text_accuracy` | `mod('beatsaber_hud').accuracy_text()` | 32 | `(0.71, 0.86, 1.0, 0.78)` | right + top | `(-50, 180)` |
+| `text_song_time` | `mod('beatsaber_hud').song_time_text()` | 40 | `(0.78, 0.78, 0.78, 0.86)` | left + top | `(50, 30)` |
+| `text_eventlog` | `mod('beatsaber_hud').event_log_text()` | 20 | `(0.85, 0.85, 0.85, 0.9)` | left + top | `(50, 240)` |
 
-Create `comp_out` Composite TOP:
+The bootstrap creates and configures all five automatically; do this
+manually only if you'd rather build the network by hand.
 
-- **Operand**: `over` (UI over scene)
-- Input 0: `render_scene`
-- Input 1: `ui_top`
+What `event_log_text()` does: it walks the latest game-tick snapshot's
+event lists each cook, appends formatted rows to a list stored on the
+renderer COMP, trims to the last 22 rows, and returns a multi-line
+string with the newest entry on top. Format is
+`mm:ss.cc  L|R  KIND  details`. The log auto-clears when `song_time`
+jumps backward (game reset / loop wraparound). To force-clear the log
+manually, in the textport:
+
+```python
+op('/project1/beatsaber_controller/beatsaber_renderer').unstore('beatsaber_eventlog')
+```
+
+#### 7b. Hit / bad / miss event flashes
+
+Three Constant TOPs at the renderer-COMP resolution, each with its
+alpha bound by expression to the corresponding lag-CHOP envelope of
+`game_tick`'s per-frame trigger channels. The lag is fast-attack,
+0.3-second-release so a single-cook event blooms instantly to full
+strength then linearly fades.
+
+| Op | Type | Settings |
+| --- | --- | --- |
+| `flash_select` | Select CHOP | **CHOP** = `<controller>/game_tick`. **Channel Names** = `hit_this_frame bad_cut_this_frame miss_this_frame` |
+| `flash_lag` | Lag CHOP | Input = `flash_select`. **Lag1** (attack) = `0`, **Lag2** (release) = `0.30` |
+| `flash_hit` | Constant TOP | Resolution `1920×1080`. Color `(0.0, 1.0, 0.45)`. Alpha **expression**: `op('flash_lag')['hit_this_frame'][0] * 0.45` |
+| `flash_bad` | Constant TOP | Color `(1.0, 0.30, 0.30)`. Alpha **expression**: `op('flash_lag')['bad_cut_this_frame'][0] * 0.60` |
+| `flash_miss` | Constant TOP | Color `(1.0, 1.0, 1.0)`. Alpha **expression**: `op('flash_lag')['miss_this_frame'][0] * 0.25` |
+
+Misses are intentionally dim white (least visually disruptive); bad
+cuts are bright red (forcing your attention to the mistake); good hits
+are subtle green (positive feedback without occluding the playfield).
+Multiplier per kind is the per-flash maximum opacity — tune to taste.
+
+### 8. Compose HUD over scene
+
+`comp_out` is a Composite TOP with **Operand** = `over` and many
+inputs in stacking order. Later inputs render on top of earlier ones,
+so:
+
+| Input | Source |
+| --- | --- |
+| 0 | `render_scene` (the 3D game) |
+| 1 | `flash_miss` |
+| 2 | `flash_bad` |
+| 3 | `flash_hit` |
+| 4 | `text_eventlog` |
+| 5 | `text_song_time` |
+| 6 | `text_accuracy` |
+| 7 | `text_combo` |
+| 8 | `text_score` |
+
+Wire these inputs in order on `comp_out`. The scene goes first; the
+flash tints layer over the scene; the text HUD renders on top of the
+flashes. The bootstrap auto-wires this stack.
+
+#### Why the HUD is built from native ops
+
+- **No external dependency.** Text TOPs use TD's bundled font
+  rasterization — nothing to `pip install`.
+- **Live tunability.** Font, size, color, alignment, position are all
+  parameters on the Text TOP — tweak in the param panel, see the
+  change immediately.
+- **Inspectable in the network.** Each HUD element is a separate node
+  you can preview by middle-clicking.
+- **Composable.** The flash chain pipes into the same Composite TOP
+  as the text TOPs, ordered by index — easy to insert a Bloom TOP
+  before the Constants for an extra glow, or a Level TOP between
+  inputs for per-layer brightness, etc.
 
 ### 9. Output
 
@@ -436,24 +507,25 @@ Custom pars on `beatsaber_renderer`:
 | `Controller` | Renderer | `../beatsaber_controller` | COMP pointer used by the Script ops to resolve the controller's `game_tick` CHOP and `notes_chop`. |
 | `Worldscale` | Renderer | `2.5` | Uniform scale applied to both `sabers_geo` and `notes_geo` (Sx & Sy, pivoted at world `(0.5, 0.5, 0)`). The MediaPipe-UV (0..1) world is small relative to the camera's visible region (FOV 50° at distance 3 sees a ~5×2.8 unit window), so the sabres' 1×1 reach would only cover ~20% of screen width without scaling. 2.5× brings reach to ~50% of width and ~90% of height; 3.0 ≈ full width. The scale also enlarges sabre and note GEOMETRY proportionally, which is what you want — bigger reach AND bigger visible sabres. Game logic still operates in unscaled (0..1) coords, so collision detection, beatmap files, and scoring are unaffected. |
 
-### Adjusting hand reach manually (for existing renderers built before Worldscale)
+### Trail material requirements
 
-If your renderer was bootstrapped before `Worldscale` was added, the
-parameter won't exist. Two ways to add reach:
+Each trail Geo COMP is rendered through its own **Constant MAT**
+(`mat_trail_left`, `mat_trail_right`). The MATs are identity
+multipliers — they pass per-vertex Cd through unchanged. Per-side
+tinting and per-segment age-fade alpha both come from the geometry,
+written by the Script SOP via `point.color = (r, g, b, alpha)`.
 
-**Quick fix (no par, just direct values)**: open each Geometry COMP's
-**Xform** tab and set:
+For this to render correctly, each trail Constant MAT needs:
 
-- `sabers_geo.par.sx = 2.5`, `sy = 2.5`, `sz = 1`, `px = 0.5`, `py = 0.5`, `pz = 0`
-- `notes_geo.par.sx = 2.5`, `sy = 2.5`, `sz = 1`, `px = 0.5`, `py = 0.5`, `pz = 0`
+1. **Color** RGBA = `(1.0, 1.0, 1.0, 1.0)` (identity multiplier).
+2. **Use Point Color** (or "Color Source = Point Color" depending on
+   TD build) = **ON**.
+3. **Transparency / Blending** = **ON**.
 
-**Full upgrade (re-add the Worldscale par)**: re-run
-`bootstrap_beatsaber_renderer.py`. It's idempotent — your existing ops
-are reused, and the `Worldscale` par + the Sx/Sy expression bindings
-are added.
-
-In either case, both Geometry COMPs MUST share the same scale and pivot
-so sabres and notes line up consistently in screen space.
+The bootstrap sets all three. If trails render flat white, the MAT's
+"Use Point Color" toggle didn't take — set it manually on each MAT
+and (separately) report the actual TD par name so the bootstrap can
+hardcode it instead of probing.
 
 If you want the renderer to work with a non-sibling controller (e.g.,
 testing two simultaneous games on different COMPs), point `Controller`
@@ -513,11 +585,16 @@ renderer.
   using that setting, not trying to do Phong lighting against no
   light source.
 
-- **UI text blank**: PIL might be missing or the font fallback all
-  failed. The Script TOP degrades to transparent on failure. Check the
-  Script TOP's textport for import errors. Install PIL via
-  `pip install Pillow --break-system-packages` into TD's Python
-  distribution if needed.
+- **HUD text blank or missing**: the new HUD is built from native
+  Text TOPs whose `text` parameter binds to expressions like
+  `mod('beatsaber_hud').score_text()`. If text is empty:
+  (a) verify the `beatsaber_hud` Text DAT exists in the renderer
+  COMP and points at `beatsaber_hud.py` with Sync File ON (Force
+  Reload it), (b) verify the renderer COMP's `Controller` par
+  resolves to your `beatsaber_controller`, (c) middle-click each
+  Text TOP to confirm its `text` parameter actually evaluates
+  (the Info popup shows the current text). If the value reads
+  `None` or `""`, the Controller par or the channel name is wrong.
 
 - **Camera wrong zoom / FOV**: Camera COMP's Ortho Width doesn't apply
   to perspective cameras. Use **FOV** (Field of View angle) to zoom —

@@ -12,118 +12,20 @@ touching it — Beat Saber is a consumer of `velocity_controller/out1`.
 
 ---
 
-## What's new since the last revision
+## Build summary
 
-If you're upgrading an existing setup rather than building from scratch,
-read this first and then jump to the **Minimum-effort upgrade path**
-below. The main changes:
+1. Make sure `velocity_controller` emits both wrist and elbow landmarks
+   per side (Section 1 below).
+2. Build `beatsaber_controller` (Sections 2–6 below).
+3. Run `bootstrap_beatsaber_renderer.py` to build `beatsaber_renderer`.
+4. Optionally wire a MediaPipe Hands source for wrist-roll-aware
+   orientation (Section 6, hand inputs subsection).
 
-- **Sabre orientation** is now derived from MediaPipe Hands landmarks
-  (knuckle positions: index_MCP, middle_MCP, pinky_MCP plus the hand
-  wrist) when available, falling back to the existing elbow→wrist
-  forearm vector when hand tracking is unavailable. Wrist roll now
-  rotates the sabre's "up" axis (palm normal), so a real twist of the
-  hand actually rolls the blade. See the [Orientation pipeline](#orientation-pipeline)
-  section.
-- **Sabre rendering** changed from one line per side to a **hilt
-  segment + blade segment** per side (4 primitives total instead of 2).
-  The hilt is dim grey, the blades are red (left) and blue (right).
-- **New custom parameters** on `beatsaber_controller`: `Hiltlength`,
-  `Bladelength`, `Handweight`, `Orientsmooth`. The old `Saberlength`
-  is no longer read but is left in place as an inert legacy par.
-- **New output channels** on `game_tick`: `<side>_hilt_top_<axis>`,
-  `<side>_up_<axis>`, `<side>_hand_active`, `<side>_tip_speed`,
-  `last_hit_quality`, `last_swing_speed`, `last_event_kind`,
-  `last_hit_saber`, `time_since_event`, `upcoming_*`.
-- **Optional new input channels** (only if you wire a MediaPipe Hands
-  source into the controller): `<side>_hand_wrist:*`,
-  `<side>_hand_index_mcp:*`, `<side>_hand_middle_mcp:*`,
-  `<side>_hand_pinky_mcp:*`. The system gracefully degrades to
-  forearm-only when these are absent.
-
----
-
-## Pick your path
-
-### Minimum-effort upgrade path
-
-If you already have a working `beatsaber_controller` + `beatsaber_renderer`,
-this is the smallest set of changes that gets you the new features. Do
-them in order:
-
-1. **Force-reload the synced Text DATs** inside `beatsaber_controller`.
-   In TD, right-click each of `beatsaber_game_tick`, `beatsaber_notes`,
-   `beatsaber_events`, `beatsaber_parexec`, `install_beatsaber_params`
-   ▸ "Force Reload Selected". This pulls the new Python from disk.
-2. **Re-run the params installer.** Right-click the
-   `install_beatsaber_params` Text DAT inside `beatsaber_controller`
-   ▸ "Run Script". The installer is idempotent — your existing tunings
-   are preserved, only the new pars (`Hiltlength`, `Bladelength`,
-   `Handweight`, `Orientsmooth`) are added. Confirm in the textport:
-   you should see something like
-   `beatsaber_controller: custom pages installed (16 params total).`
-3. **Re-route the saber renderer's color chain** (only required if you
-   want the new hilt+blade look). Inside `beatsaber_renderer/sabers_geo`:
-   - The old chain was `in_sabers → color_left → color_right → out_sabers`.
-   - Delete the two old Primitive SOPs (`color_left`, `color_right`).
-   - Add four new Primitive SOPs: `color_left_hilt`, `color_left_blade`,
-     `color_right_hilt`, `color_right_blade`.
-   - On each, set Group = the primitive index (`0`, `1`, `2`, `3`
-     respectively), Color toggle ON, Color Method = Add, and the
-     Diffuse Color: hilts both `(0.45, 0.45, 0.50)` (grey), left blade
-     `(1.00, 0.25, 0.30)` (red), right blade `(0.25, 0.55, 1.00)` (blue).
-   - Wire them in series:
-     `in_sabers → color_left_hilt → color_left_blade → color_right_hilt → color_right_blade → out_sabers`.
-   - (If you'd rather not do this by hand, the bootstrap script does
-     all of the above — see the **Full-rebuild path** below.)
-4. **Wire MediaPipe Hands inputs (OPTIONAL).** Skipping this step gives
-   you the elbow→wrist forearm fallback orientation, which works
-   exactly like the previous version. To get the new wrist-roll-aware
-   orientation:
-   - Add a MediaPipe Hands tox or your preferred hand-landmark source
-     to your project. It must emit one CHOP channel per axis per
-     landmark using the naming pattern
-     `<side>_hand_<joint>:<axis>` — e.g. `left_hand_index_mcp:x`. The
-     four required joints are `wrist`, `index_mcp`, `middle_mcp`,
-     `pinky_mcp`. Each may also have a `:visible` channel (0..1).
-   - Merge those channels into the input that already feeds
-     `beatsaber_controller/in1`. The simplest way is a Merge CHOP at
-     the project level: input 0 = `velocity_controller/out1`, input 1 =
-     your hand-landmark CHOP. Connect the Merge CHOP into
-     `beatsaber_controller/in1`.
-   - Update the `select_landmarks` Select CHOP inside
-     `beatsaber_controller`: add `*_hand_*` to its Channel Names
-     pattern so the new channels propagate to `game_tick`.
-5. **Verify.** Open `game_tick`'s Info popup. You should see the new
-   channels: `left_hilt_top_x`, `left_up_y`, `left_hand_active`,
-   `left_tip_speed`, `last_hit_quality`, `upcoming_color`, etc.
-   `left_hand_active` is `1.0` when hand tracking is contributing,
-   `0.0` when only forearm fallback is active.
-
-That's it. If sabres look correct, score updates on hits, and the
-`game_tick` channel list matches above, you're done.
-
-### Full-rebuild path
-
-Recommended **only** if any of these apply:
-
-- You don't have a `beatsaber_controller` or `beatsaber_renderer` yet.
-- The renderer's `sabers_geo` chain is in an unrecoverable state from
-  manual edits.
-- You're seeing operator-name conflicts or stale references that
-  resist incremental fixes.
-
-To full-rebuild:
-1. (Optional) Delete the existing `beatsaber_renderer` Base COMP. The
-   bootstrap is idempotent and will reuse it if present, but a clean
-   slate is sometimes easier.
-2. Run `bootstrap_beatsaber_renderer.py` from a Text DAT at the
-   project root (right-click ▸ Run Script). It creates the COMP,
-   wires the four primitive-SOP color chain, the camera, the render
-   TOP and UI composite, and prints the remaining manual steps to the
-   textport.
-3. For `beatsaber_controller`, follow the **Build steps** section
-   below from scratch.
+The renderer is built end-to-end by the bootstrap script — including
+the `sabers_geo` 4-primitive color chain, the trail Geo COMPs with
+their MATs, the camera, the Worldscale binding, the HUD Text TOPs, the
+flash chain, and the final composite. For `beatsaber_controller`,
+follow the build steps below.
 
 ---
 
@@ -448,15 +350,16 @@ no Python in this section.
 
 ### Score / combo / accuracy HUD
 
-In `beatsaber_renderer/ui_top` (the existing Script TOP), the underlying
-`beatsaber_ui_top.py` already reads `score`, `combo`, `multiplier`, and
-`accuracy` from `game_tick`. After the upgrade, also drop a Text TOP
-overlay (or extend the Script TOP) to display:
+The renderer ships with five Text TOPs (`text_score`, `text_combo`,
+`text_accuracy`, `text_song_time`, `text_eventlog`) whose `text`
+parameters call helper functions in `beatsaber_hud.py` to format
+`score`, `combo`, `multiplier`, `accuracy`, `song_time`, and the event
+log. See `beatsaber_renderer_setup.md` Section 7 for the full operator
+table.
 
-- Top-right: `score` and `combo × multiplier` (already present).
-- Center-top: `accuracy` as a percentage.
-- Bottom-strip: a small bar driven by `last_hit_quality` (Constant TOP
-  + Crop TOP, width = `last_hit_quality` × full-width).
+To extend the HUD with additional readouts, drop another Text TOP and
+bind its `text` parameter to a Python expression like
+`mod('beatsaber_hud').<your_helper>()`, then composite into `comp_out`.
 
 ### Hit / miss / bad-cut bursts
 
@@ -598,7 +501,6 @@ module lands. Required pip installs: `librosa`, `numpy`, `soundfile`.
 | `Orientsmooth` | 0.03 s | EMA-lerp time constant on the palm-normal axis |
 | `Zextrusion` | 0.3 | Forearm-fallback `-Z` tilt (hand basis ignores this) |
 | `Hiltplanez` | 0.0 | World z of the hilt base (0 = hit plane) |
-| `Saberlength` | 0.25 UV | LEGACY — no longer read; kept to avoid breaking old projects. New geometry pars supersede it. |
 
 ### Gameplay
 

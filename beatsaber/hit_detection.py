@@ -129,6 +129,9 @@ def _distance_segment_to_point(p0, p1, point):
 # Main collision check
 # ---------------------------------------------------------------------------
 
+BLADE_SAMPLES = 5   # points along the blade for swept-volume collision
+
+
 def check_saber_vs_note(saber, note, cut_vectors, params):
     """
     One saber, one note — return a result tuple.
@@ -141,38 +144,78 @@ def check_saber_vs_note(saber, note, cut_vectors, params):
         angle_tolerance_rad : max angle error for a "good cut" (default 1.0 rad ≈ 57°)
         min_swing_speed     : min |velocity| to register a cut (typical 0.02 UV/frame)
         miss_window_seconds : ignored here (used by timeline.py for MISS detection)
+        blade_samples       : optional override for BLADE_SAMPLES — number of
+                              sample points to sweep along the blade (≥2)
 
     Returns (result, info_dict) where result is one of the GOOD_CUT / BAD_CUT_* codes
     or None if no contact happened. info_dict has: t_enter, hit_point, angle_error,
     center_dist, swing_speed, quality.
+
+    Whole-blade swept volume
+    ------------------------
+    We sample BLADE_SAMPLES (default 5) points along the blade — at
+    fractional positions s = 0, 0.25, 0.5, 0.75, 1.0 going from hilt
+    to tip. For each sample we test the swept segment from
+    `lerp(prev_hilt, prev_tip, s)` to `lerp(hilt, tip, s)` against the
+    note AABB. If ANY sample's swept path enters the note, it's a hit;
+    we pick the earliest entry as the "hit point" for scoring.
+
+    This catches the case where the *middle* of the blade slashes
+    through a note (very common — your hand naturally aligns the
+    middle of the blade with the impact point), where a tip-only
+    test would miss. We also keep the static current-blade test
+    (hilt → tip) so a stationary blade that a note flies into still
+    registers, and so very fast saber motion can still register hits.
     """
-    # 1. Segment sweep = (prev_tip → tip). We also use the blade line
-    #    (hilt → tip) as a "current frame blade" collider, so fast-moving
-    #    sabers don't tunnel through small notes between frames.
-    prev_tip = saber["prev_tip"]
-    tip      = saber["tip"]
-    hilt     = saber["hilt"]
+    prev_tip  = saber["prev_tip"]
+    tip       = saber["tip"]
+    hilt      = saber["hilt"]
+    prev_hilt = saber.get("prev_hilt", hilt)
 
     aabb_min, aabb_max = note_aabb(note)
 
-    # Swept tip segment.
-    hit_tip, t_tip_in, t_tip_out = _segment_aabb_intersect(
-        prev_tip, tip, aabb_min, aabb_max)
-    # Current-frame blade segment (catches notes the tip skipped over).
-    hit_blade, t_bl_in, t_bl_out = _segment_aabb_intersect(
+    n_samples = max(2, int(params.get("blade_samples", BLADE_SAMPLES)))
+
+    best_t = None       # earliest entry across all samples
+    best_hit_point = None
+
+    # Whole-blade swept segments. For each sample point along the
+    # blade, test the segment from the previous-cook position to the
+    # current-cook position. Earliest valid entry wins.
+    for k in range(n_samples):
+        s = k / (n_samples - 1)
+        prev_p = (prev_hilt[0] + s * (prev_tip[0] - prev_hilt[0]),
+                  prev_hilt[1] + s * (prev_tip[1] - prev_hilt[1]),
+                  prev_hilt[2] + s * (prev_tip[2] - prev_hilt[2]))
+        curr_p = (hilt[0] + s * (tip[0] - hilt[0]),
+                  hilt[1] + s * (tip[1] - hilt[1]),
+                  hilt[2] + s * (tip[2] - hilt[2]))
+        hit, t_in, _ = _segment_aabb_intersect(prev_p, curr_p,
+                                               aabb_min, aabb_max)
+        if hit and (best_t is None or t_in < best_t):
+            best_t = t_in
+            # Hit point is the entry along this sample's swept segment.
+            best_hit_point = (prev_p[0] + t_in * (curr_p[0] - prev_p[0]),
+                              prev_p[1] + t_in * (curr_p[1] - prev_p[1]),
+                              prev_p[2] + t_in * (curr_p[2] - prev_p[2]))
+
+    # Static current-blade test catches notes that drift into a
+    # nearly-stationary blade (low swing motion but tip is in the
+    # note's path).
+    hit_blade, t_bl_in, _ = _segment_aabb_intersect(
         hilt, tip, aabb_min, aabb_max)
 
-    if not (hit_tip or hit_blade):
+    if best_t is None and not hit_blade:
         return (None, None)
 
-    # Pick the "cleaner" intersection — earlier t on the tip sweep if present,
-    # else the blade intersection.
-    if hit_tip:
-        t_enter = t_tip_in
-        hit_point = _add(prev_tip, _scale(_sub(tip, prev_tip), t_enter))
+    if best_t is not None:
+        t_enter = best_t
+        hit_point = best_hit_point
     else:
         t_enter = t_bl_in
-        hit_point = _add(hilt, _scale(_sub(tip, hilt), t_enter))
+        hit_point = (hilt[0] + t_bl_in * (tip[0] - hilt[0]),
+                     hilt[1] + t_bl_in * (tip[1] - hilt[1]),
+                     hilt[2] + t_bl_in * (tip[2] - hilt[2]))
 
     # 2. Colour check.
     if saber["color"] != note.color:

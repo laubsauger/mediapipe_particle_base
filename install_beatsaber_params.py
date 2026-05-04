@@ -125,6 +125,27 @@ add_float(saber, 'Orientsmooth', 'Orientation Smooth (s)',
 add_float(saber, 'Zextrusion', 'Z Extrusion (forearm fallback only)',
           0.1, 0.0, 1.0)
 
+# POV / thrust feel.
+#
+# Forwardlock: when ON, the blade's forward axis is clamped to the z ≤ 0
+# half-space, so the blade can NEVER rotate toward the camera. This
+# stops the visually-jarring "blade swooping out of the screen" effect
+# when a forward thrust pose puts the wrist past the elbow on the
+# camera-facing axis. Default ON.
+add_toggle(saber, 'Forwardlock', 'Forward Lock (blade tilts away from camera)',
+           True)
+
+# Thrustscale: maps the wrist's MediaPipe depth (negative when wrist
+# is closer to the camera) into hilt z so a forward-thrust motion
+# translates the saber INTO the tunnel — the POV expectation. 0 =
+# locked to the hit plane (no thrust translation, default behavior
+# from earlier versions). 1.5 = a 0.3-UV thrust toward the camera
+# pushes the hilt 0.45 units deeper into the tunnel. Tune up if
+# thrusts feel too small, down if you'd rather keep the saber on
+# the hit plane for easier note-hitting.
+add_float(saber, 'Thrustscale', 'Thrust Scale (wrist-z → hilt-z)',
+          1.5, 0.0, 5.0, clamp_max=False)
+
 # Which z the saber hilt sits at. 0 = hit plane (notes arrive here).
 # Negative = hilt in front of hit plane, positive = behind.
 add_float(saber, 'Hiltplanez', 'Hilt Plane Z',

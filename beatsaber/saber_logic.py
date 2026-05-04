@@ -126,9 +126,6 @@ def _fresh_saber_state():
 
         # Diagnostic — was the hand basis active this frame?
         "hand_active": 0.0,
-
-        # Back-compat: kept so any consumer reading "last_good_dir" doesn't break.
-        "last_good_dir": (0.0, 1.0, -0.3),
     }
 
 
@@ -550,11 +547,54 @@ def update_saber(sample, wrist_xy, elbow_xy, wrist_visible, elbow_visible,
                                      or (1.0, 0.0, 0.0, 0.0))
         f_smooth, u_smooth, r_smooth = _quat_to_basis(sample["orient_quat"])
 
-    # 6. Build geometry: hilt_base at the wrist, hilt_top forward by
+    # 6. Forward-lock — POV constraint.
+    #
+    # The game is designed as a first-person view: camera is the
+    # player's eye, sabres extend OUT from the hands toward the
+    # approaching notes (down the −Z tunnel). The blade must NEVER
+    # rotate to point at the camera (positive forward.z) — that would
+    # read as "slashing toward myself" instead of "slashing into the
+    # scene", breaking the POV illusion.
+    #
+    # Without this clamp, normal real-world poses (forward thrust,
+    # elbow-above-wrist mid-swing) can put forward.z slightly
+    # positive, which would visually flip the blade out of the screen
+    # for a frame. Clamp forward.z to at most -FORWARD_LOCK_MIN_Z so
+    # the blade is *always* tilted at least slightly into the tunnel.
+    #
+    # We CLAMP, not MIRROR, because mirroring (-0.5 → +0.5) creates a
+    # discontinuity right at the threshold. Clamp gives a smooth
+    # "floor" — small wobbles around z=0 stay near the floor; large
+    # camera-ward rotations also stop at the floor.
+    if params.get("forward_lock", True):
+        FORWARD_LOCK_MIN_Z = 0.05   # blade always tilts at least this far
+                                    # into the tunnel (in unit-vector units)
+        if f_smooth[2] > -FORWARD_LOCK_MIN_Z:
+            clamped_forward = (f_smooth[0], f_smooth[1], -FORWARD_LOCK_MIN_Z)
+            f_smooth, u_smooth, r_smooth = _orthonormalize(clamped_forward,
+                                                            u_smooth)
+
+    # 7. Build geometry: hilt_base at the wrist, hilt_top forward by
     #    hilt_length, tip forward by hilt_length + blade_length.
+    #
+    # Optional thrust-z mapping: when `thrust_scale > 0`, use the
+    # wrist's MediaPipe-z (closer-to-camera = negative) to push the
+    # hilt INTO the tunnel. POV mental model: hand forward in real
+    # life → blade extends into the scene. The mapping is
+    #   hilt_z = hilt_plane_z + wrist_z_mediapipe * thrust_scale
+    # Both signs match (MediaPipe z negative when wrist is closer to
+    # camera; we want hilt_z negative = deeper into the tunnel), so
+    # the multiplication preserves direction.
     hilt_length  = params.get("hilt_length", 0.04)
     blade_length = params.get("blade_length", 0.21)
-    hilt_base = (wrist_xy[0], wrist_xy[1], params["hilt_plane_z"])
+    plane_z      = params["hilt_plane_z"]
+    thrust_scale = params.get("thrust_scale", 0.0)
+    if thrust_scale != 0.0:
+        # wrist_z is in the optional 4th tuple slot if the upstream
+        # passed it; otherwise treat as 0 (no thrust contribution).
+        wrist_z = wrist_xy[2] if len(wrist_xy) > 2 else 0.0
+        plane_z = plane_z + wrist_z * thrust_scale
+    hilt_base = (wrist_xy[0], wrist_xy[1], plane_z)
     hilt_top  = _add(hilt_base, _scale(f_smooth, hilt_length))
     tip       = _add(hilt_top,  _scale(f_smooth, blade_length))
 
@@ -569,8 +609,6 @@ def update_saber(sample, wrist_xy, elbow_xy, wrist_visible, elbow_visible,
     sample["right"]       = r_smooth
     sample["velocity"]    = velocity
     sample["hand_active"] = hand_active
-    # Back-compat: keep last_good_dir mirrored to current dir.
-    sample["last_good_dir"] = f_smooth
     return sample
 
 
@@ -642,6 +680,19 @@ def default_params():
                                  # 0.03 = ~half-life ~20 ms, fast enough that
                                  # full-arm swings pass through, slow enough
                                  # to suppress per-frame knuckle wobble.
+        # POV / thrust feel.
+        "forward_lock":  True,   # clamp forward.z ≤ 0 so the blade always
+                                 # tilts AWAY from camera; without this, a
+                                 # forward-thrust pose can rotate the blade
+                                 # toward the camera and read as "slashing
+                                 # toward me" instead of into the scene.
+        "thrust_scale":  1.5,    # MediaPipe wrist-z → hilt-z multiplier.
+                                 # 0 = hilt locked to hilt_plane_z (old
+                                 # behavior); 1.5 = a hand thrust 0.3 UV
+                                 # closer to the camera in real life pushes
+                                 # the hilt 0.45 units deeper into the
+                                 # tunnel. Requires the upstream sample
+                                 # tuple to include wrist z (3rd element).
     }
 
 

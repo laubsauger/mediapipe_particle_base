@@ -77,12 +77,16 @@ SABER = {
     # length would push the tip past the note's z-extent and notes
     # would never register hits.
     'Zextrusion':   0.1,
+    # Forwardlock: clamp blade so it always tilts away from camera.
+    # Without this, a forward thrust pose can rotate the blade toward
+    # the camera and read as "slashing toward me".
+    'Forwardlock':  True,
+    # Thrustscale: maps wrist-z → hilt-z so a forward thrust
+    # translates the saber into the tunnel (POV feel). 0 = off
+    # (saber locked to hit plane).
+    'Thrustscale':  1.5,
     # Z of the hilt base in game world. 0 = on the hit plane.
     'Hiltplanez':   0.0,
-    # Legacy par from the previous geometry model. The runtime no
-    # longer reads it (Hiltlength + Bladelength supersede it), but if
-    # it exists on the COMP we reset it too to keep its label honest.
-    'Saberlength':  0.25,
 }
 
 # ---------------------------------------------------------------------------
