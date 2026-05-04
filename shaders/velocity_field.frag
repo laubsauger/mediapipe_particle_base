@@ -44,6 +44,7 @@ uniform float uForceGain;
 uniform float uZGain;
 uniform float uVelStretch;
 uniform float uStretchSpeedRef;
+uniform float uZForceWeight;
 
 out vec4 fragColor;
 
@@ -68,6 +69,11 @@ void main()
         vec2  pos2    = r0.xy;
         float z       = r0.z;
         vec3  vel     = r1.xyz;              // full 3D velocity
+        // Damp the z component of the splatted velocity by uZForceWeight.
+        // Monocular-depth noise from MediaPipe makes vz spurious during
+        // pure horizontal motion — without this, particles drift in z on
+        // every wave/swing. Matches the spawn-side Zforceweight knob.
+        vel.z *= uZForceWeight;
         float gain    = r1.w * uForceGain;
         if (gain <= 0.0) continue;
 

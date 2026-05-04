@@ -172,6 +172,23 @@ def onCook(scriptOp):
     _mean_perp  = sum(p[1] for p in _used) / len(_used)
 
     idx = 0
+    # Bounds for spawn-position clamp. Particles must spawn INSIDE the
+    # reflective box, otherwise PartVel-based motion immediately bounces
+    # them around the spawn point and they look stuck. Read via _par with
+    # safe defaults so the script keeps running on COMPs without these
+    # custom pars yet.
+    bz_min = float(_par('Boundsminz', -0.5))
+    bz_max = float(_par('Boundsmaxz',  0.5))
+    bx_min = float(_par('Boundsminx',  0.0))
+    bx_max = float(_par('Boundsmaxx',  1.0))
+    by_min = float(_par('Boundsminy',  0.0))
+    by_max = float(_par('Boundsmaxy',  1.0))
+    # Inset margin so spawns aren't right on the wall
+    margin = 0.02
+
+    def _clamp(v, lo, hi):
+        return max(lo, min(hi, v))
+
     for lm_i, lm in enumerate(lms):
         x  = _read(src, f'{lm}:x')
         y  = _read(src, f'{lm}:y')
@@ -240,9 +257,9 @@ def onCook(scriptOp):
             fan_vx = perp_x * rel_perp * spawn_vel_fan * vmag_xy * spawn_vel_scale
             fan_vy = perp_y * rel_perp * spawn_vel_fan * vmag_xy * spawn_vel_scale
 
-            chans['P0'][idx] = x + off_x
-            chans['P1'][idx] = y + off_y
-            chans['P2'][idx] = z
+            chans['P0'][idx] = _clamp(x + off_x, bx_min + margin, bx_max - margin)
+            chans['P1'][idx] = _clamp(y + off_y, by_min + margin, by_max - margin)
+            chans['P2'][idx] = _clamp(z,         bz_min + margin, bz_max - margin)
             chans['v0'][idx] = base_svx + fan_vx
             chans['v1'][idx] = base_svy + fan_vy
             chans['v2'][idx] = svz
