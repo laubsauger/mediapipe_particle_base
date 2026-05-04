@@ -111,18 +111,18 @@ def _add_segment(scriptOp, p0_xyz, p1_xyz, group=None):
 
 
 def _add_sabre(scriptOp, hilt_base, hilt_top, tip, side):
-    """Append ONE 3-point polyline per saber (hilt_base → hilt_top → tip).
-    A single poly means the downstream wireframeSOP produces a single
-    continuous tube — separating hilt and blade into two prims caused
-    visible alignment kinks at the junction (each tube had its own
-    rounded cap and the caps misaligned at the shared midpoint)."""
+    """Append ONE 2-point polyline per saber (hilt_base → tip). Skipping
+    the intermediate hilt_top vertex avoids any visible kink the
+    wireframeSOP could introduce at the bend (caps on internal verts
+    can render with subtle angle artifacts even when the polyline is
+    geometrically collinear). The hilt segment becomes the dim base of
+    the same tube — single material, single cap on each end, fully
+    straight."""
     p0 = scriptOp.appendPoint(); p0.P = hilt_base
-    p1 = scriptOp.appendPoint(); p1.P = hilt_top
-    p2 = scriptOp.appendPoint(); p2.P = tip
-    poly = scriptOp.appendPoly(3, closed=False, addPoints=False)
+    p1 = scriptOp.appendPoint(); p1.P = tip
+    poly = scriptOp.appendPoly(2, closed=False, addPoints=False)
     poly[0].point = p0
     poly[1].point = p1
-    poly[2].point = p2
     try:
         grp = scriptOp.primGroups.get(f'sabre_{side}') if hasattr(scriptOp.primGroups, 'get') else None
         if grp is None:
@@ -135,10 +135,9 @@ def _add_sabre(scriptOp, hilt_base, hilt_top, tip, side):
 
 def _add_stub_sabre(scriptOp, side):
     p0 = scriptOp.appendPoint(); p0.P = _STUB_HILT_BASE
-    p1 = scriptOp.appendPoint(); p1.P = _STUB_HILT_TOP
-    p2 = scriptOp.appendPoint(); p2.P = _STUB_TIP
-    poly = scriptOp.appendPoly(3, closed=False, addPoints=False)
-    poly[0].point = p0; poly[1].point = p1; poly[2].point = p2
+    p1 = scriptOp.appendPoint(); p1.P = _STUB_TIP
+    poly = scriptOp.appendPoly(2, closed=False, addPoints=False)
+    poly[0].point = p0; poly[1].point = p1
     try:
         grp = scriptOp.createPrimGroup(f'sabre_{side}')
         grp.add(poly)

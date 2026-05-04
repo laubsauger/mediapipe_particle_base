@@ -248,7 +248,10 @@ def snap_to_beat_grid(onset_times, beat_times, snap_threshold_ms=DEFAULT_SNAP_TH
 # Beat Saber convention: red blocks are hit with the LEFT saber, blue with RIGHT.
 _COLORS = ("red", "blue")
 _DIRECTIONS_BASIC = ("down", "up", "left", "right")
-_DIRECTIONS_DIAG  = ("down_left", "down_right", "up_left", "up_right")
+# Diagonals disabled — restrict to cardinal cuts only. Easier to read
+# the arrow indicator on the note face and matches the simplified
+# input pipeline (no 8-way wrist orientation).
+_DIRECTIONS_DIAG  = _DIRECTIONS_BASIC
 
 
 def _pick_color(feat, prev_color):

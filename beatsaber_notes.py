@@ -134,8 +134,16 @@ def onCook(scriptOp):
         chans['color_blue'][i]  = 2.4 if note.color == 'blue' else 0.0
 
         # Cut direction components, plus a scalar angle.
+        # Restrict to cardinal-only by snapping diagonal cuts to the
+        # nearest axis (the renderer's arrow indicator is up/down/left/
+        # right only, and the simplified input pipeline doesn't try to
+        # detect 8-way wrist orientation).
+        cut_name = note.cut
+        if isinstance(cut_name, str) and '_' in cut_name:
+            # 'up_left' → snap to 'up' (first cardinal in the compound)
+            cut_name = cut_name.split('_', 1)[0]
         if _CUT_VECTORS is not None:
-            cv = _CUT_VECTORS.get(note.cut, (0.0, 0.0, 0.0))
+            cv = _CUT_VECTORS.get(cut_name, (0.0, 0.0, 0.0))
         else:
             cv = (0.0, 0.0, 0.0)
         chans['cut_x'][i] = float(cv[0])
