@@ -393,12 +393,17 @@ def onCook(scriptOp):
         wrist_xyz = (wrist_xyz_raw[0], wy,
                      wrist_xyz_raw[2] + _synth_z(side))
 
-        elbow_xy = (ex if elbow_ok else default_elbow_x,
-                    ey if elbow_ok else 0.7)
+        # Read elbow Z too — required for real 3D forearm direction.
+        # Without it the blade direction is locked to the screen plane
+        # plus a constant -z tilt, which makes Z-axis swings impossible.
+        elbow_z = _read(scriptOp, f'{side}_elbow:z', 0.0)
+        elbow_xyz = (ex if elbow_ok else default_elbow_x,
+                     ey if elbow_ok else 0.5,
+                     elbow_z)
 
         return {
             "wrist_xy": wrist_xyz,
-            "elbow_xy": elbow_xy,
+            "elbow_xy": elbow_xyz,    # now 3D (kept name for back-compat)
             "wrist_visible": wrist_ok,
             "elbow_visible": elbow_ok,
             "hand_visible": hand_vis,
@@ -448,6 +453,39 @@ def onCook(scriptOp):
                 'song_time': float(snapshot['song_time']),
             })
     comp.store('beatsaber_last_hits', hit_records)
+
+    # Per-cook event records for the slash-log overlay. ACTUAL
+    # game-judged events (hit / bad_cut / miss). Build a note id →
+    # note lookup so we can pull cut direction + color.
+    note_by_id = {n.id: n for n in snapshot.get('active_notes', [])}
+    event_records = []
+    for h in events.hits:                 # list of dicts {note_id, saber, ...}
+        note = note_by_id.get(h.get('note_id'))
+        event_records.append({
+            'kind':  'hit',
+            'saber': h.get('saber', 'left'),
+            'cut':   getattr(note, 'cut', 'any') if note is not None else 'any',
+            'song_time': float(snapshot['song_time']),
+        })
+    for bc in events.bad_cuts:            # list of dicts
+        note = note_by_id.get(bc.get('note_id'))
+        event_records.append({
+            'kind':  'bad',
+            'saber': bc.get('saber', 'left'),
+            'cut':   getattr(note, 'cut', 'any') if note is not None else 'any',
+            'song_time': float(snapshot['song_time']),
+        })
+    for note_id in events.misses:         # list of bare note ids (int)
+        note = note_by_id.get(note_id)
+        # Pick side from the note's expected colour (red → left).
+        saber = 'left' if (note is not None and getattr(note, 'color', '') == 'red') else 'right'
+        event_records.append({
+            'kind':  'miss',
+            'saber': saber,
+            'cut':   getattr(note, 'cut', 'any') if note is not None else 'any',
+            'song_time': float(snapshot['song_time']),
+        })
+    comp.store('beatsaber_last_events', event_records)
 
     # ----- Emit output channels -----------------------------------------------
     scriptOp.numSamples = 1

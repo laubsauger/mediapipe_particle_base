@@ -377,33 +377,30 @@ def _hand_basis_instantaneous(wrist_xyz, index_mcp_xyz, middle_mcp_xyz,
     return _orthonormalize(forward_raw, palm_normal_raw)
 
 
-def _forearm_basis(wrist_xy, elbow_xy, z_extrusion, forearm_strength=1.0):
-    """Fallback basis from elbow → wrist + a default palm-normal hint.
+def _forearm_basis(wrist_xyz, elbow_xyz, z_extrusion, forearm_strength=1.0):
+    """Build the forearm-driven blade basis from full 3D landmarks.
 
-    `forearm_strength` ∈ [0, 1] decays the screen-XY contribution to the
-    forward direction. When the forearm becomes foreshortened (the user
-    thrusts the arm toward the camera), its on-screen length shrinks
-    and the elbow→wrist 2D direction becomes noisy — at the limit
-    (arm pointing straight at the camera) the screen vector is a single
-    point and useless. Fading the XY weight as forearm length shrinks
-    lets the -Z extrusion dominate, so the blade naturally swings out
-    of the screen plane and into the tunnel for forward thrusts.
+    forward = (wrist - elbow), normalized. When the depth signal is
+    available (MediaPipe pose with `:z`), the blade direction is the
+    REAL 3D forearm vector — a forward thrust naturally rotates the
+    blade into the tunnel along Z, and a sideways swing keeps it in
+    the screen plane. No artificial Z extrusion is applied when the
+    forearm signal is strong; we add a small fallback only when the
+    raw 3D vector is degenerate (arm pointing exactly at the camera
+    with depth signal collapsed).
 
-    No roll info from the forearm alone, so we use world +Z (toward
-    camera) as the up hint."""
-    fx = wrist_xy[0] - elbow_xy[0]
-    fy = wrist_xy[1] - elbow_xy[1]
-    fmag2 = fx * fx + fy * fy
+    `forearm_strength` is reserved for the smoother in update_saber —
+    this function always returns the instantaneous unit basis.
+    """
+    fx = wrist_xyz[0] - elbow_xyz[0]
+    fy = wrist_xyz[1] - elbow_xyz[1]
+    fz = (wrist_xyz[2] - elbow_xyz[2]) if (len(wrist_xyz) > 2 and len(elbow_xyz) > 2) else 0.0
+    fmag2 = fx * fx + fy * fy + fz * fz
     if fmag2 < 1e-8:
-        # Degenerate — default to pointing up + into the tunnel.
-        forward_raw = (0.0, -1.0, -max(z_extrusion, 0.5))
+        forward_raw = (0.0, -1.0, -max(z_extrusion, 0.2))
     else:
-        # Scale screen-direction by forearm_strength so a foreshortened
-        # forearm doesn't twist the blade sideways. -Z extrusion stays
-        # at full magnitude.
-        inv = forearm_strength / math.sqrt(fmag2)
-        forward_raw = (fx * inv, fy * inv, -z_extrusion)
-    up_hint = (0.0, 0.0, 1.0)  # default: palm normal toward camera
+        forward_raw = (fx, fy, fz)
+    up_hint = (0.0, 0.0, 1.0)
     return _orthonormalize(forward_raw, up_hint)
 
 
@@ -489,12 +486,15 @@ def update_saber(sample, wrist_xy, elbow_xy, wrist_visible, elbow_visible,
     forearm_basis = None
     forearm_signal_weight = 0.0
     if wrist_visible and elbow_visible:
+        # Use full 3D forearm length (xyz) for signal weight when
+        # wrist/elbow have depth. With real Z, a forward-thrust pose
+        # has solid 3D length even when its 2D projection collapses.
         fx0 = wrist_xy[0] - elbow_xy[0]
         fy0 = wrist_xy[1] - elbow_xy[1]
-        forearm_len_2d = math.sqrt(fx0 * fx0 + fy0 * fy0)
+        fz0 = (wrist_xy[2] - elbow_xy[2]) if (len(wrist_xy) > 2 and len(elbow_xy) > 2) else 0.0
+        forearm_len_3d = math.sqrt(fx0 * fx0 + fy0 * fy0 + fz0 * fz0)
         baseline_len   = params.get("forearm_baseline_len", 0.16)
-        ratio = max(0.0, min(1.0, forearm_len_2d / max(1e-4, baseline_len)))
-        # Linear falloff so half-length forearm still gets half-weight.
+        ratio = max(0.0, min(1.0, forearm_len_3d / max(1e-4, baseline_len)))
         forearm_signal_weight = ratio
         forearm_basis = _forearm_basis(wrist_xy, elbow_xy,
                                        params["z_extrusion"],

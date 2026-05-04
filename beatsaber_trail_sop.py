@@ -73,13 +73,11 @@ def _clamp(v, lo, hi):
 
 
 def _renderer_comp():
-    """The renderer COMP holds the trail history + the Bladetrail
-    pars. Walk up two levels: my parent is the wrapper Geo COMP,
-    its parent is `beatsaber_renderer`. NOTE `.parent()` is called
-    as a function — `me_geo.parent` (bare attribute) returns a
-    `td.ParentShortcut` helper that does not expose `.par`."""
-    me_geo = parent()           # the trail_left_geo / trail_right_geo COMP
-    return me_geo.parent()      # the beatsaber_renderer COMP
+    """Resolve the renderer COMP — `parent()` in a Script-SOP callback
+    returns the GEO COMP's parent directly (TD's free-function
+    `parent()` is shorthand for `me.parent(1)`, skipping the
+    script-owning geo). So `parent()` IS already the renderer."""
+    return parent()
 
 
 def _read_par(comp, name, default):
@@ -125,9 +123,12 @@ _STUB = ((0.0, 0.0, 0.0), (0.0, 0.0001, 0.0))
 def onCook(scriptOp):
     scriptOp.clear()
 
-    me_geo   = parent()                # parent Geometry COMP
+    # In a Script-SOP callback `parent()` is the GEO COMP's parent
+    # (the renderer). Walk back to the geo COMP via the script op's
+    # own parent.
+    me_geo   = scriptOp.parent()       # the trail_<side>_geo wrapper
     side     = (_read_par(me_geo, 'Side', 'left') or 'left').lower()
-    renderer = _renderer_comp()
+    renderer = parent()                # already the renderer COMP
 
     # Honor the renderer-COMP's master toggle. When off, emit a
     # zero-length stub so the SOP graph stays stable but invisible.
