@@ -1,4 +1,4 @@
-# beatsaber_notes.py
+﻿# beatsaber_notes.py
 # ==================
 # Script CHOP callback for active-notes output.
 #
@@ -56,7 +56,7 @@ CHANNEL_NAMES = (
     'id',
     'x', 'y', 'z',
     'size',
-    'color_red', 'color_blue',
+    'color_red', 'color_green', 'color_blue',
     'cut_x', 'cut_y', 'cut_angle',
     'state_active', 'state_hit', 'state_missed',
     'age',
@@ -96,15 +96,41 @@ def onCook(scriptOp):
 
     song_time = snapshot.get('song_time', 0.0)
 
+    # Side-locking: when Mirrorsides is on, red notes are forced to
+    # the user's left-hand side and blue to the right. With a mirrored
+    # webcam, MediaPipe `left_wrist` lands on screen-right (selfie
+    # convention), so RED on screen-right and BLUE on screen-left.
+    # The beatmap may otherwise place a red note in the right half of
+    # the playfield — which would force the user to cross arms.
+    mirror_sides = bool(getattr(parent().par, 'Mirrorsides',
+                                type('p', (), {'eval': lambda s: 1})()).eval())
+
     for i, note in enumerate(active):
         chans['id'][i]    = float(note.id)
-        chans['x'][i]     = float(note.x)
+        # Push red into the screen-right half (>= 0.5) and blue into
+        # the left half (< 0.5) when mirror-sides is on. We preserve
+        # the WITHIN-side variation by mapping the original x ∈ [0,1]
+        # into [0.5,1] for red and [0,0.5] for blue.
+        nx = float(note.x)
+        if mirror_sides:
+            if note.color == 'red':
+                nx = 0.5 + 0.5 * nx     # always >= 0.5
+            else:                        # blue
+                nx = 0.5 * nx           # always < 0.5
+        chans['x'][i]     = nx
         chans['y'][i]     = float(note.y)
         chans['z'][i]     = float(note.z)
         chans['size'][i]  = float(note.size)
 
-        chans['color_red'][i]  = 1.0 if note.color == 'red' else 0.0
-        chans['color_blue'][i] = 1.0 if note.color == 'blue' else 0.0
+        # HDR neon values (>1) so a Bloom TOP downstream can pick up
+        # the brightest channels and produce the saturated glow pass.
+        # Without HDR, RGB clamps at 1.0 and bloom can't differentiate
+        # the lit cube from a regular pixel. Pixel format on render_scene
+        # must also be a float format (rgba16float / rgba32float) for
+        # values >1 to survive into the composite.
+        chans['color_red'][i]   = 2.4 if note.color == 'red'  else 0.0
+        chans['color_green'][i] = 0.0
+        chans['color_blue'][i]  = 2.4 if note.color == 'blue' else 0.0
 
         # Cut direction components, plus a scalar angle.
         if _CUT_VECTORS is not None:

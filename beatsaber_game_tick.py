@@ -1,4 +1,4 @@
-# beatsaber_game_tick.py
+﻿# beatsaber_game_tick.py
 # ======================
 # Script CHOP callback for the Beat Saber game tick.
 #
@@ -162,6 +162,18 @@ def _get_or_build_game(comp):
         except Exception as e:
             debug(f"beatsaber_game_tick: beatmap load failed ({beatmap_abs}): {e}")
             return None
+        # Side-lock: with mirrored webcam the user's left hand lands on
+        # screen-right. To prevent cross-overs we squash each note into
+        # its colour's half — red notes always x >= 0.5, blue always
+        # x < 0.5. Same transform applied to display (notes_chop) AND
+        # to the in-game collision position so swings register.
+        mirror_par = getattr(comp.par, 'Mirrorsides', None)
+        if mirror_par is not None and bool(mirror_par.eval()):
+            for note in bm.notes:
+                if note.color == 'red':
+                    note.x = 0.5 + 0.5 * note.x
+                else:
+                    note.x = 0.5 * note.x
         game = _bs_game.Game(beatmap=bm)
         # IMPORTANT: prime the timeline's wall clock with the current
         # absTime.seconds BEFORE calling start(). Without this,

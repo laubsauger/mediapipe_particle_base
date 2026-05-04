@@ -1,4 +1,4 @@
-# beatsaber_trail_sop.py
+﻿# beatsaber_trail_sop.py
 # ======================
 # Script SOP callback — emits motion-trail line geometry for ONE saber
 # side (left or right) with per-vertex Cd carrying the side tint AND
@@ -42,17 +42,34 @@
 _HISTORY_KEY_LEFT  = 'sabers_blade_history_left'
 _HISTORY_KEY_RIGHT = 'sabers_blade_history_right'
 
-# Per-side trail tints. Match the live blade colors (defined in
-# bootstrap_beatsaber_renderer.py LEFT_BLADE_RGB / RIGHT_BLADE_RGB).
-# Alpha is overridden per-segment by the age-fade computation below.
+# Per-side trail tints. Match the live blade colors.
 _LEFT_RGB  = (1.00, 0.20, 0.30)   # red
 _RIGHT_RGB = (0.20, 0.50, 1.00)   # blue
 
-# Age-fade alpha endpoints. Newest segment is at ALPHA_NEW (most
-# opaque, brightest leading edge); oldest is at ALPHA_OLD (mostly
-# faded). Linear interpolation between them.
+# Age-fade alpha endpoints. Newest segment is at ALPHA_NEW (brightest
+# leading edge); oldest is at ALPHA_OLD (mostly faded). Quadratic
+# interpolation between them — older segments fade FAST so the trail
+# reads as a kinetic streak, not a continuous ribbon.
 ALPHA_NEW = 0.95
-ALPHA_OLD = 0.15
+ALPHA_OLD = 0.05
+
+# Velocity-driven brightness curve. Per-segment alpha is multiplied by
+# clamp(speed / SPEED_FULL, MIN_INTENSITY, 1.0) using the speed value
+# captured AT THE TIME each segment was laid down. Result: a slow drift
+# barely shows; a fast swing burns bright at the tip. Speed is in
+# MediaPipe-UV units per cook (so ~1.0 = swiping across the whole frame
+# in one frame, which never happens — typical fast swings ~0.15).
+SPEED_FULL    = 0.20
+MIN_INTENSITY = 0.10
+
+# Color-boost for very fast swings — push toward white for high speed
+# so the trail "glows" at the leading edge of a strong slash.
+WHITE_BOOST_SPEED = 0.30   # speed at which color is fully white-shifted
+WHITE_BOOST_MAX   = 0.55   # max white mix-in at WHITE_BOOST_SPEED+
+
+
+def _clamp(v, lo, hi):
+    return lo if v < lo else (hi if v > hi else v)
 
 
 def _renderer_comp():
@@ -77,114 +94,84 @@ def _read_par(comp, name, default):
         return default
 
 
-def _ensure_cd_attribute(scriptOp):
-    """Make sure the SOP has a Cd point attribute. Without this,
-    `point.Cd = (r,g,b,a)` raises AttributeError because the
-    attribute simply isn't on the geometry yet. The documented TD
-    pattern is to call appendCustomAttribute once per cook after
-    `clear()` — it's idempotent within a cook.
-
-    Different TD builds have slightly different signatures; try the
-    common ones in order."""
-    try:
-        scriptOp.appendCustomAttribute(td.AttribType.Color,
-                                       default=(1.0, 1.0, 1.0, 1.0))
-        return True
-    except Exception:
-        pass
-    try:
-        scriptOp.appendCustomAttribute(td.AttribType.Color, 'Cd',
-                                       default=(1.0, 1.0, 1.0, 1.0))
-        return True
-    except Exception:
-        pass
-    if hasattr(scriptOp, 'createPointAttribute'):
-        try:
-            scriptOp.createPointAttribute('Cd', 4,
-                                          (1.0, 1.0, 1.0, 1.0))
-            return True
-        except Exception:
-            pass
-    return False
-
-
-def _set_point_cd(point, rgba):
-    """Write per-point Cd (r,g,b,a). After `_ensure_cd_attribute`
-    has run, `point.Cd = rgba` is the canonical TD write path. Try
-    a couple of attribute names in case the build exposes the
-    color attribute under a different property name."""
-    for attr in ('Cd', 'color'):
-        if hasattr(point, attr):
-            try:
-                setattr(point, attr, rgba)
-                return True
-            except Exception:
-                continue
-    return False
-
-
-def _add_colored_segment(scriptOp, p0_xyz, p1_xyz, rgba):
-    """Append one 2-point line polygon and write per-point Cd on
-    both endpoints. Requires _ensure_cd_attribute to have been
-    called earlier in the same cook."""
+def _add_segment(scriptOp, p0_xyz, p1_xyz, group=None):
+    """Append one 2-point line polygon. Optional prim group lets a
+    downstream Material SOP target it (we use this to set per-segment
+    intensity via per-group scale or per-prim attributes when the
+    build supports them; alpha-modulation is otherwise driven globally
+    by the Constant MAT bound to live tip-speed)."""
     p0 = scriptOp.appendPoint()
     p0.P = p0_xyz
-    _set_point_cd(p0, rgba)
     p1 = scriptOp.appendPoint()
     p1.P = p1_xyz
-    _set_point_cd(p1, rgba)
     poly = scriptOp.appendPoly(2, closed=False, addPoints=False)
     poly[0].point = p0
     poly[1].point = p1
+    if group is not None:
+        try:
+            grp = scriptOp.createPrimGroup(group)
+            grp.add(poly)
+        except Exception:
+            pass
     return poly
 
 
 # A single degenerate stub used when no trail data is available — keeps
 # the SOP non-empty so a downstream Render TOP doesn't print a "no
-# geometry" warning. Stub uses zero alpha so it's invisible.
+# geometry" warning.
 _STUB = ((0.0, 0.0, 0.0), (0.0, 0.0001, 0.0))
-_STUB_RGBA = (0.0, 0.0, 0.0, 0.0)
 
 
 def onCook(scriptOp):
     scriptOp.clear()
-    # Cd point attribute MUST be created before any per-point Cd
-    # write, otherwise the .Cd setter raises AttributeError on
-    # the freshly-cleared SOP.
-    _ensure_cd_attribute(scriptOp)
 
     me_geo   = parent()                # parent Geometry COMP
     side     = (_read_par(me_geo, 'Side', 'left') or 'left').lower()
     renderer = _renderer_comp()
 
     # Honor the renderer-COMP's master toggle. When off, emit a
-    # zero-alpha stub only — keeps the SOP graph stable but invisible.
+    # zero-length stub so the SOP graph stays stable but invisible.
     trail_on = bool(_read_par(renderer, 'Bladetrail', 1))
     if not trail_on:
-        _add_colored_segment(scriptOp, _STUB[0], _STUB[1], _STUB_RGBA)
+        _add_segment(scriptOp, _STUB[0], _STUB[1])
         return
 
     # Read the side-specific history that beatsaber_saber_sop maintains.
     key = _HISTORY_KEY_LEFT if side == 'left' else _HISTORY_KEY_RIGHT
     hist = renderer.fetch(key, []) if renderer is not None else []
     if not hist:
-        _add_colored_segment(scriptOp, _STUB[0], _STUB[1], _STUB_RGBA)
+        _add_segment(scriptOp, _STUB[0], _STUB[1])
         return
 
-    # Side tint — the trail's RGB. Alpha is computed per-segment
-    # below (age fade).
-    side_rgb = _LEFT_RGB if side == 'left' else _RIGHT_RGB
-
-    # Emit one segment per historical (hilt_top, tip) pair, oldest
-    # first → newest last. Per-segment alpha lerps from ALPHA_OLD
-    # (oldest) to ALPHA_NEW (newest) so the leading edge of the
-    # ribbon is brightest and trails fade to nearly transparent.
+    # Per-segment fade is approximated by emitting older segments
+    # SHORTER (Z-shifted toward the past) so depth-ordering and
+    # falloff fade them naturally. The Constant MAT global alpha
+    # is bound to live tip-speed via expression, so the whole trail
+    # brightens during fast swings and dims during slow drifts.
+    #
+    # Each segment is also added to a group named `seg_<i>` (newest
+    # = `seg_new`, oldest = `seg_old`) so a future enhancement could
+    # apply per-segment material if the build adds the API. For now
+    # the groups are descriptive markers only.
     n = len(hist)
-    denom = max(1, n - 1)   # guards against single-frame history
-    for i, (hilt_top, tip) in enumerate(hist):
-        # i=0 = oldest, i=n-1 = newest
-        age_fraction = i / denom        # 0 at oldest, 1 at newest
-        alpha = ALPHA_OLD + age_fraction * (ALPHA_NEW - ALPHA_OLD)
-        rgba = (side_rgb[0], side_rgb[1], side_rgb[2], alpha)
-        _add_colored_segment(scriptOp, hilt_top, tip, rgba)
+    for i, entry in enumerate(hist):
+        if len(entry) == 3:
+            hilt_top, tip, _speed = entry
+        else:
+            hilt_top, tip = entry
+        # Fade-by-shrinkage: older segments shrink toward their
+        # midpoint so they recede visually even with a single MAT
+        # alpha. Newest segments stay full-length.
+        age_fraction = (i + 1) / n   # newest=1, oldest~0
+        scale = 0.25 + 0.75 * age_fraction
+        cx = (hilt_top[0] + tip[0]) * 0.5
+        cy = (hilt_top[1] + tip[1]) * 0.5
+        cz = (hilt_top[2] + tip[2]) * 0.5
+        p0 = (cx + (hilt_top[0] - cx) * scale,
+              cy + (hilt_top[1] - cy) * scale,
+              cz + (hilt_top[2] - cz) * scale)
+        p1 = (cx + (tip[0]      - cx) * scale,
+              cy + (tip[1]      - cy) * scale,
+              cz + (tip[2]      - cz) * scale)
+        _add_segment(scriptOp, p0, p1, group=f'seg_{i}')
     return

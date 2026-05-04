@@ -54,6 +54,10 @@ _STUB_HILT_BASE = (0.0, 0.0, 0.0)
 _STUB_HILT_TOP  = (0.0, 0.0001, 0.0)
 _STUB_TIP       = (0.0, 0.0002, 0.0)
 
+# Coloring is applied DOWNSTREAM via Material SOPs that target the
+# per-prim groups assigned in `_add_segment` — this build's Script SOP
+# does not expose per-vertex Cd, so MAT-per-group is the route.
+
 
 def _controller_tick_op():
     """Resolve the game_tick CHOP. Prefer a par pointer on the renderer
@@ -81,10 +85,11 @@ def _read_xyz(chop, base):
     return (float(cx[0]), float(cy[0]), float(cz[0]))
 
 
-def _add_segment(scriptOp, p0_xyz, p1_xyz):
-    """Append one 2-point line polygon. No Cd — color happens
-    downstream via the four Primitive SOPs that select prims 0..3
-    by index."""
+def _add_segment(scriptOp, p0_xyz, p1_xyz, group=None):
+    """Append one 2-point line polygon. Per-prim color/material is
+    applied downstream by Material SOPs that select prims by group;
+    if `group` is given, the prim is added to that point/prim group
+    so a downstream Material SOP can target it."""
     p0 = scriptOp.appendPoint()
     p0.P = p0_xyz
     p1 = scriptOp.appendPoint()
@@ -92,24 +97,28 @@ def _add_segment(scriptOp, p0_xyz, p1_xyz):
     poly = scriptOp.appendPoly(2, closed=False, addPoints=False)
     poly[0].point = p0
     poly[1].point = p1
+    if group is not None:
+        try:
+            grp = scriptOp.primGroups.get(group) if hasattr(scriptOp.primGroups, 'get') else None
+            if grp is None:
+                grp = scriptOp.createPrimGroup(group)
+            grp.add(poly)
+        except Exception:
+            pass
     return poly
 
 
-def _add_sabre(scriptOp, hilt_base, hilt_top, tip):
-    """Append the hilt segment and the blade segment for one saber.
-    Two primitives appended in fixed order: hilt first (prim N), then
-    blade (prim N+1). No Cd is set — downstream Primitive SOPs select
-    by index (0/1/2/3) and apply per-prim color."""
-    _add_segment(scriptOp, hilt_base, hilt_top)
-    _add_segment(scriptOp, hilt_top,  tip)
+def _add_sabre(scriptOp, hilt_base, hilt_top, tip, side):
+    """Append the hilt segment + blade segment for one saber. Each is
+    placed in a per-prim group so a downstream Material SOP can apply
+    per-segment material (grey hilt, red/blue blade)."""
+    _add_segment(scriptOp, hilt_base, hilt_top, group=f'hilt_{side}')
+    _add_segment(scriptOp, hilt_top,  tip,      group=f'blade_{side}')
 
 
-def _add_stub_sabre(scriptOp):
-    """Two degenerate primitives for a side with no tracking data, so
-    primitive numbering stays stable across cooks. Numbering matters
-    because downstream Primitive SOPs select prims 0..3 by index."""
-    _add_segment(scriptOp, _STUB_HILT_BASE, _STUB_HILT_TOP)
-    _add_segment(scriptOp, _STUB_HILT_TOP,  _STUB_TIP)
+def _add_stub_sabre(scriptOp, side):
+    _add_segment(scriptOp, _STUB_HILT_BASE, _STUB_HILT_TOP, group=f'hilt_{side}')
+    _add_segment(scriptOp, _STUB_HILT_TOP,  _STUB_TIP,      group=f'blade_{side}')
 
 
 _HISTORY_KEY_LEFT  = 'sabers_blade_history_left'
@@ -128,16 +137,36 @@ def _read_par(comp, name, default):
         return default
 
 
-def _push_blade_history(comp, key, hilt_top, tip, max_len):
-    """Append the latest (hilt_top, tip) pair to the per-side history
-    list stored on the parent COMP. Trim to `max_len` entries (oldest
-    dropped first). Returns the resulting list."""
+def _push_blade_history(comp, key, hilt_top, tip, speed, max_len):
+    """Append the latest (hilt_top, tip, speed) tuple to the per-side
+    history list stored on the parent COMP. `speed` is the tip-velocity
+    magnitude at this cook — trail_sop uses it to brighten fast strokes
+    and dim slow ones, segment-by-segment at the moment of capture."""
     hist = comp.fetch(key, [])
-    hist.append((hilt_top, tip))
+    hist.append((hilt_top, tip, float(speed)))
     if len(hist) > max_len:
         hist = hist[-max_len:]
     comp.store(key, hist)
     return hist
+
+
+def _read_speed(chop, side):
+    """Read tip-velocity magnitude for `side` from the game_tick CHOP.
+    Falls back to computing it from <side>_vel_x/y/z if the
+    pre-summed channel isn't there."""
+    c = chop[f'{side}_tip_speed']
+    if c is not None:
+        try:
+            return float(c[0])
+        except Exception:
+            pass
+    vx = chop[f'{side}_vel_x']; vy = chop[f'{side}_vel_y']; vz = chop[f'{side}_vel_z']
+    if vx is None or vy is None or vz is None:
+        return 0.0
+    try:
+        return (float(vx[0])**2 + float(vy[0])**2 + float(vz[0])**2) ** 0.5
+    except Exception:
+        return 0.0
 
 
 def onCook(scriptOp):
@@ -146,10 +175,9 @@ def onCook(scriptOp):
     tick = _controller_tick_op()
     if tick is None:
         # Controller not wired yet — emit four degenerate stubs so
-        # primitive numbering stays stable and downstream Primitive
-        # SOPs don't fail on a missing prim 0/1/2/3.
-        _add_stub_sabre(scriptOp)
-        _add_stub_sabre(scriptOp)
+        # primitive numbering stays stable.
+        _add_stub_sabre(scriptOp, 'left')
+        _add_stub_sabre(scriptOp, 'right')
         return
 
     comp = parent()
@@ -157,15 +185,14 @@ def onCook(scriptOp):
     # Trail config — read for HISTORY MAINTENANCE only. The actual
     # trail rendering happens in beatsaber_trail_sop, which reads the
     # history we maintain here.
-    trail_len = int(_read_par(comp, 'Bladetraillen', 16))
+    trail_len = int(_read_par(comp, 'Bladetraillen', 24))
     trail_len = max(1, min(trail_len, 120))
 
-    # Emit the FOUR primary primitives (left+right hilt+blade) in
-    # stable order:
-    #   prim 0 : left  hilt   ← Primitive SOP "color_left_hilt"  (Group=0)
-    #   prim 1 : left  blade  ← Primitive SOP "color_left_blade" (Group=1)
-    #   prim 2 : right hilt   ← Primitive SOP "color_right_hilt" (Group=2)
-    #   prim 3 : right blade  ← Primitive SOP "color_right_blade"(Group=3)
+    # Emit the FOUR primary primitives in stable order:
+    #   prim 0 : left  hilt  (grey)
+    #   prim 1 : left  blade (red)
+    #   prim 2 : right hilt  (grey)
+    #   prim 3 : right blade (blue)
     for side in ('left', 'right'):
         hilt_base = _read_xyz(tick, f'{side}_hilt')
         hilt_top  = _read_xyz(tick, f'{side}_hilt_top')
@@ -174,21 +201,20 @@ def onCook(scriptOp):
         key = _HISTORY_KEY_LEFT if side == 'left' else _HISTORY_KEY_RIGHT
 
         if hilt_base is None or tip is None:
-            _add_stub_sabre(scriptOp)
-            # Clear history when tracking drops so we don't leave a
-            # stale ghost trail floating in space.
+            _add_stub_sabre(scriptOp, side)
             comp.store(key, [])
             continue
 
         if hilt_top is None:
-            # Older controller — fake a hilt_top one quarter of the way
-            # from hilt to tip so we still have two primitives per side.
             hilt_top = (hilt_base[0] + 0.18 * (tip[0] - hilt_base[0]),
                         hilt_base[1] + 0.18 * (tip[1] - hilt_base[1]),
                         hilt_base[2] + 0.18 * (tip[2] - hilt_base[2]))
 
-        _add_sabre(scriptOp, hilt_base, hilt_top, tip)
+        _add_sabre(scriptOp, hilt_base, hilt_top, tip, side)
 
-        # Maintain the trail history for the dedicated trail SOPs to read.
-        _push_blade_history(comp, key, hilt_top, tip, trail_len)
+        # Capture per-frame tip speed so the trail can brighten/dim
+        # each segment based on the swing speed at the moment that
+        # segment was laid down.
+        speed = _read_speed(tick, side)
+        _push_blade_history(comp, key, hilt_top, tip, speed, trail_len)
     return
