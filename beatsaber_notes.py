@@ -61,7 +61,17 @@ CHANNEL_NAMES = (
     'state_active', 'state_hit', 'state_missed',
     'age',
     'time_to_hit',
+    'near_hit',           # 0..1 — pulses to 1 as note crosses hit plane
+    'size_pulse',         # size scaled by near_hit (drives visual scale-up)
+    'emit_pulse',         # emission boost (HDR multiplier) at hit window
 )
+
+
+# Hit-window envelope. Notes scale up + flash emission when they're
+# within HIT_PULSE_S seconds of crossing the hit plane.
+HIT_PULSE_S    = 0.30   # window (each side) of `time_to_hit` for the pulse
+SCALE_BOOST    = 0.50   # +50% size at peak
+EMIT_BOOST     = 1.80   # 1.8× emission multiplier at peak
 
 
 def onCook(scriptOp):
@@ -106,20 +116,28 @@ def onCook(scriptOp):
     mirror_sides = bool(getattr(parent().par, 'Mirrorsides',
                                 type('p', (), {'eval': lambda s: 1})()).eval())
 
+    # Confine spawns to the on-screen hit zone (image-space [0.3, 0.7]
+    # for both x and y). Without this, beatmap notes that originally
+    # use the full [0, 1] playfield can fly outside the visible
+    # tunnel frame and the user has no way to hit them.
+    HIT_X_LOW, HIT_X_HIGH = 0.30, 0.70
+    HIT_Y_LOW, HIT_Y_HIGH = 0.30, 0.70
+
     for i, note in enumerate(active):
         chans['id'][i]    = float(note.id)
-        # Push red into the screen-right half (>= 0.5) and blue into
-        # the left half (< 0.5) when mirror-sides is on. We preserve
-        # the WITHIN-side variation by mapping the original x ∈ [0,1]
-        # into [0.5,1] for red and [0,0.5] for blue.
+        # Side-mirroring (red on right half, blue on left) — but
+        # SCOPED to the on-screen hit zone, not the full UV.
         nx = float(note.x)
         if mirror_sides:
             if note.color == 'red':
                 nx = 0.5 + 0.5 * nx     # always >= 0.5
             else:                        # blue
                 nx = 0.5 * nx           # always < 0.5
+        # Remap [0,1] into the hit-zone band.
+        nx = HIT_X_LOW + (HIT_X_HIGH - HIT_X_LOW) * nx
+        ny = HIT_Y_LOW + (HIT_Y_HIGH - HIT_Y_LOW) * float(note.y)
         chans['x'][i]     = nx
-        chans['y'][i]     = float(note.y)
+        chans['y'][i]     = ny
         chans['z'][i]     = float(note.z)
         chans['size'][i]  = float(note.size)
 
@@ -165,7 +183,15 @@ def onCook(scriptOp):
             chans['age'][i] = 0.0
 
         # Time-to-hit: seconds until the note crosses the hit plane.
-        # Used by a hit-indicator overlay to pulse just before contact.
-        chans['time_to_hit'][i] = float(note.time - song_time)
+        tth = float(note.time - song_time)
+        chans['time_to_hit'][i] = tth
+
+        # Hit-window pulse — gives the user a visual "now" cue when
+        # the note enters the valid hit window. Triangular envelope
+        # over ±HIT_PULSE_S around tth=0, peaking at the perfect hit.
+        near_hit = max(0.0, 1.0 - abs(tth) / HIT_PULSE_S)
+        chans['near_hit'][i]   = near_hit
+        chans['size_pulse'][i] = float(note.size) * (1.0 + SCALE_BOOST * near_hit)
+        chans['emit_pulse'][i] = 1.0 + EMIT_BOOST * near_hit
 
     return
