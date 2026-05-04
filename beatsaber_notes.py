@@ -57,9 +57,10 @@ CHANNEL_NAMES = (
     'x', 'y', 'z',
     'size',
     'color_red', 'color_green', 'color_blue',
-    'cut_x', 'cut_y', 'cut_angle',
+    'cut_x', 'cut_y', 'cut_angle', 'cut_angle_deg',
     'state_active', 'state_hit', 'state_missed',
     'age',
+    'time_to_hit',
 )
 
 
@@ -139,7 +140,9 @@ def onCook(scriptOp):
             cv = (0.0, 0.0, 0.0)
         chans['cut_x'][i] = float(cv[0])
         chans['cut_y'][i] = float(cv[1])
-        chans['cut_angle'][i] = math.atan2(cv[1], cv[0]) if (cv[0] or cv[1]) else 0.0
+        ang_rad = math.atan2(cv[1], cv[0]) if (cv[0] or cv[1]) else 0.0
+        chans['cut_angle'][i]     = ang_rad
+        chans['cut_angle_deg'][i] = math.degrees(ang_rad)
 
         # State flags. Most notes will be "spawned" (active); hit/missed
         # notes linger briefly in the cleanup window for VFX.
@@ -152,5 +155,9 @@ def onCook(scriptOp):
             chans['age'][i] = float(max(0.0, song_time - note.spawn_time))
         else:
             chans['age'][i] = 0.0
+
+        # Time-to-hit: seconds until the note crosses the hit plane.
+        # Used by a hit-indicator overlay to pulse just before contact.
+        chans['time_to_hit'][i] = float(note.time - song_time)
 
     return

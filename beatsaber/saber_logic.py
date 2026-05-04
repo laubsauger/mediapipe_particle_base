@@ -124,8 +124,17 @@ def _fresh_saber_state():
         "orient_quat":    None,           # derived smoothed-basis quat
         "last_good_quat": None,           # derived from last_good basis
 
+        # Forward axis EMA state — separate from `smoothed_up` because
+        # the two axes need different time constants.
+        "smoothed_forward": None,
+
         # Diagnostic — was the hand basis active this frame?
         "hand_active": 0.0,
+        # 1.0 when the wrist+elbow had a usable position this cook,
+        # 0.0 when tracking degraded and we held the last good pose.
+        # The renderer reads this to hide the saber when tracking is
+        # lost (otherwise the saber snaps to MediaPipe's (0, 0) garbage).
+        "tracking_active": 0.0,
     }
 
 
@@ -368,25 +377,31 @@ def _hand_basis_instantaneous(wrist_xyz, index_mcp_xyz, middle_mcp_xyz,
     return _orthonormalize(forward_raw, palm_normal_raw)
 
 
-def _forearm_basis(wrist_xy, elbow_xy, z_extrusion):
+def _forearm_basis(wrist_xy, elbow_xy, z_extrusion, forearm_strength=1.0):
     """Fallback basis from elbow → wrist + a default palm-normal hint.
-    No roll info from the forearm alone, so we use world +Z (toward
-    camera) as the up hint. This makes the saber lie "flat" with its
-    bright side facing the camera — a reasonable neutral.
 
-    Returns (forward, up, right). Always succeeds (uses a default
-    forward if elbow and wrist are collocated)."""
+    `forearm_strength` ∈ [0, 1] decays the screen-XY contribution to the
+    forward direction. When the forearm becomes foreshortened (the user
+    thrusts the arm toward the camera), its on-screen length shrinks
+    and the elbow→wrist 2D direction becomes noisy — at the limit
+    (arm pointing straight at the camera) the screen vector is a single
+    point and useless. Fading the XY weight as forearm length shrinks
+    lets the -Z extrusion dominate, so the blade naturally swings out
+    of the screen plane and into the tunnel for forward thrusts.
+
+    No roll info from the forearm alone, so we use world +Z (toward
+    camera) as the up hint."""
     fx = wrist_xy[0] - elbow_xy[0]
     fy = wrist_xy[1] - elbow_xy[1]
     fmag2 = fx * fx + fy * fy
     if fmag2 < 1e-8:
         # Degenerate — default to pointing up + into the tunnel.
-        forward_raw = (0.0, -1.0, -max(z_extrusion, 0.1))
+        forward_raw = (0.0, -1.0, -max(z_extrusion, 0.5))
     else:
-        # Normalize 2D forearm direction, then add -z extrusion so the
-        # saber tilts into the approach lane. Re-normalization happens
-        # inside _orthonormalize.
-        inv = 1.0 / math.sqrt(fmag2)
+        # Scale screen-direction by forearm_strength so a foreshortened
+        # forearm doesn't twist the blade sideways. -Z extrusion stays
+        # at full magnitude.
+        inv = forearm_strength / math.sqrt(fmag2)
         forward_raw = (fx * inv, fy * inv, -z_extrusion)
     up_hint = (0.0, 0.0, 1.0)  # default: palm normal toward camera
     return _orthonormalize(forward_raw, up_hint)
@@ -443,11 +458,47 @@ def update_saber(sample, wrist_xy, elbow_xy, wrist_visible, elbow_visible,
     sample["prev_tip"]  = sample["tip"]
     sample["prev_hilt"] = sample["hilt"]
 
+    # Tracking-active flag. When BOTH wrist and elbow drop, hold the
+    # previous geometry rather than letting the renderer snap the
+    # saber to (0, 0). A flag on state lets the renderer hide the
+    # saber until tracking recovers.
+    if not (wrist_visible or elbow_visible):
+        sample["tracking_active"] = 0.0
+        # Don't touch geometry — keep last-good values.
+        sample["velocity"] = (0.0, 0.0, 0.0)
+        return sample
+    sample["tracking_active"] = 1.0
+
     # 1. Forearm fallback basis. Computed whenever pose data is usable.
+    #
+    # No XY-fade-out anymore — the previous scheme (forearm_strength =
+    # ratio²) was the cause of the "blade snaps between X-plane and
+    # Z-plane" feel: small motion changes pushed the strength across
+    # the threshold and the dominant axis flipped. Beat-Saber-style
+    # kinematics want a CONTINUOUS blade direction that follows the
+    # wrist+forearm vector smoothly, with a fixed -Z tilt that doesn't
+    # depend on forearm length.
+    #
+    # We instead handle the foreshortening case in the smoother below:
+    # when the on-screen forearm shrinks below `forearm_baseline_len`,
+    # the "forearm signal weight" drops, so the EMA-smoothed forward
+    # holds its previous value rather than letting the noisy short
+    # vector whip the blade around. The result is: visible swing →
+    # blade follows; arm pointed at camera → blade holds last good
+    # direction.
     forearm_basis = None
+    forearm_signal_weight = 0.0
     if wrist_visible and elbow_visible:
+        fx0 = wrist_xy[0] - elbow_xy[0]
+        fy0 = wrist_xy[1] - elbow_xy[1]
+        forearm_len_2d = math.sqrt(fx0 * fx0 + fy0 * fy0)
+        baseline_len   = params.get("forearm_baseline_len", 0.16)
+        ratio = max(0.0, min(1.0, forearm_len_2d / max(1e-4, baseline_len)))
+        # Linear falloff so half-length forearm still gets half-weight.
+        forearm_signal_weight = ratio
         forearm_basis = _forearm_basis(wrist_xy, elbow_xy,
-                                       params["z_extrusion"])
+                                       params["z_extrusion"],
+                                       forearm_strength=1.0)
 
     # 2. Hand-knuckle basis. Only attempted if hand is visible AND all four
     #    required landmarks are present. Knuckles only — no fingertips.
@@ -519,9 +570,10 @@ def update_saber(sample, wrist_xy, elbow_xy, wrist_visible, elbow_visible,
         # Lerp stored up-hint toward target up. EMA alpha is per-cook,
         # framerate-independent via _ema_alpha(dt, tau).
         prev_up = sample.get("smoothed_up")
+        prev_forward = sample.get("smoothed_forward")
         tau = params.get("orient_smooth", 0.03)
+
         if prev_up is None:
-            # Seed the smoother with the first good up vector.
             smoothed_up = u_target
         else:
             alpha = _ema_alpha(dt, tau)
@@ -530,12 +582,33 @@ def update_saber(sample, wrist_xy, elbow_xy, wrist_visible, elbow_visible,
                            prev_up[2] + alpha * (u_target[2] - prev_up[2]))
         sample["smoothed_up"] = smoothed_up
         sample["last_good_up"] = u_target
-        # Forward is instantaneous; up is smoothed; Gram-Schmidt makes
-        # them orthonormal, then right = up × forward.
-        f_smooth, u_smooth, r_smooth = _orthonormalize(f_target, smoothed_up)
-        # Mirror into the quaternion fields for any consumer that wants
-        # an orientation quat (e.g. for slerp-blending later).
-        sample["orient_quat"]   = _basis_to_quat(f_smooth, u_smooth, r_smooth)
+
+        # Smooth the forward axis too. EMA alpha is scaled by the
+        # forearm-signal weight so a foreshortened arm (low weight)
+        # barely contributes to the smoothed forward — effectively
+        # holding the last good direction. A well-extended forearm
+        # (high weight) contributes strongly. Hand-basis path always
+        # gets full weight.
+        if hand_basis is not None:
+            forward_signal_weight = 1.0
+        else:
+            forward_signal_weight = forearm_signal_weight
+        if prev_forward is None:
+            smoothed_forward = f_target
+        else:
+            tau_fwd = params.get("forward_smooth", 0.06)
+            alpha_fwd = _ema_alpha(dt, tau_fwd) * forward_signal_weight
+            smoothed_forward = (
+                prev_forward[0] + alpha_fwd * (f_target[0] - prev_forward[0]),
+                prev_forward[1] + alpha_fwd * (f_target[1] - prev_forward[1]),
+                prev_forward[2] + alpha_fwd * (f_target[2] - prev_forward[2]),
+            )
+        sample["smoothed_forward"] = smoothed_forward
+
+        # Gram-Schmidt makes (forward, up) orthonormal; right = up × fwd.
+        f_smooth, u_smooth, r_smooth = _orthonormalize(smoothed_forward,
+                                                       smoothed_up)
+        sample["orient_quat"]    = _basis_to_quat(f_smooth, u_smooth, r_smooth)
         sample["last_good_quat"] = sample["orient_quat"]
     else:
         # Nothing trustworthy this cook — hold the last smoothed basis.
@@ -665,21 +738,31 @@ def default_params():
         "hilt_length":   0.08,
         "blade_length":  0.55,
         "hilt_plane_z":  0.0,
-        # Forearm fallback tilt — saber points slightly into the tunnel
-        # when only the elbow→wrist signal is available. Kept small
-        # (0.1) so a long blade doesn't pull its tip far enough into
-        # -z to miss notes at z=0. With blade_length=0.55 and this
-        # extrusion, the tip's z-offset is only ~0.055, well within
-        # the default note's ±0.075 z extent.
-        "z_extrusion":   0.1,
+        # Forearm fallback tilt — saber points into the tunnel when
+        # only the elbow→wrist signal is available. Higher values let
+        # the user execute a forward thrust: as the arm straightens
+        # toward the camera the 2D forearm shrinks (foreshortening),
+        # `forearm_strength` decays in update_saber, and the -Z extrusion
+        # dominates → blade rotates out of the screen plane and into
+        # the approach tunnel where the notes live.
+        "z_extrusion":   0.45,
+        # Forearm length (in UV) at which the screen-XY contribution
+        # to the forward axis is at full strength. Below this, the
+        # contribution decays quadratically. Tune up if the user is
+        # close to the camera (longer apparent forearm); down if far.
+        "forearm_baseline_len": 0.16,
         # Orientation fusion + smoothing.
         "hand_weight":   1.0,    # 1 = trust hand basis fully when present;
                                  # 0 = ignore hand, use forearm only.
-        "orient_smooth": 0.03,   # EMA-slerp time constant on the quaternion
-                                 # (s). Lower = snappier, more jitter through.
-                                 # 0.03 = ~half-life ~20 ms, fast enough that
-                                 # full-arm swings pass through, slow enough
-                                 # to suppress per-frame knuckle wobble.
+        "orient_smooth": 0.03,   # EMA time constant on the up axis (s).
+                                 # Suppresses per-frame palm-roll jitter.
+        "forward_smooth": 0.02,  # EMA time constant on the forward axis
+                                 # (s). Short — we want the blade to
+                                 # FOLLOW the hand snappily, not lag
+                                 # behind. The forearm-signal-weight
+                                 # gate already suppresses junk during
+                                 # foreshortening; the EMA only knocks
+                                 # off per-frame jitter.
         # POV / thrust feel.
         "forward_lock":  True,   # clamp forward.z ≤ 0 so the blade always
                                  # tilts AWAY from camera; without this, a

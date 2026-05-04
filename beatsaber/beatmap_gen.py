@@ -388,6 +388,90 @@ def generate_notes(analysis, *, audio_visual_offset_ms=DEFAULT_OFFSET_MS,
     return notes
 
 
+def cached_beatmap_path(audio_path):
+    """Where the cached JSON sidecar lives for `audio_path`.
+
+    Convention: same directory, same stem, `.beatmap.json` suffix.
+    Example:  /songs/foo.mp3  →  /songs/foo.beatmap.json
+    Distributable as a single pair (audio + sidecar)."""
+    base, _ext = os.path.splitext(os.path.abspath(audio_path))
+    return base + ".beatmap.json"
+
+
+def load_or_generate_beatmap(audio_path, *, travel_time=DEFAULT_TRAVEL_TIME,
+                              z_spawn=DEFAULT_Z_SPAWN,
+                              audio_visual_offset_ms=DEFAULT_OFFSET_MS,
+                              snap_threshold_ms=DEFAULT_SNAP_THRESH_MS,
+                              title=None, max_notes=None,
+                              force=False, save=True, log=None):
+    """Return a beatmap dict for `audio_path`, generating + caching if needed.
+
+    Strategy:
+      1. Look for `<audio>.beatmap.json` next to the audio file.
+      2. If cache exists, audio mtime older than cache mtime, and the
+         cached `_meta` matches our pipeline parameters — load it.
+      3. Otherwise run the librosa pipeline, write the cache (when
+         `save=True`), and return.
+
+    Re-generation triggers:
+      - `force=True`
+      - cache missing
+      - audio file modified after cache (re-edit / new mix)
+      - cached _meta doesn't match current params (offset/snap/etc.)
+    """
+    log = log or (lambda *a, **k: None)
+    cache_path = cached_beatmap_path(audio_path)
+
+    def _params_match(meta):
+        if not isinstance(meta, dict):
+            return False
+        return (
+            abs(float(meta.get("audio_visual_offset_ms", -1)) - float(audio_visual_offset_ms)) < 1e-3
+            and abs(float(meta.get("snap_threshold_ms", -1)) - float(snap_threshold_ms)) < 1e-3
+        )
+
+    if not force and os.path.exists(cache_path):
+        try:
+            cache_mtime = os.path.getmtime(cache_path)
+            audio_mtime = os.path.getmtime(audio_path)
+        except OSError:
+            cache_mtime = 0; audio_mtime = 1
+        if cache_mtime >= audio_mtime:
+            try:
+                with open(cache_path, 'r') as f:
+                    bm = json.load(f)
+                if _params_match(bm.get("_meta")):
+                    log(f"beatmap_gen: cache hit  {cache_path}  "
+                        f"({len(bm.get('notes', []))} notes)")
+                    return bm
+                log(f"beatmap_gen: cache params mismatch — regenerating")
+            except (OSError, ValueError) as e:
+                log(f"beatmap_gen: cache read failed ({e}) — regenerating")
+    else:
+        if force:
+            log("beatmap_gen: force=True — regenerating")
+        else:
+            log(f"beatmap_gen: no cache at {cache_path} — generating")
+
+    bm = build_beatmap_json(
+        audio_path,
+        travel_time=travel_time,
+        z_spawn=z_spawn,
+        audio_visual_offset_ms=audio_visual_offset_ms,
+        snap_threshold_ms=snap_threshold_ms,
+        title=title,
+        max_notes=max_notes,
+    )
+    if save:
+        try:
+            with open(cache_path, 'w') as f:
+                json.dump(bm, f, indent=2)
+            log(f"beatmap_gen: wrote cache {cache_path} ({len(bm['notes'])} notes)")
+        except OSError as e:
+            log(f"beatmap_gen: cache write failed ({e})")
+    return bm
+
+
 def build_beatmap_json(audio_path, *, travel_time=DEFAULT_TRAVEL_TIME,
                       z_spawn=DEFAULT_Z_SPAWN,
                       audio_visual_offset_ms=DEFAULT_OFFSET_MS,

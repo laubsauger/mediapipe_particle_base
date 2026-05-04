@@ -86,6 +86,20 @@ except Exception as e:
     _bs_game = None
     _bs_beatmap = None
 
+# beatmap_gen is OPTIONAL — only needed when an audio file drives the
+# beatmap. Loaded lazily because librosa pulls a lot of binaries.
+_bs_beatmap_gen = None
+def _get_beatmap_gen():
+    global _bs_beatmap_gen
+    if _bs_beatmap_gen is None:
+        try:
+            import beatsaber.beatmap_gen as bmg
+            _bs_beatmap_gen = bmg
+        except Exception as e:
+            debug(f"beatsaber_game_tick: beatmap_gen import failed: {e}")
+            _bs_beatmap_gen = False
+    return _bs_beatmap_gen if _bs_beatmap_gen else None
+
 
 STORAGE_KEY_GAME     = 'beatsaber_game'
 STORAGE_KEY_SNAPSHOT = 'beatsaber_snapshot'
@@ -136,10 +150,21 @@ def _get_or_build_game(comp):
     if _bs_game is None or _bs_beatmap is None:
         return None
 
-    beatmap_par = getattr(comp.par, 'Beatmapfile', None)
-    beatmap_rel = beatmap_par.eval() if beatmap_par is not None else 'beatsaber/test_beatmap.json'
-    beatmap_abs = os.path.join(project.folder, beatmap_rel) \
-                  if not os.path.isabs(beatmap_rel) else beatmap_rel
+    # Audio path takes precedence — when set, generate (or load cached)
+    # beatmap from the audio file via beatsaber.beatmap_gen.
+    audio_par   = getattr(comp.par, 'Audiofile', None)
+    audio_rel   = audio_par.eval() if audio_par is not None else ''
+    use_audio   = bool(audio_rel)
+
+    if use_audio:
+        audio_abs = os.path.join(project.folder, audio_rel) \
+                    if not os.path.isabs(audio_rel) else audio_rel
+        beatmap_abs = audio_abs        # cache key — audio path drives identity
+    else:
+        beatmap_par = getattr(comp.par, 'Beatmapfile', None)
+        beatmap_rel = beatmap_par.eval() if beatmap_par is not None else 'beatsaber/test_beatmap.json'
+        beatmap_abs = os.path.join(project.folder, beatmap_rel) \
+                      if not os.path.isabs(beatmap_rel) else beatmap_rel
 
     game = comp.fetch(STORAGE_KEY_GAME, None)
     cached_path = comp.fetch(STORAGE_KEY_BEATMAP, None)
@@ -156,12 +181,37 @@ def _get_or_build_game(comp):
                      or (current_mtime is not None
                          and cached_mtime != current_mtime))
     if needs_rebuild:
-        # First run, or beatmap changed — build fresh.
-        try:
-            bm = _bs_beatmap.Beatmap.from_json_file(beatmap_abs)
-        except Exception as e:
-            debug(f"beatsaber_game_tick: beatmap load failed ({beatmap_abs}): {e}")
-            return None
+        # Audio-driven path: build (or load sidecar) via beatmap_gen.
+        if use_audio:
+            bmg = _get_beatmap_gen()
+            if bmg is None:
+                debug("beatsaber_game_tick: audio-driven beatmap requested "
+                      "but beatmap_gen unavailable (install librosa). "
+                      "Falling back to test beatmap.")
+                bm = _bs_beatmap.Beatmap.from_json_file(
+                    os.path.join(project.folder, 'beatsaber/test_beatmap.json'))
+            else:
+                offset_par = getattr(comp.par, 'Audiooffsetms', None)
+                offset_ms = float(offset_par.eval()) if offset_par is not None else 0.0
+                snap_par = getattr(comp.par, 'Audiosnapms', None)
+                snap_ms = float(snap_par.eval()) if snap_par is not None else 30.0
+                try:
+                    bm_dict = bmg.load_or_generate_beatmap(
+                        audio_abs,
+                        audio_visual_offset_ms=offset_ms,
+                        snap_threshold_ms=snap_ms,
+                        log=lambda *a, **k: debug(' '.join(str(x) for x in a)),
+                    )
+                except Exception as e:
+                    debug(f"beatsaber_game_tick: audio analysis failed: {e}")
+                    return None
+                bm = _bs_beatmap.Beatmap.from_dict(bm_dict)
+        else:
+            try:
+                bm = _bs_beatmap.Beatmap.from_json_file(beatmap_abs)
+            except Exception as e:
+                debug(f"beatsaber_game_tick: beatmap load failed ({beatmap_abs}): {e}")
+                return None
         # Side-lock: with mirrored webcam the user's left hand lands on
         # screen-right. To prevent cross-overs we squash each note into
         # its colour's half — red notes always x >= 0.5, blue always
@@ -241,6 +291,18 @@ def onCook(scriptOp):
             return fallback
         return float(c[0]) >= vis_thresh
 
+    # Position-validity gate — now that the upstream limit1 clamp is
+    # off, MediaPipe pose y/z values can be arbitrary signed floats
+    # (the model emits them in a hip-centered range, not [0, 1]).
+    # We only reject NaN/Inf; out-of-range values just mean the user
+    # is partially out of frame, and the saber math still copes.
+    import math as _math
+    def _pos_valid(x, y):
+        try:
+            return _math.isfinite(float(x)) and _math.isfinite(float(y))
+        except Exception:
+            return False
+
     # Helper: read all 4 hand-knuckle landmarks for one side, returning
     # None if any required channel is missing OR if the per-landmark
     # visibility gate fails. The saber falls back to forearm-only when
@@ -283,29 +345,69 @@ def onCook(scriptOp):
     def _hilt_xyz(side, hand, hand_vis):
         if hand is not None and hand_vis:
             return (hand["wrist"][0], hand["wrist"][1], hand["wrist"][2])
-        return (_read(scriptOp, f'{side}_wrist:x', 0.3 if side == 'left' else 0.7),
-                _read(scriptOp, f'{side}_wrist:y', 0.5),
-                _read(scriptOp, f'{side}_wrist:z', 0.0))
+        x = _read(scriptOp, f'{side}_wrist:x', 0.3 if side == 'left' else 0.7)
+        y_pose = _read(scriptOp, f'{side}_wrist:y', 0.0)
+        z = _read(scriptOp, f'{side}_wrist:z', 0.0)
+        return (x, 0.5 - y_pose, z)
+
+    # MediaPipe pose y is HIP-CENTERED with +y pointing UP (head is
+    # positive, feet negative). The renderer expects image-normalized
+    # y where 0 = top of frame, 1 = bottom (Beat Saber / image
+    # convention) so the existing sy=-Worldscale flip on the geo COMPs
+    # produces the right screen orientation.
+    #
+    # Convert: y_image = 0.5 - y_pose
+    #   pose y = +0.3 (hand raised) → y_image = 0.2 (upper image)
+    #   pose y =  0.0 (hip)         → y_image = 0.5 (middle)
+    #   pose y = -0.3 (hand low)    → y_image = 0.8 (lower image)
+    def _read_landmark_xy(name):
+        x = _read(scriptOp, f'{name}:x', 0.5)
+        y_pose = _read(scriptOp, f'{name}:y', 0.0)
+        return (x, 0.5 - y_pose)
+
+    raw = {}
+    for side in ('left', 'right'):
+        wx, wy = _read_landmark_xy(f'{side}_wrist')
+        ex, ey = _read_landmark_xy(f'{side}_elbow')
+        raw[side] = (wx, wy, ex, ey)
+
+    # No more synthetic Z — real wrist:z flows from MediaPipe pose
+    # depth (hip-centered, negative = closer to camera). saber_logic's
+    # `thrust_scale` path multiplies wrist_z to translate the hilt
+    # into the tunnel. The synth-from-speed hack is gone (it locked
+    # the blade onto a Z-axis line during any motion).
+    def _synth_z(side):
+        return 0.0
+
+    def _build_sample(side, default_elbow_x):
+        wx, wy, ex, ey = raw[side]
+        wrist_ok = _visible(f'{side}_wrist') and _pos_valid(wx, wy)
+        elbow_ok = _visible(f'{side}_elbow') and _pos_valid(ex, ey)
+
+        if side == 'left':
+            hand, hand_vis = left_hand, left_hand_vis
+        else:
+            hand, hand_vis = right_hand, right_hand_vis
+        # Replace y in the hilt anchor with the offset-corrected value.
+        wrist_xyz_raw = _hilt_xyz(side, hand, hand_vis)
+        wrist_xyz = (wrist_xyz_raw[0], wy,
+                     wrist_xyz_raw[2] + _synth_z(side))
+
+        elbow_xy = (ex if elbow_ok else default_elbow_x,
+                    ey if elbow_ok else 0.7)
+
+        return {
+            "wrist_xy": wrist_xyz,
+            "elbow_xy": elbow_xy,
+            "wrist_visible": wrist_ok,
+            "elbow_visible": elbow_ok,
+            "hand_visible": hand_vis,
+            "hand_landmarks": hand,
+        }
 
     samples = {
-        "left": {
-            "wrist_xy": _hilt_xyz('left', left_hand, left_hand_vis),
-            "elbow_xy": (_read(scriptOp, 'left_elbow:x', 0.3),
-                         _read(scriptOp, 'left_elbow:y', 0.7)),
-            "wrist_visible": _visible('left_wrist'),
-            "elbow_visible": _visible('left_elbow'),
-            "hand_visible": left_hand_vis,
-            "hand_landmarks": left_hand,
-        },
-        "right": {
-            "wrist_xy": _hilt_xyz('right', right_hand, right_hand_vis),
-            "elbow_xy": (_read(scriptOp, 'right_elbow:x', 0.7),
-                         _read(scriptOp, 'right_elbow:y', 0.7)),
-            "wrist_visible": _visible('right_wrist'),
-            "elbow_visible": _visible('right_elbow'),
-            "hand_visible": right_hand_vis,
-            "hand_landmarks": right_hand,
-        },
+        "left":  _build_sample('left',  0.3),
+        "right": _build_sample('right', 0.7),
     }
 
     # Advance the game one cook.
@@ -313,6 +415,39 @@ def onCook(scriptOp):
 
     # Stash the full snapshot for sibling Script ops.
     comp.store(STORAGE_KEY_SNAPSHOT, snapshot)
+
+    # Per-cook hit list — beatsaber_slices.py reads this to spawn the
+    # falling-halves slice particles. Each entry includes the note
+    # position + cut direction + saber color so the slice script can
+    # build a physics-driven shower without re-deriving any of it.
+    hit_records = []
+    if events.hits:
+        try:
+            from beatsaber.beatmap import CUT_VECTORS as _CV
+        except Exception:
+            _CV = {}
+        for h in events.hits:
+            note = h.get('note')
+            saber = h.get('saber', 'left')
+            if note is None:
+                continue
+            cv = _CV.get(getattr(note, 'cut', None), (0.0, 0.0, 0.0))
+            sb = snapshot['sabers'].get(saber, {})
+            sv = sb.get('velocity', (0.0, 0.0, 0.0))
+            hit_records.append({
+                'x': float(getattr(note, 'x', 0.5)),
+                'y': float(getattr(note, 'y', 0.5)),
+                'z': 0.0,                       # hit plane
+                'size': float(getattr(note, 'size', 0.15)),
+                'cut_x': float(cv[0]),
+                'cut_y': float(cv[1]),
+                'saber_vx': float(sv[0]),
+                'saber_vy': float(sv[1]),
+                'saber_vz': float(sv[2]),
+                'color': getattr(note, 'color', 'red'),
+                'song_time': float(snapshot['song_time']),
+            })
+    comp.store('beatsaber_last_hits', hit_records)
 
     # ----- Emit output channels -----------------------------------------------
     scriptOp.numSamples = 1
@@ -342,6 +477,7 @@ def onCook(scriptOp):
             scriptOp.appendChan(f'{side}_up_{axis}')[0]       = float(s['up'][axis_i])
             scriptOp.appendChan(f'{side}_vel_{axis}')[0]      = float(s['velocity'][axis_i])
         scriptOp.appendChan(f'{side}_hand_active')[0] = float(s.get('hand_active', 0.0))
+        scriptOp.appendChan(f'{side}_tracking_active')[0] = float(s.get('tracking_active', 0.0))
 
         # Blade sample points — interpolate from hilt_top to tip so the
         # trail covers ONLY the bright glowing part, not the hilt stub.
@@ -467,3 +603,4 @@ def onCook(scriptOp):
             scriptOp.appendChan(ch)[0] = 0.0
 
     return
+

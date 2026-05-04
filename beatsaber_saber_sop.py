@@ -48,11 +48,13 @@
 
 
 # Degenerate stub used when a saber side has no valid tracking data —
-# emitted as a tiny line so primitive numbering stays stable (4 prims
-# always, in the same order).
-_STUB_HILT_BASE = (0.0, 0.0, 0.0)
-_STUB_HILT_TOP  = (0.0, 0.0001, 0.0)
-_STUB_TIP       = (0.0, 0.0002, 0.0)
+# placed FAR behind the camera near plane so it's clipped out of every
+# render and never appears as a visual artefact. We still need a stub
+# (rather than emitting no geometry) so primitive numbering stays
+# stable for downstream operators.
+_STUB_HILT_BASE = (0.5, 0.5, -1000.0)
+_STUB_HILT_TOP  = (0.5, 0.5, -1000.001)
+_STUB_TIP       = (0.5, 0.5, -1000.002)
 
 # Coloring is applied DOWNSTREAM via Material SOPs that target the
 # per-prim groups assigned in `_add_segment` — this build's Script SOP
@@ -109,16 +111,39 @@ def _add_segment(scriptOp, p0_xyz, p1_xyz, group=None):
 
 
 def _add_sabre(scriptOp, hilt_base, hilt_top, tip, side):
-    """Append the hilt segment + blade segment for one saber. Each is
-    placed in a per-prim group so a downstream Material SOP can apply
-    per-segment material (grey hilt, red/blue blade)."""
-    _add_segment(scriptOp, hilt_base, hilt_top, group=f'hilt_{side}')
-    _add_segment(scriptOp, hilt_top,  tip,      group=f'blade_{side}')
+    """Append ONE 3-point polyline per saber (hilt_base → hilt_top → tip).
+    A single poly means the downstream wireframeSOP produces a single
+    continuous tube — separating hilt and blade into two prims caused
+    visible alignment kinks at the junction (each tube had its own
+    rounded cap and the caps misaligned at the shared midpoint)."""
+    p0 = scriptOp.appendPoint(); p0.P = hilt_base
+    p1 = scriptOp.appendPoint(); p1.P = hilt_top
+    p2 = scriptOp.appendPoint(); p2.P = tip
+    poly = scriptOp.appendPoly(3, closed=False, addPoints=False)
+    poly[0].point = p0
+    poly[1].point = p1
+    poly[2].point = p2
+    try:
+        grp = scriptOp.primGroups.get(f'sabre_{side}') if hasattr(scriptOp.primGroups, 'get') else None
+        if grp is None:
+            grp = scriptOp.createPrimGroup(f'sabre_{side}')
+        grp.add(poly)
+    except Exception:
+        pass
+    return poly
 
 
 def _add_stub_sabre(scriptOp, side):
-    _add_segment(scriptOp, _STUB_HILT_BASE, _STUB_HILT_TOP, group=f'hilt_{side}')
-    _add_segment(scriptOp, _STUB_HILT_TOP,  _STUB_TIP,      group=f'blade_{side}')
+    p0 = scriptOp.appendPoint(); p0.P = _STUB_HILT_BASE
+    p1 = scriptOp.appendPoint(); p1.P = _STUB_HILT_TOP
+    p2 = scriptOp.appendPoint(); p2.P = _STUB_TIP
+    poly = scriptOp.appendPoly(3, closed=False, addPoints=False)
+    poly[0].point = p0; poly[1].point = p1; poly[2].point = p2
+    try:
+        grp = scriptOp.createPrimGroup(f'sabre_{side}')
+        grp.add(poly)
+    except Exception:
+        pass
 
 
 _HISTORY_KEY_LEFT  = 'sabers_blade_history_left'
@@ -194,11 +219,22 @@ def onCook(scriptOp):
     #   prim 2 : right hilt  (grey)
     #   prim 3 : right blade (blue)
     for side in ('left', 'right'):
+        key = _HISTORY_KEY_LEFT if side == 'left' else _HISTORY_KEY_RIGHT
+
+        # If tracking is lost (`<side>_tracking_active=0`), emit a
+        # degenerate stub so the saber disappears instead of snapping
+        # to MediaPipe's (0, 0) corner whenever the pose model loses
+        # the user. Trail history is also wiped so we don't leave a
+        # ghost ribbon behind.
+        ta = tick[f'{side}_tracking_active']
+        if ta is not None and float(ta[0]) < 0.5:
+            _add_stub_sabre(scriptOp, side)
+            comp.store(key, [])
+            continue
+
         hilt_base = _read_xyz(tick, f'{side}_hilt')
         hilt_top  = _read_xyz(tick, f'{side}_hilt_top')
         tip       = _read_xyz(tick, f'{side}_tip')
-
-        key = _HISTORY_KEY_LEFT if side == 'left' else _HISTORY_KEY_RIGHT
 
         if hilt_base is None or tip is None:
             _add_stub_sabre(scriptOp, side)
