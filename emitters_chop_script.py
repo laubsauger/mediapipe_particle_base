@@ -92,18 +92,13 @@ def _par(name, default):
         return default
 
 
-# Pseudo-random scatter positions for sub-emitters inside a unit square
-# [-0.5, +0.5]^2. Fixed seed so the same sub-emitter index always lands
-# at the same relative position — no per-frame jitter, just a stable
-# organic-looking cloud that rotates/stretches with the limb velocity.
-# 128 positions is plenty for the expected Spawncount range (up to ~40);
-# higher counts simply reuse the same positions in index order.
 import random as _rnd
-_SCATTER_RNG = _rnd.Random(424242)
-_SCATTER = [(_SCATTER_RNG.uniform(-0.5, 0.5),
-             _SCATTER_RNG.uniform(-0.5, 0.5))
-            for _ in range(128)]
-del _rnd
+# Per-cook RNG, reseeded every onCook so sub-emitters get fresh random
+# positions each frame (avoids the regular brush look from a fixed
+# scatter table). The seed is rotated by frame so adjacent frames
+# produce different-but-correlated patterns rather than perfectly
+# decorrelated noise that would flicker.
+_RNG = _rnd.Random()
 
 
 def onCook(scriptOp):
@@ -158,33 +153,31 @@ def onCook(scriptOp):
 
     import math
 
-    n_scatter = len(_SCATTER)
-
-    # Centering the scatter: uniform random with a fixed seed has nonzero
-    # empirical mean for small Spawncount (e.g., Spawncount=12 with seed
-    # 424242 gives mean ≈ (+0.066, -0.028) = ~7% of the scatter range).
-    # That creates a consistent directional bias on both position and
-    # fan velocity — every spawn gets offset the same way, every cook.
-    # Subtract the mean of the actually-used subset so the distribution
-    # is guaranteed zero-mean regardless of Spawncount.
-    _used = _SCATTER[:spawn_count] if spawn_count <= n_scatter else _SCATTER
-    _mean_along = sum(p[0] for p in _used) / len(_used)
-    _mean_perp  = sum(p[1] for p in _used) / len(_used)
+    # Re-seed every cook so the spawn pattern doesn't repeat (no brush
+    # look). Using the absFrame as the seed gives reproducibility for
+    # debugging while still rolling forward each frame.
+    _RNG.seed(int(absTime.frame))
 
     idx = 0
-    # Bounds for spawn-position clamp. Particles must spawn INSIDE the
-    # reflective box, otherwise PartVel-based motion immediately bounces
-    # them around the spawn point and they look stuck. Read via _par with
-    # safe defaults so the script keeps running on COMPs without these
-    # custom pars yet.
-    bz_min = float(_par('Boundsminz', -0.5))
-    bz_max = float(_par('Boundsmaxz',  0.5))
+    # Mediapipe gives landmarks in normalized selfie-cam UV:
+    #   x, y ∈ [0, 1]   (1:1 aspect)
+    #   z   ≈ [-1, +1]  (monocular depth, noisy)
+    # The bounds box is now aspect-correct (e.g. x ∈ [0, 16/9]) and z is
+    # a thin slab. We REMAP rather than clamp so the visible box fills
+    # with motion across its full extent — particularly the right half
+    # which would otherwise be empty because mediapipe's x stops at 1.0.
+    bz_min = float(_par('Boundsminz', -0.05))
+    bz_max = float(_par('Boundsmaxz',  0.05))
     bx_min = float(_par('Boundsminx',  0.0))
-    bx_max = float(_par('Boundsmaxx',  1.0))
+    bx_max = float(_par('Boundsmaxx',  16/9))
     by_min = float(_par('Boundsminy',  0.0))
     by_max = float(_par('Boundsmaxy',  1.0))
-    # Inset margin so spawns aren't right on the wall
-    margin = 0.02
+
+    bx_w = bx_max - bx_min
+    by_w = by_max - by_min
+    bz_c = (bz_min + bz_max) * 0.5
+    bz_h = (bz_max - bz_min) * 0.5
+    margin = 0.005
 
     def _clamp(v, lo, hi):
         return max(lo, min(hi, v))
@@ -235,13 +228,11 @@ def onCook(scriptOp):
         svz      = vz * spawn_vel_scale * z_force_weight
 
         for k in range(spawn_count):
-            # Stable pseudo-random scatter position within a unit square
-            # (both in [-0.5, 0.5]). Same k always maps to the same
-            # (rel_along, rel_perp) — no cook-to-cook jitter.
-            # Subtract empirical mean so the used subset has zero mean.
-            raw_along, raw_perp = _SCATTER[k % n_scatter]
-            rel_along = raw_along - _mean_along
-            rel_perp  = raw_perp  - _mean_perp
+            # Fresh per-spawn random offset within velocity-aligned
+            # rectangle. Re-rolled every cook so the cloud looks
+            # organically jittery rather than a stamped brush pattern.
+            rel_along = _RNG.uniform(-0.5, 0.5)
+            rel_perp  = _RNG.uniform(-0.5, 0.5)
 
             # Scale to actual extents along each local axis.
             local_along = rel_along * 2.0 * half_along
@@ -257,9 +248,17 @@ def onCook(scriptOp):
             fan_vx = perp_x * rel_perp * spawn_vel_fan * vmag_xy * spawn_vel_scale
             fan_vy = perp_y * rel_perp * spawn_vel_fan * vmag_xy * spawn_vel_scale
 
-            chans['P0'][idx] = _clamp(x + off_x, bx_min + margin, bx_max - margin)
-            chans['P1'][idx] = _clamp(y + off_y, by_min + margin, by_max - margin)
-            chans['P2'][idx] = _clamp(z,         bz_min + margin, bz_max - margin)
+            # Linear remap from mediapipe UV [0,1]² to bounds-box xy.
+            # x stretches with the aspect ratio — fills the new wider box.
+            wx = bx_min + (x + off_x) * bx_w
+            wy = by_min + (y + off_y) * by_w
+            # Mediapipe z is roughly [-1, +1] but very noisy. Scale into
+            # the thin slab around the box centre and add a tiny jitter
+            # via off_? would over-spread; just mediapipe z is enough.
+            wz = bz_c + max(-1.0, min(1.0, z)) * bz_h
+            chans['P0'][idx] = _clamp(wx, bx_min + margin, bx_max - margin)
+            chans['P1'][idx] = _clamp(wy, by_min + margin, by_max - margin)
+            chans['P2'][idx] = _clamp(wz, bz_min + margin, bz_max - margin)
             chans['v0'][idx] = base_svx + fan_vx
             chans['v1'][idx] = base_svy + fan_vy
             chans['v2'][idx] = svz
