@@ -73,10 +73,15 @@ def _find_chan(chop, name):
 
 
 def _read(chop, name, default=0.0):
+    import math as _math
     c = _find_chan(chop, name)
-    if c is None:
+    if c is None or len(c) == 0:
         return default
-    return float(c[0])
+    try:
+        v = float(c[0])
+    except (TypeError, ValueError):
+        return default
+    return v if _math.isfinite(v) else default
 
 
 def _par(name, default):

@@ -1,13 +1,10 @@
 // color_attr.glsl
 // ===============
 // GLSL POP compute shader. Derives a per-particle Cd (color) attribute
-// from the per-particle source landmark (Lid) plus a tasteful speed
-// brightness boost. Stable per-limb so all particles emitted by the same
-// limb share a color identity.
-//
-// Why Lid (not `id`)? GLSL reserves several short names; `id` collides
-// with builtin/keyword usage in some compiler paths. We rename the POP
-// attribute upstream to `Lid` (limb id) and access it via TDIn_Lid().
+// from the per-particle source landmark (Lid). At higher velocity the
+// color subtly shifts toward a warm accent (capped blend, no clamp
+// blowout) so motion reads in color space without flicker — instead of
+// just lifting RGB which saturates to white and looks janky.
 //
 // Pipeline placement:
 //   particle1 → color_attr → render_null
@@ -18,11 +15,15 @@
 //   Create Attributes [0] : name=custom, customname=Cd, type=float, comps=3
 //   Initialize Output     : On
 //   Vectors:
-//     uBase    (vec3)   ← never-fully-black floor
-//     uVelGain (float)  ← speed → extra brightness
+//     uBase    (vec3)   ← never-fully-black ambient floor
+//     uVelGain (float)  ← speed → blend toward accent
+//     uAccent  (vec3)   ← target color at full speed
+//     uMaxBlend(float)  ← cap on blend amount [0..1] (e.g. 0.4)
 
 uniform vec3  uBase;
 uniform float uVelGain;
+uniform vec3  uAccent;
+uniform float uMaxBlend;
 
 const vec3 kPalette[5] = vec3[](
     vec3(0.95, 0.30, 0.20),  // Lid 0 — left_wrist  (warm red)
@@ -43,10 +44,12 @@ void main()
     int   k = ((lid % pal_n) + pal_n) % pal_n;
     vec3  base = kPalette[k];
 
-    // Speed-driven brightness lift (additive, clamped). Keeps stable hue.
+    // Smooth, capped speed → blend toward accent. No clamp-to-1
+    // blowout, no flicker. The palette identity always dominates.
     float speed = length(vel);
-    vec3 c = uBase + base + vec3(speed * uVelGain);
-    c = clamp(c, vec3(0.0), vec3(1.0));
+    float t = clamp(speed * uVelGain, 0.0, uMaxBlend);
+    vec3  cold = uBase + base;
+    vec3  c    = mix(cold, uAccent, t);
 
     Cd[idx] = c;
 }

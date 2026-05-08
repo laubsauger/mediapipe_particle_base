@@ -35,10 +35,18 @@ def _landmark_list():
 
 
 def _read(chop, name, default=0.0):
-    c = chop[name]
-    if c is None:
+    import math as _math
+    try:
+        c = chop[name]
+    except Exception:
         return default
-    return float(c[0])
+    if c is None or len(c) == 0:
+        return default
+    try:
+        v = float(c[0])
+    except (TypeError, ValueError):
+        return default
+    return v if _math.isfinite(v) else default
 
 
 def onSetupParameters(scriptOp):
