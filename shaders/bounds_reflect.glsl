@@ -24,14 +24,25 @@
 //     uBounce     (float) ← parent().par.Boundsbounce
 //     uMargin     (float) ← parent().par.Boundsmargin
 //   Vectors 3 page (NEW — add via Vectors par on the GLSL POP):
-//     uForceScale (float) ← parent().par.Forcescale  (per-cook force gain;
-//                            try 0.02 — multiplies PartForce when added to
-//                            PartVel; smaller = gentler push)
-//     uDamping    (float) ← parent().par.Velocitydamping (0..1; fraction of
-//                            velocity REMOVED per cook; 0=keep, 1=stop. Set
-//                            Particle POP's own damping to 0 to avoid stacking.)
-//     uMaxSpeed   (float) ← parent().par.Maxspeed (clamp on |vel| to keep
-//                            integration stable; try 8.0 in box-units/sec)
+//     uForceScale    (float) ← parent().par.Forcescale  (per-cook force gain;
+//                                try 0.02 — multiplies the curved force when
+//                                added to PartVel; smaller = gentler push)
+//     uDamping       (float) ← parent().par.Velocitydamping (0..1; fraction
+//                                of velocity REMOVED per cook; 0=keep,
+//                                1=stop. Set Particle POP's own damping to 0
+//                                to avoid stacking.)
+//     uMaxSpeed      (float) ← parent().par.Maxspeed (clamp on |vel|; try 8)
+//     uForceDeadzone (float) ← parent().par.Forcedeadzone (raw |force|
+//                                magnitude below which the particle gets
+//                                NO push at all; try 5 — silences the slow
+//                                drift caused by field persistence at rest)
+//     uForceRef      (float) ← parent().par.Forceref (reference |force| at
+//                                which the curved response hits its full
+//                                magnitude; try 80 — anything above maps to
+//                                full uForceRef)
+//     uForceGamma    (float) ← parent().par.Forcegamma (response curvature;
+//                                1.0 = linear, 2.0 = squared (gentler at
+//                                small motion, snappier at big motion).)
 
 uniform vec3  uBoxMin;
 uniform vec3  uBoxMax;
@@ -40,6 +51,9 @@ uniform float uMargin;
 uniform float uForceScale;
 uniform float uDamping;
 uniform float uMaxSpeed;
+uniform float uForceDeadzone;
+uniform float uForceRef;
+uniform float uForceGamma;
 
 void main()
 {
@@ -61,8 +75,29 @@ void main()
         return;
     }
 
+    // ---- Nonlinear force response -----------------------------------------
+    // Field persistence (Fielddecay) keeps a residue of force around even
+    // when the performer is nearly still — multiplied by a linear ForceScale
+    // that adds up to "violent push at rest". Apply a deadzone + gamma curve
+    // so small magnitudes get squashed to ~0 and only the high-end of motion
+    // produces a strong kick.
+    //
+    //   t   = clamp((|f| - deadzone) / (ref - deadzone), 0, 1)
+    //   t   = pow(t, gamma)              gamma > 1 = gentler-at-small
+    //   |f'| = t * ref                   reshape magnitude
+    //   f'  = (f / |f|) * |f'|           preserve direction
+    float fmag = length(force);
+    if (fmag > 1e-4 && uForceRef > uForceDeadzone) {
+        float t = clamp((fmag - uForceDeadzone)
+                        / (uForceRef - uForceDeadzone), 0.0, 1.0);
+        t = pow(t, max(uForceGamma, 0.001));
+        force = (force / fmag) * (t * uForceRef);
+    } else {
+        force = vec3(0.0);
+    }
+
     // ---- Force integration -------------------------------------------------
-    // PartVel += force * uForceScale  (treat uForceScale as dt * gain)
+    // PartVel += curved_force * uForceScale  (treat uForceScale as dt * gain)
     // Then per-cook damping: vel *= (1 - uDamping). uDamping=0 keeps all,
     // uDamping=1 zeroes velocity each cook.
     vel += force * uForceScale;
