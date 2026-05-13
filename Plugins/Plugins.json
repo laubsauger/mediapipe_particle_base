@@ -1,0 +1,17 @@
+{
+    "Version": 1,
+    "AllowedPlugins": {
+        "68e44333": {
+            "ComputerName": "laubs-mbp.local",
+            "Plugins": {
+                "/Users/flo/work/TD/MediaPipe_Base/Plugins/AppleVisionMask.plugin": {
+                    "Hashes": [
+                        "eGu1fATaVk1pVSXLJIrBIa3pGr9mEIk19ER98B12HtwH0uMlvDAlH55W6b3sVrWzwhz+g/geplY15x6V9I96zSPi9TsXsj9nqQBfvQcR7NALN7HheYc0d0rhxJ/X/0+/tDmwVfrLpFxBgIRxLb5w255xIXaA1HzlsocfLhiQTADjyUSZeE6f2OaQeEFrEepjoyosFhKvRmoEN+0Q7ThGyFm31xlwNlSYFTlAmEuyrtImHFGDvZ0VEIKRbDljTorfLZI+e9cUEBySXksVDbxQs9lQAdMhxaYWbHkGnPaB6aMeZcAGfZ1cXo/KpEEl5MP30AGiB04LMBB130sMVCzvlw=="
+                    ],
+                    "AuthorName": "Author Name",
+                    "AuthorEmail": "email@email.com"
+                }
+            }
+        }
+    }
+}
