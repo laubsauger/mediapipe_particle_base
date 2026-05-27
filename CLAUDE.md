@@ -23,8 +23,9 @@ two `*_setup.md` guides for whichever subsystem you're touching.
 │  Sensing (this project)                                          │
 │  ┌──────────────────────────────────┐                            │
 │  │ velocity_controller (Base COMP)   │ smooths landmarks, emits  │
-│  │   in1 → select1 → script1 →       │ velocity, accel, burst,   │
-│  │   lag1 → out1                     │ visibility-gated holds    │
+│  │   in_pose → selects → merge1 →    │ velocity, accel, burst,   │
+│  │   velocity_script_chop → lag1 →   │ visibility-gated holds    │
+│  │   null1 → out1                    │                           │
 │  └────────┬─────────────────────────┘                            │
 │           │                                                      │
 │           ├────────────────┬─────────────────┐                   │
@@ -56,14 +57,27 @@ touch each other.
 
 Inside a single `velocity_controller` Base COMP, two sub-chains:
 
-- **Sensing chain**: `in1 → select1 → script1 (Script CHOP) → lag1 → out1`.
-  `script1` runs `velocity_logic.py` per cook to produce per-landmark
-  position, velocity, acceleration, emit, burst, and visibility channels.
-- **Particle render chain**: `lag1` feeds two Script ops (`emitters_tex`
-  Script TOP and `emitters_chop` Script CHOP) that fan the channel data
-  out into a velocity-field texture and a POP emitter set. A POP network
-  (Particle POP at the centre, force chain → null, render to a TOP via
-  Geometry COMP instancing) produces the particle visual.
+- **Sensing chain** (live op names): `in_pose → (select_position +
+  select_visibility) → merge1 → limit1 → velocity_script_chop → limit2 →
+  lag1 → null1 → out1`. `velocity_script_chop` runs `velocity_logic.py` per
+  cook to produce per-landmark position, velocity, acceleration, emit, burst,
+  and visibility channels. (`limit1`/`limit2` are bypassed safety CHOPs;
+  `select_visibility` renames the upstream `visibility<N>` channels to
+  `<lm>:visible`.)
+- **Particle render chain**: `lag1` feeds two Script ops
+  (`emitters_tex_script_top` Script TOP and `emitters_chop_script` Script
+  CHOP) that fan the channel data into a velocity-field texture and a POP
+  emitter set. A second emitter, `ambient_chop_script` → `ambient_pop`, adds a
+  constant **particle soup**; both merge via `merge_emitters` Merge POP into
+  `particle1` (Particle POP). Force chain `p_to_uv → field_sample → curl_noise
+  → add_to_force → bounds_reflect → force_null` (the `bounds_reflect` GLSL POP
+  does force integration + damping + position-clamp/wall-reflection); render
+  tee `particle1 → color_attr → render_null → geo1` (instanced low-poly
+  Phong-lit spheres, sized by `Particlesize`) → `render1` Render TOP (16-bit
+  float) → `bloom1` Bloom TOP → `out2`. `color_attr` does the per-limb /
+  soup color, the **Embers age gradient**, and a **velocity HDR boost** that
+  `bloom1` blooms. **Force integration and velocity damping live in the
+  `bounds_reflect` GLSL POP, NOT on Particle POP** (whose damping stays 0).
 
 The render side has had a long debug history — see "Known issues" below.
 
@@ -99,7 +113,8 @@ Two Base COMPs:
 | `install_velocity_params.py` | Idempotent param installer for `velocity_controller` (Sensing + Renderer pages). |
 | `reset_velocity_params.py` | Force-resets every par on `velocity_controller` to current defaults (use after pulling new defaults from disk). |
 | `bootstrap_velocity_controller.py` | One-shot builder for the whole `velocity_controller` COMP skeleton. |
-| `emitters_chop_script.py` | Script CHOP — turns `lag1`'s channels into N points (P/v/w attribs) for the Particle POP. Has 2D scatter logic with bias correction. |
+| `emitters_chop_script.py` | Script CHOP — turns `lag1`'s channels into N points (`p/v/w/Lid` attribs on the POP) for the Particle POP. Has 2D scatter logic with bias correction. |
+| `ambient_chop_script.py` | Script CHOP — emits the constant "particle soup": `Ambientpoints` points scattered through the bounds volume each cook, birthing `Ambientrate` pts/s (fractional accumulator), `Lid`=5 sentinel. Merged with `emitters_pop` via `merge_emitters` Merge POP into `particle1`, so the soup is advected/displaced by the same force chain. Self-testable: `python3 ambient_chop_script.py`. |
 | `emitters_tex_script.py` | Script TOP — packs `lag1`'s channels into an N×2 RGBA32F texture for the velocity-field shader. |
 | `painting_logic.py`, `painting_script_chop.py`, `install_painting_params.py` | The original first experiment ("painting controller") — predates this work. Kept as reference for the architectural conventions. |
 | `beatsaber_game_tick.py` | Script CHOP callback that runs the Beat Saber game loop. Reads landmark channels, calls `Game.tick()`, stores snapshot. |
@@ -117,7 +132,12 @@ Two Base COMPs:
 | File | Role |
 | --- | --- |
 | `velocity_field.frag` | GLSL TOP — splats per-emitter gaussians with anisotropic kernel into a 2D RGBA force field. |
-| `bounds_reflect.glsl` | GLSL POP — clamps particle P inside a 3D box and reflects Partvel on wall hits. Note: attribute-access lines are flagged in comments because TD's GLSL POP API has slight build-to-build variance. |
+| `bounds_reflect.glsl` | GLSL POP — the force integrator + container: folds `PartForce` into `PartVel` via a nonlinear deadzone/ref/gamma curve, applies `Velocitydamping` + `Maxspeed`, then **hard-clamps `P` to the box AND reflects `PartVel`** on wall hits (Output Attributes = `PartVel P`). The P-clamp is what stops fast particles overshooting/escaping the box — velocity reflection alone lagged a frame and leaked. Uses real `TDIn_*()` syntax. Synced to `bounds_reflect_compute`. |
+| `p_to_uv.glsl` | GLSL POP — writes `Puv` = `P` remapped into box UV (aspect-correct) for `field_sample` to index. Synced to `p_to_uv_compute`. |
+| `color_attr.glsl` | GLSL POP — writes per-particle `Cd`: per-limb palette (`Lid` 0..4) or cool soup base (`Lid>=5`), velocity warm-accent, **Embers age ramp** (white-hot at birth → warm → ember → dark, via `PartAge/PartLifeSpan`), and a velocity HDR boost so fast/young particles bloom. Synced to `color_attr_compute`. |
+
+All four shaders above are real files under `shaders/`, each synced to its
+GLSL POP/TOP DAT (`Sync File` On) — edit the file, TD reloads.
 
 ### Beat Saber package (`beatsaber/`)
 
@@ -290,13 +310,17 @@ Has had many rounds of tuning. Current state (best of memory):
 - **Z-axis sensitivity** had two leak paths (sensing-side `Zspeedweight`
   and renderer-side `Zforceweight`). Both are now tamed but z is still
   the most fragile axis.
-- **Particles flying too far** — partly addressed by lowering
-  `Fieldforce` (0.05), `Spawnvelscale` (0.04), and emphasizing
-  `Velocity Damping` on Particle POP itself (must be set ≥ 1.5; the
-  COMP installer can't reach Particle POP's pars).
-- **Bounding-box reflection** (`bounds_reflect.glsl`) — landed but the
-  GLSL POP attribute access syntax is build-dependent. Setup guide
-  flags the four lines that may need adjusting.
+- **Particles flying too far** — controlled by the `bounds_reflect`
+  force-integration knobs (all COMP pars): `Velocitydamping` (0.15 live),
+  `Forcescale`, `Forcedeadzone`/`Forceref`/`Forcegamma` (nonlinear response
+  that squashes rest-drift), and `Maxspeed`. Damping is NOT on Particle POP
+  anymore — its Velocity Damping / Initial Drag are 0. To tame runaway
+  particles, raise `Velocitydamping` / lower `Fieldforce`, don't touch
+  Particle POP.
+- **Bounding-box reflection + force integration** (`bounds_reflect.glsl`) —
+  landed and stable; uses real `TDIn_*()` read syntax for this build (the old
+  "four flagged placeholder lines" caveat is gone). Same op also integrates
+  the field/curl force and applies damping.
 - **Camera aspect/zoom** for the particle render — separate issue from
   the Beat Saber camera. Particle render uses the user's existing
   camera setup (whatever they wired in `velocity_controller`'s
@@ -349,7 +373,7 @@ again:
 | **Channel names can't contain `[` or `]`** in TD CHOPs. Sanitised to `_`. Use `P0/P1/P2` not `P[0]/P[1]/P[2]`. |
 | **Cameras default to looking down -Z**, not +Z. Place the camera at +Z and the scene at -Z, no lookAt needed. |
 | **Particle POP has no separate "Time Integration" toggle.** `Play: On` is the equivalent. |
-| **Velocity Damping on Particle POP is critical.** Without it, any constant force creates unbounded velocity. The installer can't reach this par because it's on Particle POP, not the COMP. |
+| **Velocity damping lives in the `bounds_reflect` GLSL POP, not Particle POP.** It reads the `Velocitydamping` COMP par (installable) and applies `PartVel *= 1 − Velocitydamping` per cook. Particle POP's own Velocity Damping / Initial Drag are kept at 0 so the two stages don't stack. (This is a change from older docs that said to crank Particle POP's damping.) |
 | **`Partvel` etc. are reserved on Particle POP.** Use `Start*` prefix for seed values (`StartPartvel`, `StartPartmass`). Renaming an input attribute to `PartVel` triggers an auto-rename to `StartPartvel` with a warning. |
 | **Script CHOP doesn't cook every frame by default** — only on output demand. If you need per-cook execution, either wire the output to something that does cook (an Out CHOP that's read by another COMP) or set `isTimeSlice = True`. |
 | **Script SOP `Point.Cd` requires `createAttribute(...)`** before assignment, with a version-dependent signature. Sidestep by emitting uncolored geometry and applying color via a downstream Primitive SOP. |
@@ -366,6 +390,9 @@ cd /Users/flo/work/TD/MediaPipe_Base
 
 # Sensing math
 python3 velocity_logic.py
+
+# Ambient particle soup (scatter + birth accumulator)
+python3 ambient_chop_script.py
 
 # Beat Saber game logic (each independent)
 python3 -m beatsaber.saber_logic
@@ -385,7 +412,14 @@ If the user says "X is broken", here's where to start looking:
 | Symptom | Likely file |
 | --- | --- |
 | Visibility threshold not gating | `velocity_script_chop.py` (channel name match) |
-| Particles flying off-screen | `install_velocity_params.py` (Fieldforce/Spawnvelscale/Lifemax defaults), Particle POP's Velocity Damping (manually set) |
+| Particles flying off-screen | `Velocitydamping` / `Forcescale` / `Forcedeadzone` / `Maxspeed` COMP pars (consumed by `bounds_reflect` GLSL POP), plus `Fieldforce`/`Spawnvelscale`/`Lifemax`. NOT Particle POP damping (it's 0 on purpose). |
+| Particles escaping/teleporting outside the box | `bounds_reflect` must have `P` in its Output Attributes and hard-clamp `pos` (not just reflect velocity). See `shaders/bounds_reflect.glsl`. |
+| No ambient soup / soup too dense | `Ambientrate` (pts/s) + `Ambientpoints` on the COMP; `ambient_chop_script` → `ambient_pop` → `merge_emitters`. Steady alive ≈ `Ambientrate × avg-life`. `Soupbright` sets its glow. |
+| Soup looks like fixed "squirt-gun" fountains | `ambient_chop_script` (Script CHOP) isn't cooking every frame → frozen scatter. It must read an always-cooking op (`lag1`) to register a per-frame cook dependency. Check `totalCooks` advances 1:1 with frames. |
+| Particles too big / too few | `Particlesize` (drives `geo1/sphere1` radius); particle count = `Spawncount` + `Ambientrate` vs Particle POP `Maximum Particles`. |
+| No glow / bloom | `Bloomenable`/`Bloomstrength`/`Bloomthreshold`; needs `render1` format = 16-bit float + `color_attr` HDR (`Velbloom`, Embers `kEmberHot`). |
+| Age gradient wrong | `color_attr.glsl` Embers ramp (`Agegradient`/`Agefalloff`), normalized by `PartAge/PartLifeSpan`. |
+| Static / frozen curl swirls | `curl_noise` Translate-4D (`t4d`) must be animated = `absTime.seconds × Curlspeed` (Simplex-4D's 4th axis is time). `t4d=0` → frozen field. `Curlgain` (bound to `amp0`) sets curl amount; 0 = none. |
 | Particles drifting in z when only moving horizontally | `Zforceweight` (renderer side, scales `vz` in both `emitters_tex_script.py` and `emitters_chop_script.py`) |
 | Particles biased toward one corner | scatter-list mean centering in `emitters_chop_script.py` + `Curlscale` (must be < cloud extent) |
 | Notes not spawning | `_get_or_build_game()` in `beatsaber_game_tick.py` (must prime wall clock before start), or game not started |

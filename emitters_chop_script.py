@@ -4,10 +4,11 @@
 # CHOP with N SAMPLES (one per landmark) and channels named so that the
 # downstream CHOP-to-POP converter reconstructs vec3 attributes.
 #
-# Paste into a Text DAT called `emitters_chop_script` inside velocity_controller.
-# Attach as the Callbacks DAT of a Script CHOP called `emitters_chop`. Then
-# follow the Script CHOP with a stock `CHOP to POP` op named `emitters_pop` —
-# that's what the Source POP takes as input.
+# Synced to the Callbacks DAT `emitters_chop_script_cb` of the Script CHOP
+# `emitters_chop_script` inside velocity_controller. Follow that Script CHOP
+# with a stock `CHOP to POP` op named `emitters_pop` — its output is the birth
+# source plugged into the `particle1` Particle POP. (There is no "Source POP"
+# in TD; Particle POP is the hub.)
 #
 # TD channel-name note: CHOP channel names can't contain `[` or `]` —
 # TD sanitises those to underscores on the way in, so `appendChan('P[0]')`
@@ -51,8 +52,11 @@
 #                     weights to zero. Consequence: total particles/sec per
 #                     limb scales linearly with Spawncount, which is what
 #                     you usually want for a wavefront.)
-#     id            → int `id` attribute (landmark index; same for all N
-#                     sub-emitters of a given limb, for per-limb color)
+#     id            → int landmark index (same for all N sub-emitters of a
+#                     given limb, for per-limb color). The CHOP-to-POP maps
+#                     this `id` channel to the POP attribute `Lid` (`id`/`Id`
+#                     collide with TD point-identifier names); `color_attr`
+#                     reads `Lid`.
 
 def _landmark_list():
     par = parent().par.Landmarks.eval() if hasattr(parent().par, 'Landmarks') else ''

@@ -85,14 +85,14 @@ def onCook(scriptOp):
     # Z-axis force weight — scales vz BEFORE it enters the force field so
     # MediaPipe's noisy depth jitter doesn't push particles back/forth in z
     # when the performer is standing still. 1.0 = full 3D force, 0 = field
-    # is purely 2D (xy only). Default 0.3 on the Renderer page damps z
+    # is purely 2D (xy only). Default 0.05 on the Renderer page damps z
     # noise heavily while still registering real forward/back motion.
     # Different from Zspeedweight (sensing-side, emit/burst sensitivity):
     # this one is purely render-side, controls per-particle z force.
     try:
         z_force_weight = float(parent().par.Zforceweight.eval())
     except Exception:
-        z_force_weight = 0.3
+        z_force_weight = 0.05
 
     for i, lm in enumerate(lms):
         x  = _read(src, f'{lm}:x')

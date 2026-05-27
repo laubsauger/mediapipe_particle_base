@@ -37,6 +37,8 @@
 //   uStretchSpeedRef (float) reference speed (1/s in UV) above which
 //                          full uVelStretch is applied. Below it, stretch
 //                          scales linearly with speed.
+//   uZForceWeight (float)  scales vel.z of the splatted velocity (MediaPipe
+//                          depth noise → spurious vz). ← parent().par.Zforceweight
 
 uniform float uNumEmitters;
 uniform float uRadius;

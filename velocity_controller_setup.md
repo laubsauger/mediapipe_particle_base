@@ -129,10 +129,10 @@ end-to-end. `<L>:z` and `<L>:vz` appear in the output CHOP; 3D speed
 particle emission the same as side-to-side; 3D acceleration magnitude drives
 `burst` so a sudden forward thrust triggers a puff. On the renderer side:
 
-- `emitters_chop` emits `P[2]=z` and `v[2]=vz`, so particles get launched
-  with 3D initial velocity and the POP Advance integrates motion on all
+- `emitters_chop_script` emits `P2=z` and `v2=vz`, so particles get launched
+  with 3D initial velocity and the POP integrates motion on all
   three axes — particles really do get flung forward or back.
-- `emitters_tex` packs z into row 0 and vz into row 1.
+- `emitters_tex_script_top` packs z into row 0 and vz into row 1.
 - The velocity-field shader uses the per-limb z to scale each emitter's
   splat size (closer to camera = bigger splat; `uZGain` controls
   strength), and outputs RGB = full 3D velocity so the Force POP pushes
@@ -211,42 +211,90 @@ One COMP, three sub-chains: a sensing CHOP chain, a POP particle sim, and a
 screen-space feedback loop on top. The diagrams below split them apart for
 legibility; in the COMP itself they're all peers.
 
+### As-built op names (live network is source of truth)
+
+This guide was originally written against idealized names (`in1`, `select1`,
+`script1`, `particle_pop`, `render_top`). The live COMP uses the names below —
+they're what's documented from here on:
+
+| Role | Live op | Notes |
+| --- | --- | --- |
+| Pose input | `in_pose` (In CHOP) | Time Slice On; carries all 33 MediaPipe landmarks |
+| Position select | `select_position` (Select CHOP) | pattern `left_wrist:* right_wrist:* left_ankle:* right_ankle:* nose:*` |
+| Visibility select | `select_visibility` (Select CHOP) | picks `visibility0/15/16/27/28`, **renames** to `<lm>:visible` |
+| Merge | `merge1` (Merge CHOP) | joins position + visibility |
+| Guards | `limit1`, `limit2` (Limit CHOP) | currently **bypassed** clamp/underflow safety |
+| Velocity logic | `velocity_script_chop` (Script CHOP) | callbacks DAT `velocity_script_cb` |
+| Smooth | `lag1` (Lag CHOP) | Lag 1 / Lag 2 = `parent().par.Blendtime` |
+| Output | `null1` → `out1` | external consumers |
+| Field texture | `emitters_tex_script_top` (Script TOP) | callbacks `emitters_tex_script_cb` |
+| Emitter points | `emitters_chop_script` (Script CHOP) | callbacks `emitters_chop_script_cb` |
+| → POP | `emitters_pop` (CHOP to POP) | attrs `p / v / w / Lid` |
+| Ambient soup | `ambient_chop_script` (Script CHOP) → `ambient_pop` (CHOP to POP) | constant soup, `Lid`=5 sentinel; callbacks `ambient_chop_script_cb` |
+| Emitter merge | `merge_emitters` (Merge POP) | movement `emitters_pop` + soup `ambient_pop` → particle1 |
+| Particle sim | `particle1` (Particle POP) | hub op |
+| P→UV | `p_to_uv` (GLSL POP) | writes `Puv` for field lookup |
+| Field sample | `field_sample` (Lookup Texture POP) | reads `field_out`, indexes by `Puv` |
+| Curl drift | `curl_noise` (Noise POP) | |
+| Force sum | `add_to_force` (Math/Mix POP) | → `Partforce` |
+| Integrate+contain | `bounds_reflect` (GLSL POP) | force integration + damping + wall reflect |
+| Feedback target | `force_null` (Null POP) | `particle1.Target Particles Update POP` |
+| Color | `color_attr` (GLSL POP) | writes `Cd` (per-limb palette + velocity accent) |
+| Render source | `render_null` (Null POP) | instance source for `geo1` |
+| Instancer | `geo1` (Geometry COMP) | child `sphere1`, material `particle_phong` |
+| Lights | `key_light`, `fill_light` (Light COMP) | `particle_phong` is lit, not constant |
+| Camera | `particle_cam` (Camera COMP) | |
+| Raster | `render1` (Render TOP, 1280×720, **RGBA 16-bit float**) | → `bloom1` |
+| Bloom | `bloom1` (Bloom TOP) | HDR glow; `render1` → `bloom1` → `null2` → `out2` |
+| Bounds viz | `bounds_geo` + `bounds_mat` | visible wire box at the containment bounds |
+
 ### Sensing chain + fan-out
 
 ```mermaid
 flowchart LR
-    in1([in1<br/>pose CHOP input])
-    select1[select1<br/>Select CHOP<br/>limb channels]
-    script1[script1<br/>Script CHOP<br/>velocity_logic]
+    in_pose([in_pose<br/>pose CHOP input])
+    select_position[select_position<br/>Select CHOP<br/>limb :* channels]
+    select_visibility[select_visibility<br/>Select CHOP<br/>visibilityN → :visible]
+    merge1[merge1<br/>Merge CHOP]
+    limit1[limit1<br/>Limit CHOP<br/>clamp min 0 — bypassed]
+    velocity_script_chop[velocity_script_chop<br/>Script CHOP<br/>velocity_logic]
+    limit2[limit2<br/>Limit CHOP<br/>underflow guard — bypassed]
     lag1[lag1<br/>Lag CHOP<br/>Blendtime smooth]
+    null1[null1<br/>Null CHOP]
     out1([out1<br/>external consumers])
-    emitters_tex[[emitters_tex<br/>Script TOP<br/>N×2 RGBA32F<br/>→ velocity_field shader]]
-    emitters_chop[[emitters_chop<br/>Script CHOP<br/>N samples]]
-    emitters_pop[emitters_pop<br/>CHOP to POP<br/>N points P/v/w/id<br/>→ Particle POP input]
+    emitters_tex[[emitters_tex_script_top<br/>Script TOP<br/>N×2 RGBA32F<br/>→ velocity_field shader]]
+    emitters_chop[[emitters_chop_script<br/>Script CHOP<br/>N samples]]
+    emitters_pop[emitters_pop<br/>CHOP to POP<br/>N points p/v/w/Lid<br/>→ Particle POP input]
 
-    in1 --> select1 --> script1 --> lag1 --> out1
+    in_pose --> select_position --> merge1
+    in_pose --> select_visibility --> merge1
+    merge1 --> limit1 --> velocity_script_chop --> limit2 --> lag1 --> null1 --> out1
     lag1 -. reads by name .-> emitters_tex
     lag1 -. reads by name .-> emitters_chop
     emitters_chop --> emitters_pop
 ```
 
-Both Script ops pull from `op('lag1')` by channel name — no Select/Shuffle/Rename
-between them and the Lag CHOP.
+Both emitter Script ops pull from `op('lag1')` by channel name — no
+Select/Shuffle/Rename between them and the Lag CHOP.
 
-Text DATs (all peers of the ops they drive):
-- `velocity_logic` — paste `velocity_logic.py`
-- `velocity_script_chop` — paste `velocity_script_chop.py`, referenced by `script1`
-- `install_velocity_params` — paste `install_velocity_params.py`, right-click ▸
-  Run Script once. You can delete this DAT afterward.
-- `emitters_tex_script` — paste `emitters_tex_script.py`, referenced by `emitters_tex`
-- `emitters_chop_script` — paste `emitters_chop_script.py`, referenced by `emitters_chop`
+Why two selects + a merge: the upstream MediaPipe tox emits position channels
+named `<lm>:x/y/z` but visibility as indexed `visibility<N>` channels.
+`select_position` grabs the `<lm>:*` set; `select_visibility` grabs
+`visibility0 visibility15 visibility16 visibility27 visibility28` and renames
+them to `nose:visible left_wrist:visible right_wrist:visible left_ankle:visible
+right_ankle:visible`. `merge1` recombines them into the `<lm>:x/y/z/visible`
+contract the Script CHOP expects.
 
-Sensing chain wiring:
-- `select1` pattern: `left_wrist:* right_wrist:* left_ankle:* right_ankle:* nose:*`
-- `script1` Callbacks DAT: `velocity_script_chop`
-- `lag1` Lag 1 / Lag 2: both expression `parent().par.Blendtime`
-- `out1` just dangles off `lag1` for external consumers (the renderer reads
-  `lag1` directly by name, so `out1` is optional).
+`limit1` (clamp min 0) and `limit2` (underflow guard) are safety CHOPs that are
+**currently bypassed** — they're inert unless re-enabled. `null1` is a fan-out
+buffer before `out1`.
+
+Text/Callback DATs:
+- `velocity_logic` — synced to `velocity_logic.py`
+- `velocity_script_cb` — synced to `velocity_script_chop.py`, callbacks of `velocity_script_chop`
+- `install_velocity_params` / `reset_velocity_params` — run once via right-click ▸ Run Script
+- `emitters_tex_script_cb` — synced to `emitters_tex_script.py`, callbacks of `emitters_tex_script_top`
+- `emitters_chop_script_cb` — synced to `emitters_chop_script.py`, callbacks of `emitters_chop_script`
 
 Parent pars installed onto two pages:
 - **Sensing**: `Landmarks`, `Visibilitythreshold`, `Trustthreshold`, `Velocitysmooth`,
@@ -254,12 +302,16 @@ Parent pars installed onto two pages:
   `Maxjump`, `Settleframes`, `Zspeedweight`, `Blendtime`.
 - **Renderer**: `Spawnrate`, `Burstgain`, `Spawncount`, `Spawnspread`,
   `Spawnspreadref`, `Spawnspreadmin`, `Spawnperpratio`, `Spawnvelscale`,
-  `Spawnvelfan`, `Fieldradius`, `Fieldforce`, `Fielddecay`, `Zgain`,
+  `Spawnvelfan`, `Fieldradius`, `Fieldforce`, `Fielddecay`,
+  `Forcescale`, `Velocitydamping`, `Maxspeed`, `Forcedeadzone`,
+  `Forceref`, `Forcegamma`, `Zgain`,
   `Zforceweight`, `Velstretch`, `Stretchspeedref`, `Curlgain`,
   `Curlscale`, `Lifemin`, `Lifemax`, `Boundsminx`, `Boundsminy`,
   `Boundsminz`, `Boundsmaxx`, `Boundsmaxy`, `Boundsmaxz`,
   `Boundsbounce`, `Boundsmargin`, `Feedbackenable`, `Feedbackfade`,
   `Feedbackzoom`.
+  (`Forcescale … Forcegamma` are the `bounds_reflect` force-integration
+  uniforms; `Feedback*` are reserved — no smear chain is wired today.)
 
 The page split is purely organisational — both pages live on the same COMP, and
 every renderer op reads its pars via `parent().par.*` because `parent()` inside
@@ -272,7 +324,7 @@ The render side reads from the sensing-side `lag1` CHOP via two small Python
 operators. No Shuffle/Rename/Select fan-out — both scripts look up channels by
 name (`left_wrist:x`, etc.) so they don't care about channel order.
 
-### 1. `emitters_tex` — Script TOP
+### 1. `emitters_tex_script_top` — Script TOP
 
 Feeds the velocity-field shader. Produces an **`N × 2` RGBA32F** texture:
 
@@ -307,10 +359,10 @@ Feeds the velocity-field shader. Produces an **`N × 2` RGBA32F** texture:
 Setup:
 
 1. Inside `velocity_controller`, create a **Text DAT** named
-   `emitters_tex_script`, paste `emitters_tex_script.py`.
-2. Create a **Script TOP** named `emitters_tex`. No inputs — it reads
-   `op('lag1')` by name from inside its callback.
-3. Set its Callbacks DAT to `emitters_tex_script`.
+   `emitters_tex_script_cb`, synced to `emitters_tex_script.py`.
+2. Create a **Script TOP** named `emitters_tex_script_top`. No inputs — it
+   reads `op('lag1')` by name from inside its callback.
+3. Set its Callbacks DAT to `emitters_tex_script_cb`.
 4. Set Output Resolution to Custom, e.g. `5 × 2` (matches default landmark
    count). The callback also calls `copyNumpyArray` with the correct shape,
    so TD resizes automatically on cook — but setting it explicitly avoids a
@@ -318,7 +370,7 @@ Setup:
 
 ### 2. `velocity_field` — GLSL TOP (+ external persistence chain)
 
-Samples `emitters_tex`, splats gaussians, outputs the **instantaneous**
+Samples `emitters_tex_script_top`, splats gaussians, outputs the **instantaneous**
 advection field. Persistence (force trails lingering in the air) lives
 outside the shader so it compiles with a single input and is tuneable
 without recompile.
@@ -329,8 +381,8 @@ without recompile.
   Shader` par pointing at the file on disk, or paste into a Text DAT and
   reference that).
 - **Resolution**: `256 × 256`, Format `RGBA 16-bit float`.
-- **Input 0**: `emitters_tex`. **No other inputs** — the shader declares
-  `sTD2DInputs[0]` only; wiring an input 1 is neither needed nor valid.
+- **Input 0**: `emitters_tex_script_top`. **No other inputs** — the shader
+  declares `sTD2DInputs[0]` only; wiring an input 1 is neither needed nor valid.
 - **Vectors 1 uniforms** (all expressions, reading `parent().par.*`):
 
 | Uniform | Expression |
@@ -341,6 +393,10 @@ without recompile.
 | `uZGain` | `parent().par.Zgain` |
 | `uVelStretch` | `parent().par.Velstretch` |
 | `uStretchSpeedRef` | `parent().par.Stretchspeedref` |
+| `uZForceWeight` | `parent().par.Zforceweight` |
+
+`uZForceWeight` damps the z component of the splatted velocity (MediaPipe
+depth noise → spurious vz); matches the spawn-side `Zforceweight` knob.
 
 The shader's `force_gain` input already bakes in `Burstgain` on the Python
 side (`emitters_tex_script.py` computes `(emit + Burstgain*burst) * visible`
@@ -354,21 +410,28 @@ what the Force POP samples):
 flowchart LR
     velocity_field[velocity_field<br/>GLSL TOP<br/>instantaneous]
     field_mix[field_mix<br/>Composite TOP<br/>Add]
-    field_out([field_out<br/>Null TOP<br/>= what Force POP reads])
-    field_fb[field_fb<br/>Feedback TOP<br/>target = field_out]
+    field_out([field_out<br/>Null TOP<br/>= what field_sample reads])
+    out_field_top[out_field_top<br/>Out TOP<br/>external/debug tap]
+    field_fb[field_fb<br/>Feedback TOP<br/>target = field_mix]
     field_decay[field_decay<br/>Level TOP<br/>multiplier = Fielddecay]
 
-    velocity_field --> field_mix --> field_out
-    field_out -. 1-frame delay .-> field_fb
+    velocity_field --> field_mix --> field_out --> out_field_top
+    velocity_field -. 1-frame delay .-> field_fb
     field_fb --> field_decay --> field_mix
 ```
 
-`field_decay`'s RGB Multiplier = `parent().par.Fielddecay`. Same knob, same
-semantics as before — at 0 the field snaps every frame, at 0.9 it trails for
-about a second. The Force POP points at `field_out` (not `velocity_field`)
-so it reads the persistent field, not the instantaneous one.
+`field_decay`'s RGB Multiplier = `parent().par.Fielddecay`. At 0 the field
+snaps every frame, at 0.9 it trails for about a second. `field_sample`
+(Lookup Texture POP) points at `field_out` so it reads the persistent field,
+not the instantaneous one. `field_fb`'s reset is bound to `keyboardin1` chan
+`k1` so a keypress flushes the trail. `out_field_top` is an external/debug tap.
 
-### 3. `emitters_chop` (Script CHOP) → `emitters_pop` (CHOP to POP)
+> **Heads up:** `field_sample` does **not** index the field by raw `P` — a
+> `p_to_uv` GLSL POP runs first and writes a `Puv` attribute (P remapped into
+> the box's `[0,1]²` UV with aspect correction), and `field_sample` uses `Puv`
+> as its lookup index. See the POP chain below.
+
+### 3. `emitters_chop_script` (Script CHOP) → `emitters_pop` (CHOP to POP)
 
 Two-op chain. TD has no Script POP, so we stage the work in CHOP-land (where
 Script CHOP has always been reliable) and hand off to a native CHOP-to-POP
@@ -378,11 +441,11 @@ attribute-style channel names; CHOP-to-POP then reads those channels into
 the vec3 / scalar point attributes the downstream emission POP needs as
 its emitter input.
 
-**`emitters_chop` — Script CHOP:**
+**`emitters_chop_script` — Script CHOP:**
 
-- Text DAT `emitters_chop_script`, paste `emitters_chop_script.py`.
-- Create a **Script CHOP** named `emitters_chop`, Callbacks DAT =
-  `emitters_chop_script`. No inputs — it reads `op('lag1')` by name from
+- Callbacks DAT `emitters_chop_script_cb`, synced to `emitters_chop_script.py`.
+- Create a **Script CHOP** named `emitters_chop_script`, Callbacks DAT =
+  `emitters_chop_script_cb`. No inputs — it reads `op('lag1')` by name from
   inside the callback.
 
 Output CHOP has N samples and these channels (per landmark, one sample
@@ -395,14 +458,14 @@ vec3 grouping explicitly on the CHOP-to-POP.
 | `P0`, `P1`, `P2` | Point position (x, y, z) |
 | `v0`, `v1`, `v2` | Initial velocity handed to new particles (3D) |
 | `w` | Spawn weight = `(emit + Burstgain * burst) * visible` |
-| `id` | Landmark index, for per-limb color |
+| `id` | Landmark index, for per-limb color (lands on the POP as `Lid`) |
 
-Drop a Trail CHOP on `emitters_chop` while debugging — you should see 5
-samples, each tracking the matching landmark's live position/velocity.
+Drop a Trail CHOP on `emitters_chop_script` while debugging — you should see
+5 samples, each tracking the matching landmark's live position/velocity.
 
 **`emitters_pop` — CHOP to POP:**
 
-- Create a **CHOP to POP** op named `emitters_pop`, plug `emitters_chop`
+- Create a **CHOP to POP** op named `emitters_pop`, plug `emitters_chop_script`
   into its CHOP input.
 - Configure the parameters page (this is the part that needs to be
   explicit — CHOP-to-POP doesn't auto-group our channels without help):
@@ -422,14 +485,21 @@ samples, each tracking the matching landmark's live position/velocity.
 
     | Row | Attribute Name | Type / Size | Channel Scope | Default Value |
     | --- | --- | --- | --- | --- |
-    | 0 | `P` | float, size 3 (vec3) | `P0 P1 P2` | `0 0 0` |
+    | 0 | `p` | float, size 3 (vec3) | `P0 P1 P2` | `0 0 0` |
     | 1 | `v` | float, size 3 (vec3) | `v0 v1 v2` | `0 0 0` |
     | 2 | `w` | float, size 1 | `w` | `0` |
-    | 3 | `id` | int, size 1 | `id` | `0` |
+    | 3 | `Lid` | int, size 1 | `id` | `0` |
 
-  Row 0's attribute name `P` is special — TD recognises it as the
-  built-in point position, so the POP viewport will place points at the
-  landmark coordinates. Rows 1–3 become per-point custom attributes.
+  Row 0's attribute name resolves to the built-in point position `P` (TD is
+  case-insensitive here), so the POP viewport places points at the landmark
+  coordinates. Row 3 is named **`Lid`** (limb id) — `id`/`Id` collide with
+  TD-reserved point identifiers, so the per-limb index is carried as `Lid`
+  and that's what `color_attr` reads downstream. Rows 1–3 are per-point
+  custom attributes.
+
+  > A benign warning *"More channels than attributes specified"* sits on
+  > `emitters_pop` — the CHOP carries 8 channels and the rows scope them into
+  > 4 attributes; the leftover scalar components are simply unused. Harmless.
 
   The **Default Value** is only used if the Channel Scope fails to match
   any channel. With our config it never falls back, but TD requires the
@@ -440,14 +510,14 @@ samples, each tracking the matching landmark's live position/velocity.
   suggestions, type the real values over them.)
 
 - Verify via right-click ▸ Info on `emitters_pop`: you should see one
-  point per landmark with `P` (vec3), `v` (vec3), `w` (float), `id`
-  (int) attributes. No warnings.
+  point per landmark with `P` (vec3), `v` (vec3), `w` (float), `Lid`
+  (int) attributes.
 
-That's it. `emitters_pop` is now a 5-point POP with `P`, `v`, `w`, `id`
-attributes — a stable, well-formed emitter feed for whatever spawn/respawn
-POP op you hook up next. The downstream sim reads `P` as spawn position,
-`v` as initial velocity, and `w` to choose which emitter fires on each
-respawn event.
+That's it. `emitters_pop` is now a 5-point POP with `P`, `v`, `w`, `Lid`
+attributes — a stable, well-formed emitter feed for the Particle POP. The
+sim reads `P` as spawn position, `v` (transferred to `StartPartvel`) as
+initial velocity, `w` as the per-point birth rate, and `Lid` carries through
+for per-limb coloring.
 
 ### 4. POP spawn + advect chain
 
@@ -460,64 +530,80 @@ frame.
 
 ```mermaid
 flowchart LR
-    emitters_tex[[emitters_tex<br/>Script TOP]]
+    emitters_tex[[emitters_tex_script_top<br/>Script TOP]]
     velocity_field[velocity_field<br/>GLSL TOP<br/>instantaneous]
     field_mix[field_mix<br/>Composite Add]
     field_out([field_out<br/>Null TOP])
     field_fb[field_fb<br/>Feedback TOP]
     field_decay[field_decay<br/>Level × Fielddecay]
 
-    emitters_chop[[emitters_chop<br/>Script CHOP<br/>N samples]]
+    emitters_chop[[emitters_chop_script<br/>Script CHOP<br/>N samples]]
     emitters_pop[emitters_pop<br/>CHOP to POP<br/>N points]
 
-    particle_pop[particle_pop<br/>Particle POP<br/>input: emitters_pop<br/>Target Update POP: force_null]
-    lookup_pop[field_sample<br/>Lookup Texture POP<br/>writes fieldforce]
+    particle_pop[particle1<br/>Particle POP<br/>input: emitters_pop<br/>Target Update POP: force_null]
+    p_to_uv[p_to_uv<br/>GLSL POP<br/>writes Puv = P→box UV]
+    lookup_pop[field_sample<br/>Lookup Texture POP<br/>index Puv, writes fieldforce]
     noise_pop[curl_noise<br/>Noise POP<br/>writes curlforce]
     math_mix[add_to_force<br/>Math/Mix POP<br/>Partforce = fieldforce + curlforce]
-    bounds_field[bounds_field<br/>Field POP<br/>Weight = 1 inside box]
+    bounds_reflect[bounds_reflect<br/>GLSL POP<br/>integrate force, damp,<br/>clamp P, reflect PartVel]
     force_null[force_null<br/>Null POP<br/>= feedback target]
 
+    color_attr[color_attr<br/>GLSL POP<br/>writes Cd from Lid + speed]
     render_null[render_null<br/>Null POP<br/>side-tee for rendering]
-    particle_geo["particle_geo<br/>Geometry COMP<br/>instanced from render_null<br/>Translate ← P, Color ← id"]
-    render_top([render_top<br/>Render TOP<br/>→ raster particle visual])
+    particle_geo["geo1<br/>Geometry COMP<br/>instanced from render_null<br/>Translate ← P, Color ← Cd"]
+    render_top([render1<br/>Render TOP<br/>→ raster particle visual])
 
     emitters_tex --> velocity_field --> field_mix --> field_out
-    field_out -. 1-frame delay .-> field_fb --> field_decay --> field_mix
+    velocity_field -. 1-frame delay .-> field_fb --> field_decay --> field_mix
     field_out -. TOP param .-> lookup_pop
 
-    bounds_reflect[bounds_reflect<br/>GLSL POP<br/>clamp P to box,<br/>flip Partvel on wall hits]
-
     emitters_chop --> emitters_pop --> particle_pop
-    particle_pop --> lookup_pop --> noise_pop --> math_mix --> bounds_reflect --> force_null
+    particle_pop --> p_to_uv --> lookup_pop --> noise_pop --> math_mix --> bounds_reflect --> force_null
     force_null -. Target Particles Update POP ref .-> particle_pop
-    particle_pop --> render_null --> particle_geo --> render_top
+    particle_pop --> color_attr --> render_null --> particle_geo --> render_top
 ```
+
+Two GLSL POPs do work the original idealized chain didn't have:
+
+- **`p_to_uv`** (before `field_sample`) remaps each particle's `P` into the
+  bounding box's `[0,1]²` UV (aspect-corrected) and stores it as `Puv`, which
+  `field_sample` uses as its lookup index. Without it the lookup would index
+  the field by raw world `P` and mis-sample for any non-unit box width.
+- **`color_attr`** (between `particle1` and `render_null`) computes the per-
+  particle `Cd` color (see *Particle color* below). It's on the **render**
+  branch only, not the force-feedback branch, so coloring never perturbs the sim.
+
+> **Dormant ops:** a `field1` (Field POP, Box) → `mathmix1` (Math/Mix POP,
+> `PartDeath = max(PartDeath, 1 − Weight)`) kill-outside pair exists in the
+> network but is **bypassed and disconnected** from the live chain —
+> containment is handled entirely by `bounds_reflect`. Leave it bypassed
+> unless you specifically want kill-on-exit instead of reflection.
 
 Two feeds into the sim: the **emitter point stream**
 (`emitters_pop` → Particle POP's input) provides birth positions and the
-`w` birth-rate attribute; the **force field** (`emitters_tex` →
+`w` birth-rate attribute; the **force field** (`emitters_tex_script_top` →
 `velocity_field` → sampled by Lookup Texture POP's TOP parameter) gets
 baked into `Partforce` via the force chain that Particle POP reads back
 through its `Target Particles Update POP` reference.
 
-**Crucial wiring point:** every op in the force chain (Lookup Texture POP,
-Math/Mix POP, Noise POP, …) takes the *particle stream* as its POP input.
-Lookup Texture POP needs both a POP input (the particles, providing `P`
-for sampling) AND the TOP reference (the field to sample) — assigning only
-the TOP throws "not enough sources". Wire the previous op's output into
-POP input 0 on every force-chain node.
+**Crucial wiring point:** every op in the force chain (`p_to_uv`, Lookup
+Texture POP, Noise POP, Math/Mix POP, `bounds_reflect`) takes the *particle
+stream* as its POP input. Lookup Texture POP needs both a POP input (the
+particles, providing `Puv` for sampling) AND the TOP reference (the field to
+sample) — assigning only the TOP throws "not enough sources". Wire the
+previous op's output into POP input 0 on every force-chain node.
 
-**The Null POP at the end closes the loop.** The force chain doesn't
-terminate at Render POP — it terminates at a Null POP that's referenced
-in Particle POP's `Target Particles Update POP` parameter. That's how
-per-cook `Partforce` accumulations actually get consumed by the next
-integration. Skip this (leave `Target Particles Update POP` empty) and
-particles emit but never react to any force in the chain. Render POP is
-a side branch off Particle POP's direct output.
+**The Null POP at the end closes the loop.** The force chain terminates at
+`force_null`, a Null POP referenced in `particle1`'s `Target Particles Update
+POP` parameter. That's how per-cook `Partforce` accumulations actually get
+consumed by the next integration. Leave `Target Particles Update POP` empty
+and particles emit but never react to any force in the chain. The **render
+branch** (`particle1 → color_attr → render_null → geo1`) is a separate tee
+off `particle1`'s direct output — it never touches the force feedback loop.
 
 ### Node-by-node setup
 
-- **`particle_pop`** — [Particle POP](https://derivative.ca/UserGuide/Particle_POP)
+- **`particle1`** — [Particle POP](https://derivative.ca/UserGuide/Particle_POP)
     - **Input (emitters):** `emitters_pop`. (Particle POP has a single
       POP input for the birth source; the force feedback comes back in
       via the `Target Particles Update POP` parameter below, not a
@@ -537,9 +623,10 @@ a side branch off Particle POP's direct output.
     - **Randomize Input Points**: `On`. Without this, successive births
       cycle through the input points deterministically, which reads as
       mechanical.
-    - **Attributes** page: transfer `v` → **`StartPartvel`** so newborn
-      particles inherit the spawning limb's current velocity (fast-moving
-      limbs throw particles with initial momentum, not from rest).
+    - **Attributes** page: input attrs are `v w Lid` with `v` renamed to
+      **`StartPartvel`** (so newborn particles inherit the spawning limb's
+      current velocity), while `w` and `Lid` pass through under their own
+      names (`w` is the birth attribute, `Lid` is read by `color_attr`).
       `P` is transferred automatically (it's the built-in position).
 
       *Gotcha:* don't rename it to `PartVel` — that's a reserved
@@ -558,8 +645,16 @@ a side branch off Particle POP's direct output.
     - **Life Expect**: `parent().par.Lifemax`.
       **Life Variance (Fraction)**: `1 - parent().par.Lifemin / parent().par.Lifemax`.
       With those two, effective life range ≈ `[Lifemin, Lifemax]`.
-    - **Maximum Particles**: `10000` default is fine (headroom for
-      ~5 emitters × ~6 peak `w` × 60 fps × 3 s life ≈ 5400 alive).
+    - **Maximum Particles**: `80000` (live). With 18 sub-emitters × 5 limbs ×
+      peak `w` × 60 fps × up to 8 s life, the ceiling is reached easily on
+      sustained whips — see the budget formula under *Emission shape*.
+    - **Speed**: `3.0` (live). Global multiplier on the per-cook integration
+      step (`P += PartVel * dt * Speed`) — speeds up the whole sim's apparent
+      motion without rescaling forces.
+    - **Velocity Damping / Initial Drag**: **`0`** (live). Damping is NOT done
+      here anymore — `bounds_reflect` applies per-cook `Velocitydamping`
+      instead (see *Force integration* / *Water vs vacuum*). Leaving Particle
+      POP's own damping at 0 avoids stacking two damping stages.
     - **Play**: `On`. This is what drives the per-cook integration
       (`Partforce → Partvel → P`). There's no separate "Time
       Integration" toggle in the UI — Play On is the equivalent. Use
@@ -583,14 +678,28 @@ If you accidentally transfer an input attribute to a reserved name, TD
 prepends `Start` automatically and emits a warning. The renamed
 attribute works correctly for seeding, but the cleaner move is to set
 the target name explicitly. Custom attributes with no reserved collision
-(`w`, `id`, your own `fieldforce`, etc.) pass through untouched.
+(`w`, `Lid`, your own `fieldforce`, etc.) pass through untouched. Note `id`
+itself collides with TD point-identifier conventions — that's why the
+per-limb index rides through as `Lid`, not `id`.
+
+- **`p_to_uv`** — GLSL POP, runs *before* `field_sample`
+    - **Compute shader**: `p_to_uv_compute` (inline GLSL DAT). Writes a `Puv`
+      attribute = `P` remapped into the bounding box's `[0,1]³` UV
+      (`clamp((P − uBoxMin) / (uBoxMax − uBoxMin), 0, 1)`), with NaN/Inf guard
+      that substitutes the box centre. Aspect-correct because the box x extent
+      is 16:9, not unit.
+    - **Output Attributes**: empty (don't touch P/PartVel). **Create
+      Attribute 0**: custom, name `Puv`, float, 3 comps. **Initialize Output**: On.
+    - **Uniforms**: `uBoxMin` ← `(Boundsminx, Boundsminy, Boundsminz)`,
+      `uBoxMax` ← `(Boundsmaxx, Boundsmaxy, Boundsmaxz)`.
 
 - **`field_sample`** — [Lookup Texture POP](https://docs.derivative.ca/Lookup_Texture_POP)
     - **Attribute Class**: `Point`
     - **TOP**: `field_out` (the Null TOP at the end of the persistence
       chain — *not* the raw `velocity_field`).
-    - **Lookup Index Attribute U / V**: `P(0)` / `P(1)`. W empty.
-    - **Lookup Index Units**: `Normalized` (our P is in 0..1, matches).
+    - **Lookup Index Attribute U / V**: `Puv(0)` / `Puv(1)` (the aspect-
+      corrected UV written by `p_to_uv`), **not** raw `P`. W empty.
+    - **Lookup Index Units**: `Normalized` (`Puv` is already 0..1).
     - **Input Extend Mode**: `Zero` on all axes (particles outside the
       field get no force rather than wrapping).
     - **Interpolate**: `On` (bilinear).
@@ -608,11 +717,19 @@ the target name explicitly. Custom attributes with no reserved collision
         - **Type**: `Simplex 4D (GPU)`
         - **Noise Size**: `3` (vec3 field, needed for 3D curl)
         - **Period**: `parent().par.Curlscale`
-        - **Amplitude**: `parent().par.Curlgain`
+        - **Amplitude** (`amp0`): `parent().par.Curlgain` — this is the live
+          "how curly" knob; 0 kills the swirly trails.
         - **Harmonics / Spread / Gain**: `2 / 2 / 0.7` defaults are
           fine; bump Harmonics to 4 for more chaotic turbulence
         - **Positive Only**: `Off` (curl needs both directions)
         - **Attribute Class**: `Point`
+    - **Transform page → Translate 4D (`t4d`)**: `absTime.seconds *
+      parent().par.Curlspeed`. **Critical** — Simplex 4D's 4th axis is the
+      time dimension. Left at 0 the curl field is FROZEN, so particles trace
+      the same fixed streamlines forever and you get **static noise-curl
+      artifacts** (long frozen swirls). Animating `t4d` makes the field
+      evolve → trails flow and never repeat. `Curlspeed` ≈ 0.3 is a gentle
+      organic flow; 0 = static (the bug).
     - **Output page:**
         - Enable **Curl** (or "Curl 3D" depending on label)
         - Name the output attribute **`curlforce`** (not the default
@@ -624,31 +741,20 @@ the target name explicitly. Custom attributes with no reserved collision
       that Particle POP's integration consumes.
     - Operation: `Add`. Inputs: `fieldforce`, `curlforce`. Output: `Partforce`.
     - Put this AFTER both the Lookup Texture POP and the Noise POP
-      (chain order: `particle_pop → field_sample → curl_noise → add_to_force → bounds_field (opt) → force_null`).
+      (live chain order: `particle1 → p_to_uv → field_sample → curl_noise → add_to_force → bounds_reflect → force_null`).
 
-- **`bounds_field`** — [Field POP](https://derivative.ca/UserGuide/Field_POP) for bounding-box death
-    - **Shape**: `Box`
-    - **Translate**: `0.5 0.5 0.0` (center of the MediaPipe (0..1, 0..1)
-      plane, z=0 for the hip-center reference)
-    - **Scale**: `1.0 1.0 1.0` (1×1×1 box — x/y cover the full 0..1
-      range, z covers −0.5 to +0.5 which is the typical MediaPipe z
-      extent; tighten or loosen depending on how much depth you want
-      to allow particles to drift into/out of)
-    - **Invert**: `Off` — Weight=1 inside the box, 0 outside, which is
-      what we want for the "inside = alive" semantic.
-    - The op outputs a `Weight` attribute per particle.
-    - **Kill-outside pattern:** follow `bounds_field` with a small
-      Math/Mix POP (or Attribute POP) that sets
-      `Partdeath = max(Partdeath, 1 - Weight)`. Particles outside the
-      box get `Weight=0` → `1 - Weight = 1` → marked dying, Particle POP
-      removes them on the next integration cook.
-    - **Soft-mask pattern (alternative):** if you don't want to kill
-      out-of-bounds particles but just let them drift freely without
-      force, multiply `Partforce` by `Weight` instead. Particles outside
-      the box get zero force and coast with residual velocity, but
-      aren't removed.
-    - Skip this node entirely if your `Lifemax` already short enough
-      that off-screen particles age out before becoming visible noise.
+- **`bounds_reflect`** — GLSL POP, the **active** containment + integration
+  stage. This is where the field/curl `Partforce` is folded into `PartVel`,
+  damped, speed-clamped, and reflected off the box walls. Full setup is in
+  *Bounding-box containment (reflection)* below — it's the last force-chain op
+  before `force_null`.
+
+- **`field1` + `mathmix1`** — *dormant* kill-outside pair (Field POP Box →
+  Math/Mix POP `PartDeath = max(PartDeath, 1 − Weight)`). Present in the
+  network but **bypassed and disconnected**; `bounds_reflect` handles
+  containment instead. Re-enable only if you want particles to die on exit
+  rather than bounce. (Field POP Box: Translate `0.5 0.5 0`, Invert Off →
+  `Weight=1` inside; the Math/Mix step turns `Weight=0` outside into death.)
 
 - **Optional: per-emitter `Force Radial POP`** — if you want each limb
   to *also* push particles radially away from it (in addition to the
@@ -662,58 +768,90 @@ the target name explicitly. Custom attributes with no reserved collision
 
 - **`force_null`** — Null POP, end of force chain
     - Nothing to configure — it's just a passthrough. Its job is to be
-      the op `particle_pop`'s `Target Particles Update POP` points at.
+      the op `particle1`'s `Target Particles Update POP` points at.
+
+### Particle color — `color_attr` GLSL POP
+
+Color is computed per-particle on a GLSL POP (`color_attr`) sitting on the
+**render** branch (`particle1 → color_attr → render_null`), so it never feeds
+back into the sim. It writes a `Cd` (vec3) attribute that `geo1` instancing
+binds to instance RGB.
+
+The shader (`color_attr.glsl`, synced to `color_attr_compute`) composites three
+layers per particle, then a velocity HDR boost:
+
+1. **Identity** — per-limb palette indexed by `Lid` (movement particles), or a
+   cool neutral **soup base** for `Lid >= 5` (the ambient-soup sentinel).
+2. **Velocity accent** — capped, no-clamp blend toward a warm accent by speed.
+3. **Embers age ramp** — over each particle's life (`PartAge / PartLifeSpan`,
+   exact per-particle): white-hot at birth → identity/warm → ember orange →
+   deep red → dark, with a brightness envelope that peaks at birth and fades to
+   ~0 at death. Blended in by `Agegradient` (0 = flat, 1 = full embers);
+   `Agefalloff` shapes the brightness fade.
+4. **Velocity bloom** — `Cd *= 1 + speed*Velbloom`, lifting fast particles above
+   1.0 so the `bloom1` Bloom TOP glows them (`render1` is 16-bit float). Young
+   particles are already HDR (`kEmberHot > 1`), so births bloom too.
+
+Live palette: `Lid 0` left_wrist warm-red, `1` right_wrist cyan, `2`
+left_ankle yellow, `3` right_ankle lime, `4` nose magenta. Ember + soup colours
+are shader consts (`kSoup`, `kEmberHot/Mid/Old`).
+
+| Uniform | Live value | Bound to | Meaning |
+| --- | --- | --- | --- |
+| `uBase` (vec3) | `0.05 0.05 0.05` | const | never-fully-black floor |
+| `uVelGain` (float) | `0.05` | const | speed → accent blend |
+| `uAccent` (vec3) | `1.0 0.95 0.7` | const | warm accent at speed |
+| `uMaxBlend` (float) | `0.4` | const | cap on accent blend |
+| `uAgegradient` | `1.0` | `Agegradient` | embers strength (0=flat) |
+| `uAgefalloff` | `1.6` | `Agefalloff` | brightness fade exponent |
+| `uVelbloom` | `0.12` | `Velbloom` | speed → HDR boost |
+
+(uBase/uVelGain/uAccent/uMaxBlend are bound to constants on the GLSL POP's
+Vectors page; the last three to the matching COMP pars.)
 
 ### Rendering — Geometry COMP instancing
 
 There's no Render POP. TD renders POPs by using a [Geometry COMP with
 instancing](https://docs.derivative.ca/Geometry_COMP) — one instance of
-a small piece of geometry per particle, position/scale/color driven by
-POP attributes. A Render TOP then rasters the instanced scene.
+a small piece of geometry per particle, position/color driven by POP
+attributes. A Render TOP then rasters the instanced scene.
 
-**Setup:**
+**Live setup:**
 
-1. **`particle_geo`** — Geometry COMP inside `velocity_controller`.
-2. Inside `particle_geo`, drop a minimal per-instance shape:
-    - `Rectangle SOP` for flat sprite quads (cheapest, textures well), or
-    - `Circle SOP` for round billboards, or
-    - `Sphere SOP` (low resolution) for volumetric dots.
-
-   Wire it to an `Out SOP` so the COMP has renderable content.
-3. On `particle_geo`'s **Instance page**:
+1. **`geo1`** — Geometry COMP inside `velocity_controller`.
+2. Inside `geo1`: a single **`sphere1` Sphere SOP** is the per-instance shape
+   (volumetric dots). Particle size is the sphere's own radius — there is no
+   per-instance `Scale` binding (instance scale pars are empty, COMP `scale`
+   = 1). Shrink/grow particles by editing `sphere1`, or add an instance scale
+   binding if you want per-particle size.
+3. On `geo1`'s **Instance page**:
     - **Instancing**: `On`
-    - **Instance OP**: point at your final particle POP — usually a
-      `render_null` teed off `particle_pop`'s direct output (*not* the
-      force-chain `force_null`, which is for feedback only).
-    - **Translate X**: `P` attribute, component 0
-    - **Translate Y**: `P` attribute, component 1
-    - **Translate Z**: `P` attribute, component 2
-    - **Scale X / Y / Z**: either a small constant (e.g. `0.01`) for
-      uniform particle size, or bind to a per-particle `Partage` or
-      custom `size` attribute for age-driven shrink.
-    - **Color R / G / B**: bind to `id` via a Lookup Texture TOP for
-      per-limb palette, or to `Partage` for an age gradient.
-4. **`particle_cam`** — Camera COMP with orthographic projection so
-   MediaPipe's normalized (0..1) UV space maps straight to screen.
-   - **Projection**: `Orthographic`
-   - **Orthographic Width**: `1.0`, centered so the view covers (0,0)
-     to (1,1). (Or place camera at z = some offset looking at z=0.)
-5. **`render_top`** — Render TOP.
-   - **Geometry**: `particle_geo`
-   - **Camera**: `particle_cam`
-   - **Resolution**: target display size, e.g. `1920×1080`.
+    - **Instance OP**: `render_null` (teed off `particle1`'s direct output;
+      *not* the force-chain `force_null`).
+    - **Translate X / Y / Z**: `P(0)` / `P(1)` / `P(2)`
+    - **Color R / G / B**: `Cd(0)` / `Cd(1)` / `Cd(2)` (from `color_attr`).
+      **Instance Color Pre-Mult**: `Already Pre-Multiplied`.
+    - **Material**: `particle_phong` (a **Phong MAT** — particles are lit,
+      not flat-shaded). The COMP also contains `key_light` + `fill_light`
+      Light COMPs that illuminate them.
+4. **`particle_cam`** — Camera COMP. (Perspective in the live build, framing
+   the aspect-correct box; the old "orthographic 0..1" advice is not what's
+   wired.)
+5. **`render1`** — Render TOP, `1280 × 720`, Camera `particle_cam`,
+   rendering `geo1`. Output → `null2` → `out2` (COMP output 2). No smear/bloom
+   stage follows it on the live network.
+6. **`bounds_geo` + `bounds_mat`** — a visible wireframe box at the
+   containment bounds (Constant MAT), as a staging/debug reference. Not part
+   of the particle render path.
 
-`render_top`'s output is then what feeds into the screen-space smear
-chain (Composite + Feedback TOP) to produce `out_render`.
-
-**Per-instance attribute mapping cheat-sheet:**
+**Per-instance attribute mapping (live):**
 
 | Instance slot | POP attribute | Purpose |
 | --- | --- | --- |
 | Translate X / Y / Z | `P(0)` / `P(1)` / `P(2)` | 3D particle position |
-| Scale X / Y / Z | `Partage` or custom `size` | Age-driven shrink = life tail |
-| Rotate | derive from `Partvel` if you want motion-aligned sprites | optional |
-| Color | `id` via lookup TOP, or `Partage` gradient | per-limb palette |
+| Color R / G / B | `Cd(0..2)` from `color_attr` | per-limb palette + velocity accent |
+| Scale | (none — sphere radius sets size) | bind a `size`/`Partage` attr here for age shrink |
+| Rotate | derive from `PartVel` if you want motion-aligned sprites | optional |
 
 **Quick sanity check before full instancing:** you can also wire any
 POP directly into a Render TOP's `POPs` list — that renders each point
@@ -724,16 +862,22 @@ and moving?" verification before setting up the instancing plumbing.
 > applies directed motion from the limb velocity field (particles near a
 > moving limb inherit direction from that limb). The Noise POP in curl mode
 > gives particles somewhere to drift when the performer is still — otherwise
-> the visual freezes on every pause. Default `Curlgain` is low (0.15) so
+> the visual freezes on every pause. Default `Curlgain` is low (0.2) so
 > limbs dominate when someone's actually moving.
 
-### 5. Screen-space feedback smear
+### 5. Screen-space feedback smear — NOT currently wired
 
-On top of `render_pop`'s TOP output:
+> **Status:** this stage does **not** exist on the live network. `render1`
+> goes straight to `null2 → out2` with no Composite/Feedback chain. The
+> `Feedbackenable` / `Feedbackfade` / `Feedbackzoom` pars are installed but
+> **nothing reads them**. The recipe below is the (untested) plan if you want
+> to add the smear; treat it as a proposal, not as-built documentation.
+
+Proposed chain on top of `render1`'s TOP output:
 
 ```mermaid
 flowchart LR
-    render_pop[render_pop<br/>raster TOP]
+    render_pop[render1<br/>raster TOP]
     composite_add[composite_add<br/>Composite TOP Add]
     out_render([out_render<br/>Out TOP])
     feedback_top[feedback_top<br/>Feedback TOP]
@@ -746,13 +890,87 @@ flowchart LR
     feedback_top --> feedback_xform --> feedback_level --> switch_enable --> composite_add
 ```
 
-The Switch TOP lets you kill the whole feedback branch with a single toggle
-(`parent().par.Feedbackenable`) without detaching cables.
+A Switch TOP would let you kill the whole feedback branch with a single toggle
+(`parent().par.Feedbackenable`) without detaching cables. Keep `Feedbackfade`
+around 0.9–0.95 and `Feedbackzoom` barely above 1.0 (1.002–1.01) for the
+optical-flow smear look.
 
-Keep `Feedbackfade` around 0.9–0.95 and `Feedbackzoom` barely above 1.0
-(1.002–1.01). That's the optical-flow smear look: recent particle positions
-persist and slowly dim/drift, which reads as velocity trails *behind* the
-particles on top of the directed motion they already have.
+## Higher-fidelity additions (soup / size / bloom)
+
+These layer on top of the movement-driven wavefront for a denser, glowier look.
+The Embers age gradient + velocity-bloom HDR is in `color_attr` (above).
+
+### Ambient particle soup
+
+A constant particle population fills the whole bounds volume even when no one is
+moving, and gets **displaced** when a limb sweeps through (it rides the same
+force chain). Wiring:
+
+```
+ambient_chop_script (Script CHOP) → ambient_pop (CHOP to POP) ┐
+emitters_chop_script → emitters_pop ─────────────────────────┴→ merge_emitters (Merge POP) → particle1
+```
+
+- `ambient_chop_script` (synced to `ambient_chop_script.py`) emits
+  `Ambientpoints` scatter points each cook, randomised through the bounds box,
+  with `Lid`=5 (soup sentinel for `color_attr`). It marks `Ambientrate/fps`
+  random points with `w=1` per cook (fractional accumulator carries the
+  remainder), so the soup birth rate is `Ambientrate` pts/s independent of the
+  scatter-point count. `v`≈0.
+  > **Must cook every frame.** A Script CHOP with no time-varying input only
+  > cooks once (TD gotcha), which freezes the scatter into fixed emission
+  > points → the soup looks like a few dozen stationary "squirt guns" instead
+  > of a re-scattering cloud. `ambient_chop_script` reads a sample from `lag1`
+  > (always-cooking) to register a per-frame cook dependency. Verify with
+  > `op('.../ambient_chop_script').totalCooks` advancing 1:1 with frames.
+- **Color:** soup particles (`Lid>=5`) are **exempt from the Embers
+  decay-to-black** in `color_attr` — they hold a steady `Soupbright`-scaled
+  glow (brief birth fade-in, soft death fade-out) so the soup reads as a thick
+  persistent cloud rather than flashing on then vanishing. Movement particles
+  keep the full Embers ramp.
+- `ambient_pop` is a clone of `emitters_pop` (identical `p/v/w/Lid` attr rows),
+  with its `chop` par pointing at `ambient_chop_script`.
+- `merge_emitters` (Merge POP) concatenates the two emitter point sets;
+  `particle1` births from both by `w`.
+
+Steady-state alive ≈ `Ambientrate × average-life`. With `Ambientrate=2500` and
+`Lifemin/max = 2/8 s`, ~12–20k soup particles. Watch Particle POP's Maximum
+Particles when combined with movement bursts.
+
+| Par | Live | Effect |
+| --- | --- | --- |
+| `Ambientrate` | `6000` pts/s | soup birth rate (→ density via life) |
+| `Ambientpoints` | `240` | spatial scatter sample count (coverage, not rate; keep ≥ `Ambientrate/fps`) |
+| `Soupbright` | `1.5` | steady soup brightness (soup is exempt from Embers decay) |
+
+### Particle size
+
+`Particlesize` drives `geo1/sphere1`'s radius (`radx/y/z` = `parent(2).par.Particlesize`),
+so all particles scale uniformly without moving (positions come from the `P`
+instance-translate, untouched). Default `0.006`. The sphere is low-poly
+(geodesic 6×8) so tens of thousands of instances stay cheap — do NOT bump it
+back to 20×20 (that was a ~60M-triangle GPU bomb under load).
+
+> Particle *count* is set by `Spawncount` + `Ambientrate` against Particle POP's
+> Maximum Particles — not by `Particlesize`. Smaller size just makes a dense
+> cloud read as finer.
+
+### Bloom (velocity / age driven)
+
+`render1` outputs **RGBA 16-bit float** so HDR colour (> 1.0) survives, then
+`bloom1` (Bloom TOP, `render1 → bloom1 → null2 → out2`) glows it. `color_attr`
+pushes young (white-hot births) and fast (`Velbloom`) particles above 1.0, so
+the bloom keys off energy rather than blanketing everything.
+
+| Par | Live | Effect |
+| --- | --- | --- |
+| `Bloomenable` | On | `bloom1.output` = `inputplusbloom` (on) / `input` (off, passthrough) |
+| `Bloomstrength` | `1.0` | `bloom1.bloomintensity` |
+| `Bloomthreshold` | `0.85` | `bloom1.bloomthreshold` — luminance above which a pixel blooms |
+| `Velbloom` | `0.12` | speed → HDR boost in `color_attr` (how much motion drives glow) |
+
+If nothing blooms: confirm `render1` format is float (not `rgba8fixed`), and
+that `Bloomthreshold` is below your brightest particle output.
 
 ## Resolution & aspect
 
@@ -761,9 +979,9 @@ NOT all need to match each other.
 
 | Op | Resolution | Role | Aspect considerations |
 | --- | --- | --- | --- |
-| `emitters_tex` | `N × 2` (e.g. `5 × 2`) | Lookup table sampled by the shader. Not displayed. | None — aspect is meaningless for a texture you index by explicit UV. |
-| `velocity_field` + persistence chain | `256 × 256` default | Sampling fidelity of the 2D force field. Both emitters and particles live in 0..1 UV, so this is about how finely gaussians splat, not about matching a viewport. | Aspect doesn't matter. Drop to `128 × 128` if GPU-bound; go to `512 × 512` for finer splats from tight kernels. Above that is wasted — a sigma-0.12 gaussian doesn't carry information past ~512. |
-| `render_pop` output → `out_render` | Match your display target (e.g. `1920 × 1080`) | What actually hits the projector / downstream stack. | Match your **display** aspect. Use an orthographic camera on the Render POP with its view box covering `(0..1, 0..1)` so particle `P.xy` lands correctly at all viewport aspects. |
+| `emitters_tex_script_top` | `N × 2` (e.g. `5 × 2`) | Lookup table sampled by the shader. Not displayed. | None — aspect is meaningless for a texture you index by explicit UV. |
+| `velocity_field` + persistence chain | `256 × 256` default | Sampling fidelity of the 2D force field. Both emitters and particles live in box UV, so this is about how finely gaussians splat, not about matching a viewport. | Aspect doesn't matter. Drop to `128 × 128` if GPU-bound; go to `512 × 512` for finer splats from tight kernels. |
+| `render1` → `null2` → `out2` | `1280 × 720` (live) | What actually hits downstream. | Match your **display** aspect. `particle_cam` frames the aspect-correct (16:9) box; particle `P.xy` lands correctly because the box x extent is already 16/9. |
 
 **Common pitfall — source ≠ display aspect.** MediaPipe emits landmarks in its
 **source-image** 0..1 space. If your camera is 16:9 but your projection is
@@ -785,8 +1003,8 @@ default `Fieldradius`; only worth aspect-correcting if you see it as a flaw.
 
 ## Emission shape — 2D velocity-aligned scatter
 
-By default `emitters_chop` doesn't just output one point per landmark.
-It outputs `Spawncount` (default 12) sub-emitter points per landmark,
+By default `emitters_chop_script` doesn't just output one point per landmark.
+It outputs `Spawncount` (live 18) sub-emitter points per landmark,
 scattered pseudo-randomly within a **2D region aligned with the limb's
 xy velocity direction**. The region has two independent extents:
 
@@ -823,32 +1041,34 @@ giving the wavefront a cone-like expansion as it travels.
 
 | Par | Default | Effect |
 | --- | --- | --- |
-| `Spawncount` | 12 | Sub-emitters per limb inside the emission region. 1 = single point. Higher = denser fill of the region. |
+| `Spawncount` | 18 | Sub-emitters per limb inside the emission region. 1 = single point. Higher = denser fill of the region. |
 | `Spawnspread` | 0.08 | Maximum **along-velocity** extent of the emission region at full speed (streak length). |
 | `Spawnspreadref` | 0.8 | Speed (UV/s) at which `Spawnspread` is fully engaged. Below, size scales linearly. 0.8 engages full size at gentle hand-waving; raise to 2–3 for "only whips open the region"; lower to 0.3 for "any motion = full size". |
 | `Spawnspreadmin` | 0.02 | Minimum extent at rest (lump size). Gives emission a small 2D shape even when the limb is stationary. 0 = collapse to point at rest. |
 | `Spawnperpratio` | 0.3 | Ratio of perpendicular to along-velocity extent at speed. 0 = pure streak along motion direction, 1 = square region, 0.3 = clearly elongated streak with some width. Lower for sleeker streaks, higher for rounder clouds. |
-| `Spawnvelscale` | 0.3 | Multiplier on limb velocity written to `StartPartvel`. 1.0 = particles fly off-screen fast on whips; 0.3 = gentle launch, velocity field continues to push over time. |
-| `Spawnvelfan` | 0.5 | Angular fan on `StartPartvel` — edge sub-emitters get a perpendicular kick scaled by their position along the spread line times limb speed. Center particle stays parallel to motion; edges tilt outward. 0 = parallel wavefront (all particles fly exactly the same direction), 0.25 = subtle, 0.5 = ~27° edge tilt (visible cone), 1.0 = ~45° (strong fan). Combined with curl noise, this gives organic-looking wavefront curvature instead of a straight line. |
+| `Spawnvelscale` | 0.25 | Multiplier on limb velocity written to `StartPartvel`. 1.0 = particles fly off-screen fast on whips; 0.25 = moderate launch, velocity field continues to push over time. |
+| `Spawnvelfan` | 0.8 | Angular fan on `StartPartvel` — edge sub-emitters get a perpendicular kick scaled by their position along the spread line times limb speed. Center particle stays parallel to motion; edges tilt outward. 0 = parallel wavefront, 0.5 = ~27° edge tilt, 0.8 (live) = ~38°, 1.0 = ~45° (strong fan). Combined with curl noise, this gives organic-looking wavefront curvature instead of a straight line. |
 
 Total emission rate **scales with `Spawncount`** — each sub-emitter
 independently emits `int(w)` particles per frame (Particle POP's
 integer-truncation birth rule means we can't divide `w` across
 sub-emitters without losing everything to rounding). So doubling
-`Spawncount` doubles total particles/sec. Budget accordingly — raise
-Particle POP's **Maximum Particles** ceiling if you crank `Spawncount`
-past ~15 at peak `w`. Rough formula:
+`Spawncount` doubles total particles/sec. Budget accordingly — `particle1`'s
+**Maximum Particles** is set to `80000` live, and the long `Lifemax` (8 s)
+keeps particles alive a long time, so it's easy to hit the ceiling. Rough
+formula:
 
 ```
 peak_alive ≈ n_landmarks × Spawncount × peak_w × fps × Lifemax
 ```
 
-With defaults (5 × 12 × 5 × 60 × 3) that's 54000 at max whip across all
-limbs — well over the 10000 Max Particles default. Either:
-- Raise Max Particles to `~100000`
-- Reduce `Spawncount` to `6`
-- Reduce `Burstgain` to `3` (caps peak `w` lower)
-- Shorten `Lifemax` to `1.5s`
+With live values (5 × 18 × ~12 × 60 × 8) the theoretical peak is far above
+80000 — in practice the Max Particles cap clamps it. If you see particles
+stop spawning under sustained motion you've hit the ceiling; either:
+- Raise Maximum Particles further
+- Reduce `Spawncount`
+- Reduce `Burstgain` (caps peak `w` lower)
+- Shorten `Lifemax`
 
 **Tuning recipes:**
 
@@ -864,132 +1084,129 @@ limbs — well over the 10000 Max Particles default. Either:
 
 ## "Water" vs "vacuum" feel
 
-> **Critical diagnostic first:** if particles are flying fast and
-> scattering wildly, you almost certainly don't have **Velocity Damping**
-> set on your Particle POP. The flowfield applies a constant force; with
-> no damping, that force accumulates into unbounded velocity over
-> particle lifetime. The terminal velocity of a particle is approximately
-> `Fieldforce / VelocityDamping`. With `VelocityDamping = 0` (Particle
-> POP's default), there is no terminal — particles keep accelerating
-> until they die. Check it in the Textport:
+> **Where damping lives now:** damping is applied inside the
+> **`bounds_reflect` GLSL POP** via the `Velocitydamping` **COMP par**
+> (`PartVel *= 1 − Velocitydamping` each cook), NOT on Particle POP.
+> Particle POP's own Velocity Damping / Initial Drag are left at `0` so the
+> two stages don't stack. If particles fly fast and scatter wildly, raise
+> `parent().par.Velocitydamping` (and/or lower `Fieldforce` / raise
+> `Forcedeadzone`), don't touch Particle POP. Quick check in the Textport:
 >
 > ```python
-> pp = op('/project1/velocity_controller/particle1')  # your Particle POP
-> print("Velocity Damping:", pp.par.velocitydamping.eval())
-> print("Initial Drag:    ", pp.par.initialdrag.eval())
+> vc = op('/project1/velocity_controller')
+> print("Velocitydamping (COMP par):", vc.par.Velocitydamping.eval())
+> print("Forcescale / Forceref:", vc.par.Forcescale.eval(), vc.par.Forceref.eval())
+> pp = vc.op('particle1')
+> print("Particle POP damping (should be 0):", pp.par.velocitydamping.eval())
 > ```
->
-> If Velocity Damping is `0`, **nothing on the `velocity_controller` COMP
-> can save you.** Set both on Particle POP:
->
-> ```python
-> pp.par.velocitydamping = 3.0    # strong water-like drag
-> pp.par.initialdrag    = 0.5
-> ```
->
-> These live on Particle POP itself, not on velocity_controller, which is
-> why `install_velocity_params` can't set them.
 
-By default, particles live in a near-vacuum: the flow field pushes them
-with no friction, so they keep flying until their life runs out. That
-feels great for explosive/energetic effects but wrong for anything
-meant to read as "swimming through a medium" or "paint dispersing in
-water".
+The force response is non-linear (see `bounds_reflect.glsl`): the sampled
+`|force|` is run through a deadzone + reference + gamma curve before being
+integrated, so a residual field at rest produces ~no push while a hard whip
+produces a strong one. Terminal velocity is governed by that curve plus
+`Velocitydamping`, not by any Particle POP setting.
 
-Three knobs convert vacuum → water:
+Live "water" defaults and the knobs that shape the feel:
 
-1. **Particle POP → Velocity Damping** (on the Particle POP itself, NOT
-   on velocity_controller). `1.5` is a good starting point: it multi­
-   plicatively reduces `Partvel` each frame, so a particle at 1 UV/s
-   slows to ~0.22 UV/s in one second and settles within 2–3 seconds.
-   At `0` particles never lose momentum; at `3+` they feel like they're
-   moving through molasses. This is *the* biggest dial for the overall
-   feel.
-2. **Particle POP → Initial Drag** to `0.2`. Gives every newly-spawned
-   particle a baseline friction attribute so it doesn't start life in
-   zero-g while the sim is trying to damp it.
-3. **`Fieldforce` on velocity_controller → drop to `0.4`** (default I
-   just lowered). With damping cranked, you want less aggressive
-   acceleration from the flowfield, or particles still get flung away
-   before damping can catch them.
+| Knob (COMP par) | Live value | Role |
+| --- | --- | --- |
+| `Velocitydamping` | `0.15` | fraction of velocity removed per cook (THE feel dial) |
+| `Forcescale` | `0.008` | per-cook force gain into PartVel |
+| `Forcedeadzone` | `3.0` | `|f|` below this = no push (kills rest-drift) |
+| `Forceref` | `20.0` | `|f|` mapped to full response |
+| `Forcegamma` | `2.5` | response curvature (>1 = gentle small / snappy big) |
+| `Maxspeed` | `8.0` | hard clamp on `|PartVel|` |
+| `Fieldforce` | `1.0` | field push magnitude (fed into the curve above) |
 
-Recipe summary:
+Recipe summary (all on the COMP, read by `bounds_reflect`):
 
-| Feel | Velocity Damping | Initial Drag | Fieldforce | Spawnvelscale |
+| Feel | Velocitydamping | Forcescale | Fieldforce | Spawnvelscale |
 | --- | --- | --- | --- | --- |
-| Vacuum (old default) | 0 | 0 | 1.5 | 0.3 |
-| Light breeze | 0.5 | 0.1 | 0.7 | 0.2 |
-| **Water (new default)** | **1.5** | **0.2** | **0.4** | **0.15** |
-| Molasses | 3.0 | 0.5 | 0.2 | 0.1 |
+| Vacuum (coasts) | 0.0 | 0.02 | 1.5 | 0.3 |
+| Light breeze | 0.08 | 0.01 | 1.2 | 0.25 |
+| **Water (live)** | **0.15** | **0.008** | **1.0** | **0.25** |
+| Molasses | 0.4 | 0.005 | 0.6 | 0.1 |
 
-Swap rows to taste. `Velocity Damping` and `Initial Drag` are both on
-the Particle POP's Particles page; the rest live on the COMP pars.
+Swap rows to taste — every value here is a `velocity_controller` COMP par
+(`bounds_reflect` reads them as uniforms), so no Particle POP edits needed.
 
 ## Bounding-box containment (reflection)
 
-Out of the box, particles that escape the visible area just keep flying
-until their life runs out — they disappear off-screen. The `bounds_field`
-Field POP + Partdeath pattern described earlier *kills* them when they
-exit, but the user experience is a thinning cloud of particles as they
-leave the frame. Most installations want **reflection** instead:
-particles bounce off invisible walls and stay contained.
+`bounds_reflect` is the **active** containment op AND the force integrator.
+It folds `Partforce` into `PartVel`, damps, speed-clamps, and reflects
+particles off the inside of an axis-aligned box so they bounce and stay
+contained instead of flying off-screen. (The dormant `field1`/`mathmix1`
+kill-outside pair is an alternative that's bypassed — see the POP chain.)
 
 ### Setup — `bounds_reflect` GLSL POP
 
-Add as the **last op** in the force chain, immediately before the
-`force_null` that Particle POP points at via `Target Particles Update POP`.
+Already wired on the live network as the **last op** in the force chain,
+immediately before `force_null` (which `particle1` points at via `Target
+Particles Update POP`).
 
-1. Create a **GLSL POP** named `bounds_reflect` inside
-   `velocity_controller`.
-2. Point its Program parameter at `shaders/bounds_reflect.glsl` (or
-   paste the code into a Text DAT and reference it). The shader
-   clamps each particle's `P` inside a 3D axis-aligned box and flips
-   `Partvel` when the particle hits a wall.
-3. Declare uniforms on the GLSL POP's Vectors 1 / Scalars page, binding
-   each to the corresponding parent par:
+1. **GLSL POP** named `bounds_reflect` inside `velocity_controller`.
+2. Compute shader = `bounds_reflect_compute` (synced to
+   `shaders/bounds_reflect.glsl`). **Output Attributes**: `PartVel P`
+   (both — see below). **Initialize Output**: On. It reads `P`, `PartVel`,
+   `PartForce` via `TDIn_*()` and writes BOTH `P[id]` (hard-clamped to the
+   wall) and `PartVel[id]` (reflected).
+
+   > **Containment requires writing `P`, not just `PartVel`.** Reflecting
+   > velocity alone lags one integration step, so fast particles (or ones
+   > shoved out by an edge-of-box field/curl force) overshoot and visibly sit
+   > OUTSIDE the box — or escape entirely. The shader therefore also clamps
+   > `pos` to `[boxMin, boxMax]` and writes it back. Because this POP feeds
+   > `force_null` → `particle1`'s Target Particles Update POP, the clamped `P`
+   > becomes the base position the Particle POP integrates from next cook, so
+   > particles deflect off the wall instead of teleporting through it. Verified:
+   > with ~20k live particles the `P` range sits exactly at the margin-inset
+   > box on every axis. If you re-derive this op, `P` MUST be in Output
+   > Attributes or containment silently breaks.
+3. Bind all **ten** uniforms to COMP pars (the original 4-uniform table was
+   stale — force integration + damping moved in here):
 
     | Uniform | Binding | Meaning |
     | --- | --- | --- |
-    | `uBoxMin` | `(parent().par.Boundsminx, parent().par.Boundsminy, parent().par.Boundsminz)` | Min corner of the box in particle space |
-    | `uBoxMax` | `(parent().par.Boundsmaxx, parent().par.Boundsmaxy, parent().par.Boundsmaxz)` | Max corner |
-    | `uBounce` | `parent().par.Boundsbounce` | 0 = stick, 1 = elastic, 0.4 = water-like |
-    | `uMargin` | `parent().par.Boundsmargin` | Small inset from walls |
+    | `uBoxMin` | `(Boundsminx, Boundsminy, Boundsminz)` | Min corner (particle space) |
+    | `uBoxMax` | `(Boundsmaxx, Boundsmaxy, Boundsmaxz)` | Max corner (x is 16:9) |
+    | `uBounce` | `Boundsbounce` | 0 = stick, 1 = elastic, 0.95 live |
+    | `uMargin` | `Boundsmargin` | inset from walls |
+    | `uForceScale` | `Forcescale` | per-cook force gain (dt·gain) |
+    | `uDamping` | `Velocitydamping` | fraction of velocity removed per cook |
+    | `uMaxSpeed` | `Maxspeed` | hard clamp on `|PartVel|` |
+    | `uForceDeadzone` | `Forcedeadzone` | `|f|` below this → no push |
+    | `uForceRef` | `Forceref` | `|f|` mapped to full response |
+    | `uForceGamma` | `Forcegamma` | response curvature |
 
-4. Wire `bounds_reflect` into the force chain as the last stage before
-   `force_null`:
+   (Bind via `parent().par.<Name>` expressions; the vec3 box uniforms read the
+   three components.)
+4. Force-chain order (live):
 
     ```
-    Particle POP → Lookup Texture POP → Noise POP → Math/Mix POP
-                 → bounds_reflect GLSL POP → force_null
+    particle1 → p_to_uv → field_sample → curl_noise → add_to_force
+              → bounds_reflect → force_null
     ```
 
-5. **Verify**: the GLSL POP's output POP should show particles clamped
-   to `(0..1, 0..1, -0.5..+0.5)` in particle-space. Drop a Null POP
-   after it, right-click ▸ Info — the `P` attribute's min/max across
-   all particles should match your bounds values. Move a limb
-   aggressively — particles hitting walls should visibly reverse
-   direction rather than escaping.
+5. **Verify**: drop a Null POP after `bounds_reflect`, right-click ▸ Info —
+   the `P` min/max across particles should sit inside the box
+   `(0..1.77778, 0..1, −0.15..+0.15)`. Move a limb aggressively — particles
+   hitting walls reverse rather than escaping.
 
-> **Syntax caveat**: the shader file has placeholder comments like
-> `/* READ P */` and `/* WRITE P */` on the attribute-access lines. The
-> per-point read/write API of TD's GLSL POP varies across builds (some
-> use `inPointAttribs.P` members, some helper functions, some require
-> declaring the attribute layout on the op's pages). The shader's
-> reflection math is standard GLSL and doesn't change — only those
-> four attribute-access lines need adapting. Check
-> docs.derivative.ca/GLSL_POP for your build's exact syntax.
+The shader also NaN/Inf-guards `P`, `PartVel`, and `PartForce` (a NaN `P` fed
+into instancing or the field lookup can crash the Vulkan device), zeroing bad
+values so one corrupt cook can't poison the sim.
 
 ### Simplest containment — kill-outside via Field POP + Math POP
 
-No GLSL and no force ops needed. Uses the existing `bounds_field` Field
-POP you may already have in the chain:
+No GLSL and no force ops needed. This is exactly what the **dormant
+`field1` → `mathmix1` pair** in the live network does (currently bypassed) —
+re-enable + connect it into the chain instead of `bounds_reflect` to use it:
 
-1. **Field POP** (`bounds_field`): shape Box, Translate `(0.5, 0.5, 0.0)`,
-   Scale `(1.0, 1.0, 1.0)`, Invert Off. Outputs a `Weight` attribute = 1
-   inside the box, 0 outside.
-2. **Math POP** (or Attribute POP) after it: set `Partdeath = 1 - Weight`.
-   Particles outside the box get `Partdeath = 1` → Particle POP kills
-   them on the next integration.
+1. **Field POP** (`field1`): shape Box, Translate `(0.5, 0.5, 0.0)`,
+   Invert Off. Outputs a `Weight` attribute = 1 inside the box, 0 outside.
+2. **Math/Mix POP** (`mathmix1`) after it: set
+   `PartDeath = max(PartDeath, 1 − Weight)`. Particles outside the box get
+   `PartDeath = 1` → Particle POP kills them on the next integration.
 
 This doesn't *reflect* — particles just die and disappear when they
 leave the box. But it **contains** the visual, which is usually enough:
@@ -1017,7 +1234,8 @@ the box, each pushing inward:
 | Front | `(0.5, 0.5, +0.5)` | `(0, 0, -1)` | `0.1` | `8` |
 
 Chain all six into the force chain between your existing Math/Mix POP
-and `force_null`. Combined with strong `Velocity Damping`, this makes
+and `force_null`. Combined with strong `Velocitydamping` (the COMP par read
+by `bounds_reflect`), this makes
 particles slow dramatically as they approach walls, reversing direction
 gradually rather than bouncing instantaneously. Uses only native ops
 but gets you 6 nodes instead of 1.
@@ -1064,12 +1282,12 @@ forcibly re-applied via `reset_velocity_params.py`).
 | `Trustthreshold` | `0.75` | 0..1 | Commit gate. Only above this does `last_good` update and velocity math run. Between gate and trust = marginal zone (output last-good, visible=1). |
 | `Velocitysmooth` | `0.08` s | 0..0.5+ | One-pole EMA time constant on raw velocity. Shorter = snappier, noisier. |
 | `Accelsmooth` | `0.05` s | 0..0.5+ | Same for acceleration. |
-| `Speedscale` | `2.5` UV/s | 0.1..10+ | Raw speed / scale = emit (clamped 0..1). Lower = more emit at gentle motion. |
+| `Speedscale` | `5.0` UV/s | 0.1..10+ | Raw speed / scale = emit (clamped 0..1). Lower = more emit at gentle motion. |
 | `Accelthreshold` | `8.0` | 0..50+ | Min accel magnitude that arms a burst. |
 | `Accelscale` | `40.0` | 1..200+ | Accel above threshold / scale = burst amplitude (clamped 0..1). |
 | `Burstdecay` | `0.35` s | 0..2+ | Exponential tail length of burst envelope. |
 | `Maxjump` | `0.30` UV/frame | 0..1 | Teleport-rejection threshold inside a trusted stream. 0 disables. |
-| `Settleframes` | `5` | 0..30 | Post-dropout grace period (frames) where Maxjump is skipped to let MediaPipe lock on. |
+| `Settleframes` | `1` | 0..30 | Post-dropout grace period (frames) where Maxjump is skipped to let MediaPipe lock on. |
 | `Zspeedweight` | `0.35` | 0..1 | How much vz/az contribute to speed & accel magnitudes (emit/burst drivers). 1 = full 3D, 0 = z doesn't trigger emission at all. |
 | `Blendtime` | `0.08` s | 0..1+ | Lag CHOP time constant for post-sensing smoothing. |
 
@@ -1078,59 +1296,80 @@ forcibly re-applied via `reset_velocity_params.py`).
 | Par | Default | Range | What it does |
 | --- | --- | --- | --- |
 | **Emission** | | | |
-| `Spawnrate` | `5000` pts/s | 0..50000 | Currently informational (Particle POP reads `w` as birth attribute; this is a reserved par for future total-rate scaling). |
-| `Burstgain` | `6.0` | 0..20+ | Multiplier on `burst` when mixing into the spawn-weight `w = emit + Burstgain × burst`. |
+| `Spawnrate` | `15000` pts/s | 0..50000 | Currently informational (Particle POP reads `w` as birth attribute; this is a reserved par for future total-rate scaling). |
+| `Burstgain` | `12.0` | 0..20+ | Multiplier on `burst` when mixing into the spawn-weight `w = emit + Burstgain × burst`. |
 | **Emission region (2D scatter)** | | | |
-| `Spawncount` | `12` | 1..40+ | Sub-emitters per landmark within the region. 1 = single-point. Scales total particle count linearly — watch Max Particles. |
+| `Spawncount` | `18` | 1..40+ | Sub-emitters per landmark within the region. 1 = single-point. Scales total particle count linearly — watch Max Particles. |
 | `Spawnspread` | `0.08` UV | 0..0.3 | Max along-velocity extent at full speed (streak length). |
 | `Spawnspreadref` | `0.8` UV/s | 0.1..10+ | Speed at which full `Spawnspread` is engaged. |
 | `Spawnspreadmin` | `0.02` UV | 0..0.1 | Minimum extent in both axes at rest (lump size). Matches the flow-field shader's gaussian-at-rest. |
 | `Spawnperpratio` | `0.3` | 0..1 | Perp/along extent ratio at speed. 0 = pure streak, 1 = square, 0.3 = elongated with width. |
-| `Spawnvelscale` | `0.15` | 0..1.5+ | Multiplier on limb velocity → `StartPartvel`. 0.15 = gentle launch (flowfield does the work). 1.0 = particles fly off fast. |
-| `Spawnvelfan` | `0.5` | 0..2 | Perpendicular fan on edge sub-emitters' initial velocity. 0 = parallel, 0.5 = ~27° cone, 1.0 = ~45°. |
+| `Spawnvelscale` | `0.25` | 0..1.5+ | Multiplier on limb velocity → `StartPartvel`. 0.25 = moderate launch (flowfield does the rest). 1.0 = particles fly off fast. |
+| `Spawnvelfan` | `0.8` | 0..2 | Perpendicular fan on edge sub-emitters' initial velocity. 0 = parallel, 0.5 = ~27° cone, 1.0 = ~45°. |
 | **Flow field** | | | |
 | `Fieldradius` | `0.05` UV | 0.01..0.5 | Base gaussian sigma. 3-sigma spread = ~15% of frame at default. |
-| `Fieldforce` | `0.4` | 0..10+ | Global multiplier on the velocity vector written into the field. 0.4 = water-feel (default). Raise to 1.5+ for vacuum/explosive feel; lower for barely-drift. |
-| `Fielddecay` | `0.30` | 0..0.99 | Level TOP multiplier in the persistence chain. 0 = instantaneous; higher = longer force trails in the air. |
+| `Fieldforce` | `1.0` | 0..10+ | Magnitude of the velocity written into the field; feeds the `bounds_reflect` force curve. Raise for more push; pair with `Velocitydamping`. |
+| `Fielddecay` | `0.5` | 0..0.99 | Level TOP multiplier in the persistence chain. 0 = instantaneous; higher = longer force trails in the air. |
+| **Force integration (bounds_reflect GLSL POP)** | | | |
+| `Forcescale` | `0.008` | 0..0.1+ | Per-cook force gain: `PartVel += curved_force × Forcescale`. |
+| `Velocitydamping` | `0.15` | 0..1 | Fraction of velocity removed per cook. THE water-feel dial (replaces Particle POP damping). |
+| `Maxspeed` | `8.0` | 0..50+ | Hard clamp on `|PartVel|`. |
+| `Forcedeadzone` | `3.0` | 0..100+ | `|force|` below this gets no push (kills rest-drift from field persistence). |
+| `Forceref` | `20.0` | 0..200+ | `|force|` mapped to full response magnitude. |
+| `Forcegamma` | `2.5` | 0.1..5+ | Response curvature. 1 = linear, >1 = gentle at small motion, snappy at big. |
 | `Zgain` | `0.2` | 0..3+ | Depth → splat size. Negative z (toward camera) scales radius up, clamped to 1.8× in shader. |
 | `Zforceweight` | `0.05` | 0..1 | Scales `vz` on **both** render-side paths: (a) into the velocity-field texture (dampens z-force on live particles), and (b) into `StartPartvel.z` (dampens z-velocity on newborn particles). MediaPipe's depth is noisy even during pure horizontal motion — without this, particles would drift forward/back on sideways gestures. 0 = completely flat 2D, 1 = full 3D with raw jitter. **Separate from `Zspeedweight`** (sensing-side, emit/burst). |
 | `Velstretch` | `0.8` | 0..3+ | Anisotropic kernel elongation along velocity direction. Makes fast limbs throw a longer cone of force. |
 | `Stretchspeedref` | `2.0` UV/s | 0.1..10+ | Speed at which full `Velstretch` applies. |
 | **Noise drift** | | | |
-| `Curlgain` | `0.5` | 0..2+ | Curl noise amplitude. Bends wavefronts organically per-position. 0.5 = meaningful bending. Crank for turbulent look. |
+| `Curlgain` | `0.05` | 0..2+ | Curl noise amplitude (bound to `curl_noise` `amp0`). Bends trails organically. 0 = no curls (crisp straight motion); crank for turbulent look. |
 | `Curlscale` | `0.5` | 0.05..20+ | Noise period. **Critical**: must be < particle cloud extent (~1 UV), otherwise the whole cloud samples one curl direction and drifts consistently. 0.5 gives varied curl across the cloud that averages to zero. Lower = tight micro-turbulence; higher than 1 = everything drifts together. |
+| `Curlspeed` | `0.3` | 0..3+ | Curl field animation speed (drives `curl_noise` Translate-4D = `absTime.seconds × Curlspeed`). 0 = **frozen field → static swirl artifacts**; raise for flowing, non-repeating drift. |
 | **Life** | | | |
-| `Lifemin` | `0.8` s | 0.1..20+ | Minimum particle lifetime. |
-| `Lifemax` | `2.0` s | 0.1..20+ | Maximum particle lifetime (drives Particle POP Life Expect + Variance). |
+| `Lifemin` | `2.0` s | 0.1..20+ | Minimum particle lifetime. |
+| `Lifemax` | `8.0` s | 0.1..20+ | Maximum particle lifetime (drives Particle POP Life Expect + Variance). |
 | **Bounding box (containment via bounds_reflect GLSL POP)** | | | |
-| `Boundsminx/y/z` | `0 / 0 / -0.5` | — | Min corner of the containment box in particle space. |
-| `Boundsmaxx/y/z` | `1 / 1 / +0.5` | — | Max corner. |
-| `Boundsbounce` | `0.4` | 0..1 | Restitution on wall hits. 0 = stop dead, 1 = elastic, 0.4 = water-like. |
-| `Boundsmargin` | `0.0` UV | 0..0.1 | Inset from walls before clamping (stops particles from clipping into walls visually). |
-| **Screen-space feedback smear** | | | |
-| `Feedbackenable` | `On` | toggle | Whole post-render feedback branch enabled. |
-| `Feedbackfade` | `0.92` | 0..0.999 | Per-frame multiply on the feedback texture. Higher = longer ghosts. |
-| `Feedbackzoom` | `1.003` | 0.95..1.05 | Per-frame zoom on the feedback texture for subtle drift. |
+| `Boundsminx/y/z` | `0 / 0 / -0.15` | — | Min corner of the containment box in particle space. |
+| `Boundsmaxx/y/z` | `1.77778 / 1 / +0.15` | — | Max corner. x = 16/9 (aspect-correct); z is a thin slab. |
+| `Boundsbounce` | `0.95` | 0..1 | Restitution on wall hits. 0 = stop dead, 1 = elastic, 0.95 = near-elastic (live). |
+| `Boundsmargin` | `0.005` UV | 0..0.1 | Inset from walls before clamping (stops particles from clipping into walls visually). |
+| **Ambient soup** | | | |
+| `Ambientrate` | `6000` pts/s | 0..20000+ | Constant-soup birth rate. Steady alive ≈ rate × avg-life. |
+| `Ambientpoints` | `240` | 1..2000+ | Soup scatter-point count (spatial coverage). Keep ≥ `Ambientrate/fps`. |
+| **Particle size / age / bloom** | | | |
+| `Particlesize` | `0.006` | 0.0005..0.05+ | Uniform instance size (drives `geo1/sphere1` radius). |
+| `Soupbright` | `1.5` | 0..5+ | Steady soup brightness (soup exempt from Embers decay; keep below bloom threshold so it stays calm). |
+| `Agegradient` | `1.0` | 0..1 | Embers age-gradient strength (movement particles). 0 = flat color, 1 = full white-hot→ember decay. |
+| `Agefalloff` | `1.6` | 0.2..5+ | Embers brightness fade exponent over life. >1 = stays bright then drops. |
+| `Velbloom` | `0.12` | 0..1+ | Velocity → HDR brightness boost (drives velocity-bloom). |
+| `Bloomenable` | `On` | toggle | `bloom1` output = input+bloom (on) / passthrough (off). |
+| `Bloomstrength` | `1.0` | 0..4+ | `bloom1` bloom intensity. |
+| `Bloomthreshold` | `0.85` | 0..4+ | Luminance above which a pixel blooms. |
+| **Screen-space feedback smear (RESERVED — no smear chain wired)** | | | |
+| `Feedbackenable` | `On` | toggle | Reserved. No Feedback TOP chain reads this on the live output. |
+| `Feedbackfade` | `0.92` | 0..0.999 | Reserved (intended per-frame multiply on a feedback texture). |
+| `Feedbackzoom` | `1.0` | 0.95..1.05 | Reserved (intended per-frame zoom on a feedback texture). |
 
-### Particle POP parameters (on Particle POP inside your render network, NOT on the velocity_controller COMP)
+### Particle POP (`particle1`) parameters (set on the POP, NOT installed by the param scripts)
 
-These aren't installed by `install_velocity_params.py` — you set them
-manually on Particle POP itself:
+Live values on `particle1`:
 
-| Par | Recommended value | Why |
+| Par | Live value | Why |
 | --- | --- | --- |
 | Target Particles Update POP | `force_null` | Feedback target — closes the force chain loop. |
 | Create Point Primitives | `On` | Needed for rendering. |
-| Maximum Particles | `~100000` | Budget for 12 sub-emitters × 5 limbs × peak_w × 60fps × 2s life ≈ 43k alive. |
+| Maximum Particles | `80000` | Budget for 18 sub-emitters × 5 limbs × peak_w × 60fps × up to 8 s life. |
 | Emission from | `Birth Attribute` | Uses per-point `w` instead of a global rate. |
 | Input Birth Attribute | `w` | |
+| Attributes / Rename | `v w Lid`, `v` → `StartPartvel` | seeds initial velocity; `w`/`Lid` pass through. |
+| Use Death Attribute | `On` | lets the (currently dormant) kill-outside path mark `PartDeath`. |
 | Randomize Input Points | `On` | Otherwise particles cycle through input points mechanically. |
 | Life Expect | `parent().par.Lifemax` | |
 | Life Variance (Fraction) | `1 - parent().par.Lifemin / parent().par.Lifemax` | |
 | Initial Velocity | `0 0 0` | Fallback only — real velocity comes from `StartPartvel` attribute. |
-| Initial Mass | `1` | |
-| **Initial Drag** | **`0.2`** | Per-particle drag — gives every particle a baseline friction so they slow as they travel (water feel). Raise toward `0.5` for heavier viscosity. |
-| **Velocity Damping** | **`1.5`** | Per-frame multiplicative velocity reduction. This is **the** water-feel knob. `0` = vacuum (particles coast forever), `1–2` = strong viscous damping (particles decay to rest quickly), `3+` = molasses. Combine with a low `Fieldforce` for the "water" look. |
+| Speed | `3.0` | Global integration-step multiplier (`P += PartVel·dt·Speed`). |
+| **Initial Drag** | **`0`** | Damping is NOT here — see Velocity Damping note. |
+| **Velocity Damping** | **`0`** | Left at 0 on purpose. Damping runs in `bounds_reflect` via the `Velocitydamping` COMP par, so the two stages don't stack. |
 | Play | `On` | Drives per-cook integration. No separate "Time Integration" toggle. |
 
 On the **Attributes** page: transfer `v` → `StartPartvel` (not `PartVel`
@@ -1147,19 +1386,22 @@ On the **Attributes** page: transfer `v` → `StartPartvel` (not `PartVel`
    is visible.
 4. **Field feels laggy / pushes particles off-camera.** Lower `Fieldforce`
    and/or `Fielddecay`.
-5. **Screen is a solid white after a few seconds.** `Feedbackfade` too high —
-   pull it down toward 0.88.
+5. **Particles fly fast and scatter / never settle.** Raise
+   `Velocitydamping`, lower `Fieldforce`, or raise `Forcedeadzone`. Do NOT
+   touch Particle POP's own damping (it's intentionally 0). (Note: the old
+   "solid white from Feedbackfade" symptom can't happen — no feedback chain
+   is wired.)
 6. **Particles spawn in the corner, not at the limbs.** The `P` attribute
    on `emitters_pop` is stuck at origin. Drop a Trail CHOP on
-   `emitters_chop` first — you should see `P0`, `P1`, `P2` tracking live.
-   If those look right but the POP is still at origin, the CHOP-to-POP's
-   attribute row for `P` isn't picking up the channels — double-check
+   `emitters_chop_script` first — you should see `P0`, `P1`, `P2` tracking
+   live. If those look right but the POP is still at origin, the CHOP-to-POP's
+   attribute row for `p` isn't picking up the channels — double-check
    that row has `Channel Scope = P0 P1 P2` and `Attribute Type = float
    size 3`. TD's automatic name detection doesn't work here (bracket
    naming isn't allowed in channel names), so the rows have to be set
    manually.
-7. **`emitters_tex` is all zero.** Open its Viewer — pixels 0..4 on row 0
-   should have non-zero R/G. If the Script TOP is erroring, check its
+7. **`emitters_tex_script_top` is all zero.** Open its Viewer — pixels 0..4
+   on row 0 should have non-zero R/G. If the Script TOP is erroring, check its
    textport: most likely `op('lag1')` returned None because the sensing chain
    isn't wired up yet, or a landmark name in `Landmarks` doesn't match the
    upstream channels (watch for singular/plural, e.g. `left_index` vs
@@ -1177,9 +1419,9 @@ Same playbook as `painting_controller`:
 
 - Duplicate the `velocity_controller` Base COMP, rename it.
 - If the new experiment needs different landmarks, edit `parent().par.Landmarks`.
-  The Script CHOP rebuilds its state dict automatically. Both `emitters_tex`
-  and `emitters_pop` pick up the new landmark list on the next cook — no
-  wiring changes needed.
+  The Script CHOP rebuilds its state dict automatically. Both
+  `emitters_tex_script_top` and `emitters_pop` pick up the new landmark list
+  on the next cook — no wiring changes needed.
 - If it needs more than velocity (e.g., relative distance between limbs,
   vertical position bands), add a helper to `velocity_logic.py` that returns
   extra fields, extend `PER_LANDMARK_CHANS` or `GLOBAL_CHANS`, and the Script

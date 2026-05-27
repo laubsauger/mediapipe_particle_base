@@ -88,9 +88,9 @@ add_float(sensing, 'Accelsmooth', 'Accel Smooth (s)',
           0.05, 0.0, 0.5, clamp_max=False)
 
 # Speed normalisation — raw units/s divided by this hits emit=1.
-# 0..1 space; 2.5 means "moving all the way across the frame in 0.4s = full emit".
+# 0..1 space; 5.0 means "moving all the way across the frame in 0.2s = full emit".
 add_float(sensing, 'Speedscale', 'Speed Scale (1/s -> 1.0)',
-          2.5, 0.1, 10.0, clamp_max=False)
+          5.0, 0.1, 10.0, clamp_max=False)
 
 # Burst detection (on |a|).
 add_float(sensing, 'Accelthreshold', 'Accel Threshold (1/s^2)',
@@ -111,7 +111,7 @@ add_float(sensing, 'Maxjump', 'Max Jump (UV/frame, 0=off)',
 # real joint position over the first few trusted frames without our
 # teleport rejection snapping the blob to the re-entry edge. 0 disables.
 add_float(sensing, 'Settleframes', 'Settle Frames (after dropout)',
-          5, 0, 30)
+          1, 0, 30)
 
 # How much the z (depth) velocity contributes to the 3D speed magnitude
 # used for emit rate and burst detection. 1.0 = full 3D; 0.0 = z motion
@@ -128,19 +128,24 @@ add_float(sensing, 'Blendtime', 'Blend Time (s)',
 
 
 # ---------------------------------------------------------------------------
-# Page 2: Renderer  —  POP network parameters. Referenced from the sibling
-# particle_renderer TOX (Source POP rate, Force POP gain, Feedback TOP fade,
-# etc. pick these up via parent().par.*).
+# Page 2: Renderer  —  in-COMP POP network parameters. Read as
+# parent().par.* by the emitter Script ops, the velocity_field GLSL TOP
+# uniforms, and the force-chain GLSL POPs (p_to_uv, bounds_reflect). The
+# force-integration block (Forcescale … Forcegamma) feeds bounds_reflect,
+# which is where per-cook force integration AND velocity damping now live
+# (NOT on Particle POP — its Velocity Damping / Initial Drag stay at 0).
 # ---------------------------------------------------------------------------
 render = _page('Renderer')
 
 # Overall spawn budget (particles/sec when total_motion + total_burst = 1).
+# NOTE: currently informational — Particle POP emits via the per-point `w`
+# birth attribute, not a global rate. Reserved for future total-rate scaling.
 add_float(render, 'Spawnrate', 'Base Spawn Rate (pts/s)',
-          5000.0, 0.0, 50000.0, clamp_max=False)
+          15000.0, 0.0, 50000.0, clamp_max=False)
 
 # Gain on the burst channel when mixing into the spawn-weight CHOP.
 add_float(render, 'Burstgain', 'Burst Spawn Gain',
-          6.0, 0.0, 20.0, clamp_max=False)
+          12.0, 0.0, 20.0, clamp_max=False)
 
 # --- Wavefront emission ---------------------------------------------------
 # Number of sub-emitter points generated per landmark. They're placed along
@@ -150,13 +155,13 @@ add_float(render, 'Burstgain', 'Burst Spawn Gain',
 # them so total particles/sec per limb is independent of this count.
 # 1 = classic single-point emission (old behaviour).
 add_float(render, 'Spawncount', 'Spawn Sub-emitters per Limb',
-          12, 1, 40, clamp_max=False)
+          18, 1, 40, clamp_max=False)
 
 # Maximum along-velocity extent of the emission region at full speed.
 # Sub-emitters scatter pseudo-randomly inside a velocity-aligned region;
 # this is the half-width of that region in the direction of motion,
 # producing a "streak" shape when the limb is moving fast.
-add_float(render, 'Spawnspread', 'Spawn Region Along (UV at full speed)',
+add_float(render, 'Spawnspread', 'Wavefront Width at Full Speed (UV)',
           0.08, 0.0, 0.3)
 
 # Speed (UV/s) at which the region reaches its full Spawnspread extent.
@@ -164,7 +169,7 @@ add_float(render, 'Spawnspread', 'Spawn Region Along (UV at full speed)',
 # Default 0.8 engages the full size at normal hand-waving speed;
 # raise to 2.0 to require violent whips; lower to 0.3 so any motion
 # reaches full size.
-add_float(render, 'Spawnspreadref', 'Spawn Region Full-size Speed (UV/s)',
+add_float(render, 'Spawnspreadref', 'Wavefront Full-width Speed (UV/s)',
           0.8, 0.1, 10.0, clamp_max=False)
 
 # Minimum extent of the emission region in both axes, at rest.
@@ -185,12 +190,12 @@ add_float(render, 'Spawnperpratio', 'Spawn Perp/Along Ratio',
 
 # Multiplier on the limb's velocity when writing it to each particle's
 # StartPartvel at birth. 1.0 = particles launch at full limb speed
-# (flies off-screen in <1s on fast whips); 0.15 default = gentle launch,
+# (flies off-screen in <1s on fast whips); 0.25 default = moderate launch,
 # flowfield and curl noise do most of the work afterward. Lower values
 # produce a "wavefront that lingers" look; higher values make limbs
 # fling particles further in the motion direction.
 add_float(render, 'Spawnvelscale', 'Spawn Velocity Scale',
-          0.04, 0.0, 1.5, clamp_max=False)
+          0.25, 0.0, 1.5, clamp_max=False)
 
 # Angular fan on StartPartvel — tilts the edge sub-emitters' initial
 # velocity outward along the perpendicular direction so the wavefront
@@ -200,7 +205,7 @@ add_float(render, 'Spawnvelscale', 'Spawn Velocity Scale',
 # 0.5 = ~27° edge tilt (visible cone), 1.0 = ~45° (strong fan),
 # 1.5+ = explosive burst-outward.
 add_float(render, 'Spawnvelfan', 'Spawn Velocity Fan (0=parallel, 1=cone)',
-          0.5, 0.0, 2.0, clamp_max=False)
+          0.8, 0.0, 2.0, clamp_max=False)
 
 # Velocity field splatter — base radius of each emitter's gaussian kernel
 # (in 0..1 UV space of the velocity-field TOP). Smaller = tighter blob per
@@ -210,23 +215,22 @@ add_float(render, 'Spawnvelfan', 'Spawn Velocity Fan (0=parallel, 1=cone)',
 # plenty of reach without dominating the scene.
 add_float(render, 'Fieldradius', 'Field Splat Radius',
           0.05, 0.01, 0.5)
-# Multiplier on emitted (vx,vy,vz) when writing into the field.
-# 0.05 default = near-zero push — particles mostly drift under their
-# StartPartvel + curl noise + damping. IMPORTANT: the terminal velocity
-# of a particle is roughly Fieldforce / VelocityDamping (the Particle
-# POP parameter). If you don't set Velocity Damping > 1 on Particle POP,
-# even small Fieldforce values will eventually fling particles far over
-# their lifetime. Raise this par past 0.2 only after confirming damping
-# is active.
+# Multiplier on emitted (vx,vy,vz) written into the velocity field.
+# This sets the |force| that bounds_reflect's nonlinear response curve
+# (Forcedeadzone / Forceref / Forcegamma) reshapes before integrating into
+# PartVel. Terminal velocity is governed by that curve + Velocitydamping
+# (the COMP par read by bounds_reflect), NOT by any Particle POP damping —
+# Particle POP's own Velocity Damping / Initial Drag are left at 0. Pair
+# higher Fieldforce with higher Velocitydamping to keep particles contained.
 add_float(render, 'Fieldforce', 'Field Force Gain',
-          0.05, 0.0, 10.0, clamp_max=False)
+          1.0, 0.0, 10.0, clamp_max=False)
 # Persistence of the velocity field between frames (0 = instantaneous,
 # 1 = never fades). Applied externally via a Level TOP in the persistence
 # feedback chain. Smaller values = more responsive / less trail buildup —
 # a moving limb won't leave a field ghost 10 frames behind it. Raise
 # toward 0.7 for "smoke trail" visuals; keep low for crisp reactive feel.
 add_float(render, 'Fielddecay', 'Field Decay (0=snap, 1=hold)',
-          0.30, 0.0, 0.99)
+          0.5, 0.0, 0.99)
 # Z → splat size. Negative z (limb toward camera) scales splat radius up;
 # positive z scales it down. The shader clamps the result to [0.25, 1.8]
 # so very-close limbs don't blow up the kernel. 0 disables depth scaling.
@@ -258,13 +262,43 @@ add_float(render, 'Velstretch', 'Velocity Stretch (0=round)',
 add_float(render, 'Stretchspeedref', 'Stretch Speed Reference (UV/s)',
           2.0, 0.1, 10.0, clamp_max=False)
 
-# Curl-noise drift — does two jobs: keeps particles moving when the
-# performer is still, AND (more importantly) bends wavefronts organically
-# so they don't read as stiff straight lines. Default 0.5 is meaningful
-# (noticeable curvature on particle trails); drop to 0.1 if you want
-# crisp directional motion, crank to 1.0+ for turbulent / "alive" feel.
+# --- Force integration (bounds_reflect GLSL POP) --------------------------
+# bounds_reflect folds the sampled field force into PartVel each cook, then
+# damps + reflects. These six knobs are its uniforms (bound on the GLSL POP
+# as parent().par.*). Particle POP does NOT auto-apply PartForce, and its
+# own Velocity Damping / Initial Drag are left at 0 — all damping is here.
+#
+# Per-cook force gain: PartVel += curved_force * Forcescale. Treat as dt*gain.
+# Small = gentle push; the curve below shapes magnitude before this scales it.
+add_float(render, 'Forcescale', 'Force Scale (per-cook)',
+          0.008, 0.0, 0.1, clamp_max=False)
+# Fraction of velocity REMOVED per cook (PartVel *= 1 - Velocitydamping).
+# 0 = vacuum (coast forever), 0.15 default = light viscous drag, → 1 = stop.
+# THIS is the water-feel knob now (moved off Particle POP into the GLSL POP).
+add_float(render, 'Velocitydamping', 'Velocity Damping (per-cook)',
+          0.15, 0.0, 1.0)
+# Hard clamp on |PartVel| so a limb staring at a particle can't compound
+# force into runaway velocity before the reflect step runs.
+add_float(render, 'Maxspeed', 'Max Speed',
+          8.0, 0.0, 50.0, clamp_max=False)
+# Nonlinear force response: |f| below Forcedeadzone gets NO push (silences
+# the slow drift from field persistence at rest). Forceref = |f| mapped to
+# full magnitude. Forcegamma curves the response (1=linear, >1=gentler at
+# small motion, snappier at big). t = pow(clamp((|f|-dead)/(ref-dead),0,1), gamma).
+add_float(render, 'Forcedeadzone', 'Force Deadzone',
+          3.0, 0.0, 100.0, clamp_max=False)
+add_float(render, 'Forceref', 'Force Reference',
+          20.0, 0.0, 200.0, clamp_max=False)
+add_float(render, 'Forcegamma', 'Force Gamma',
+          2.5, 0.1, 5.0, clamp_max=False)
+
+# Curl-noise drift — keeps particles moving when the performer is still and
+# bends trails organically. Bound to the curl_noise Noise POP's amplitude
+# (amp0), so this is the live "how curly" knob. Drop toward 0 for crisp
+# directional motion (kills the swirly trails), raise for turbulent feel.
+# Pair with Curlspeed (below) so the curls FLOW rather than sit frozen.
 add_float(render, 'Curlgain', 'Curl Noise Gain',
-          0.2, 0.0, 2.0, clamp_max=False)
+          0.05, 0.0, 2.0, clamp_max=False)
 # Period of the noise field. CRITICAL for avoiding directional drift.
 # With Period larger than the particle cloud's spatial extent, every
 # particle samples essentially the same curl vector and feels a
@@ -276,38 +310,100 @@ add_float(render, 'Curlgain', 'Curl Noise Gain',
 # lower for micro-turbulence, higher tends toward biased drift.
 add_float(render, 'Curlscale', 'Curl Noise Scale',
           0.5, 0.05, 20.0, clamp_max=False)
+# Curl field animation speed. The Noise POP is Simplex 4D; its 4th axis
+# (Translate 4D) is driven by absTime.seconds * Curlspeed so the curl field
+# EVOLVES over time instead of being frozen. 0 = static field (particles trace
+# the same fixed streamlines forever — reads as "static noise curls"); raise
+# for livelier, non-repeating drift. ~0.3 is a gentle organic flow.
+add_float(render, 'Curlspeed', 'Curl Noise Animation Speed',
+          0.3, 0.0, 3.0, clamp_max=False)
 
 # Particle lifetime (seconds). Shorter = particles die before they can
 # drift off-screen, keeps the visual contained to where the limbs are.
 # Raise if you want long persistent trails.
 add_float(render, 'Lifemin', 'Life Min (s)',
-          0.6, 0.1, 20.0, clamp_max=False)
+          2.0, 0.1, 20.0, clamp_max=False)
 add_float(render, 'Lifemax', 'Life Max (s)',
-          1.5, 0.1, 20.0, clamp_max=False)
+          8.0, 0.1, 20.0, clamp_max=False)
 
-# Bounding box for particle containment. Particle space (MediaPipe 0..1),
-# not render-stretched space. bounds_reflect GLSL POP uses these to clamp
-# P and reflect Partvel at walls.
+# Bounding box for particle containment, in particle space. x is
+# aspect-correct: emitters_chop remaps MediaPipe x [0,1] into [0, 16/9]
+# so the wider 16:9 frame fills, hence Boundsmaxx defaults to 1.77778.
+# y stays [0,1]; z is a thin slab (±0.15) because MediaPipe depth is noisy.
+# bounds_reflect GLSL POP uses these to clamp P and reflect PartVel at walls.
 add_float(render, 'Boundsminx', 'Bounds Min X', 0.0, -1.0, 1.0, clamp_max=False, clamp_min=False)
 add_float(render, 'Boundsminy', 'Bounds Min Y', 0.0, -1.0, 1.0, clamp_max=False, clamp_min=False)
-add_float(render, 'Boundsminz', 'Bounds Min Z', -0.5, -2.0, 2.0, clamp_max=False, clamp_min=False)
-add_float(render, 'Boundsmaxx', 'Bounds Max X', 1.0, -1.0, 2.0, clamp_max=False, clamp_min=False)
+add_float(render, 'Boundsminz', 'Bounds Min Z', -0.15, -2.0, 2.0, clamp_max=False, clamp_min=False)
+add_float(render, 'Boundsmaxx', 'Bounds Max X', 1.77778, -1.0, 2.0, clamp_max=False, clamp_min=False)
 add_float(render, 'Boundsmaxy', 'Bounds Max Y', 1.0, -1.0, 2.0, clamp_max=False, clamp_min=False)
-add_float(render, 'Boundsmaxz', 'Bounds Max Z', 0.5, -2.0, 2.0, clamp_max=False, clamp_min=False)
+add_float(render, 'Boundsmaxz', 'Bounds Max Z', 0.15, -2.0, 2.0, clamp_max=False, clamp_min=False)
 # Restitution — 0 makes particles "stick" at walls (dead stop), 1 is a
 # perfectly elastic bounce. 0.3–0.6 feels like water against a pool wall.
 add_float(render, 'Boundsbounce', 'Bounds Bounce (0=stop, 1=elastic)',
-          0.4, 0.0, 1.0)
+          0.95, 0.0, 1.0)
 # Small inset so particles visually clamp just inside the wall instead of
 # clipping it. 0 = hard clamp exactly at the wall.
-add_float(render, 'Boundsmargin', 'Bounds Margin (inset)', 0.0, 0.0, 0.1)
+add_float(render, 'Boundsmargin', 'Bounds Margin (inset)', 0.005, 0.0, 0.1)
 
-# Screen-space feedback TOP (for the smear look on top of the POP render).
+# --- Ambient particle soup ------------------------------------------------
+# A constant population of particles scattered through the whole bounds
+# volume, birthed by ambient_chop_script and merged into particle1 alongside
+# the movement emitters. Advected by the same force chain, so a limb sweeping
+# through DISPLACES the soup. Steady-state alive ≈ Ambientrate × avg-life.
+add_float(render, 'Ambientrate', 'Ambient Soup Rate (pts/s)',
+          6000.0, 0.0, 20000.0, clamp_max=False)
+# Spatial sample count: how many scatter points the soup picks from each cook.
+# Only `Ambientrate/fps` of them actually birth per cook (chosen at random),
+# so this is about spatial coverage, not rate. Keep ≥ Ambientrate/fps.
+add_float(render, 'Ambientpoints', 'Ambient Soup Scatter Points',
+          240, 1, 2000, clamp_max=False)
+
+# --- Particle size --------------------------------------------------------
+# Uniform instance scale on geo1 (multiplies the sphere1 geometry). Smaller =
+# finer, more numerous-looking soup. Particle COUNT is driven by spawn/ambient
+# rates + Max Particles, not this.
+add_float(render, 'Particlesize', 'Particle Size (instance scale)',
+          0.006, 0.0005, 0.05, clamp_max=False)
+
+# --- Age gradient (Embers) + velocity bloom -------------------------------
+# color_attr ramps each particle from white-hot at birth through warm → red →
+# dark ember → black over its life (age normalised by Lifemax). 0 = flat (no
+# age tint), 1 = full embers.
+add_float(render, 'Agegradient', 'Age Embers Strength (0=flat, 1=full)',
+          1.0, 0.0, 1.0)
+# Brightness falloff exponent over life. 1 = linear fade, >1 = stays bright
+# longer then drops fast, <1 = dims quickly then lingers dark.
+add_float(render, 'Agefalloff', 'Age Brightness Falloff',
+          1.6, 0.2, 5.0, clamp_max=False)
+# Velocity → HDR brightness boost. Fast particles emit > 1.0 so the Bloom TOP
+# (threshold ~0.85) blooms them. 0 = no speed glow.
+add_float(render, 'Velbloom', 'Velocity Bloom Boost',
+          0.12, 0.0, 1.0, clamp_max=False)
+# Steady brightness multiplier for the ambient soup (Lid>=5). The soup is
+# exempt from the Embers decay-to-black so it persists as a thick cloud; this
+# scales how visible it is. Keep below ~ the bloom threshold so the calm soup
+# doesn't bloom (bloom is for fast movement).
+add_float(render, 'Soupbright', 'Soup Brightness',
+          1.5, 0.0, 5.0, clamp_max=False)
+
+# --- Bloom TOP (post-render) ----------------------------------------------
+# bloom1 Bloom TOP sits between render1 and out2. render1 outputs 16-bit float
+# so HDR (young/fast) particles survive > 1.0 and bloom.
+add_toggle(render, 'Bloomenable', 'Bloom Enable', True)
+add_float(render, 'Bloomstrength', 'Bloom Strength',
+          1.0, 0.0, 4.0, clamp_max=False)
+add_float(render, 'Bloomthreshold', 'Bloom Threshold (luminance)',
+          0.85, 0.0, 4.0, clamp_max=False)
+
+# Screen-space feedback smear pars. RESERVED / not currently wired — no
+# Feedback TOP chain exists on the live render output (render1 → null2 →
+# out2, no smear). Kept so a future smear branch can read them without a
+# re-install. Nothing consumes these today.
 add_toggle(render, 'Feedbackenable', 'Screen-Space Feedback', True)
 add_float(render, 'Feedbackfade', 'Feedback Fade',
           0.92, 0.0, 0.999)
 add_float(render, 'Feedbackzoom', 'Feedback Zoom',
-          1.003, 0.95, 1.05)
+          1.0, 0.95, 1.05)
 
 
 print("velocity_controller: Sensing + Renderer pages installed "

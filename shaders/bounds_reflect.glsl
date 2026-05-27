@@ -15,7 +15,8 @@
 //
 // On the GLSL POP:
 //   Attribute Class      : Point
-//   Output Attributes    : "PartVel"
+//   Output Attributes    : "PartVel P"   (P required for the hard position
+//                          clamp; without it particles overshoot/escape the box)
 //   Initialize Output    : On
 //   Vectors 1 page:
 //     uBoxMin     (vec3)  ← (parent().par.Boundsminx, Boundsminy, Boundsminz)
@@ -70,7 +71,11 @@ void main()
     if (any(isnan(vel))   || any(isinf(vel)))   vel   = vec3(0.0);
     if (any(isnan(force)) || any(isinf(force))) force = vec3(0.0);
     if (any(isnan(pos))   || any(isinf(pos))) {
+        // Corrupt position: park at box centre, dead stop. Write P too so a
+        // NaN can't persist in the fed-back position.
+        pos = (uBoxMin + uBoxMax) * 0.5;
         vel = vec3(0.0);
+        P[id]       = pos;
         PartVel[id] = vel;
         return;
     }
@@ -109,18 +114,30 @@ void main()
     float spd = length(vel);
     if (spd > uMaxSpeed) vel *= (uMaxSpeed / spd);
 
-    // ---- Wall reflection ---------------------------------------------------
+    // ---- Wall reflection + hard position clamp -----------------------------
+    // Reflecting velocity ALONE is not enough to contain particles: the flip
+    // lags one integration step, so a fast particle (or one shoved outward by
+    // an edge-of-box field/curl force) overshoots the wall and visibly sits
+    // OUTSIDE the box before the flip drags it back — and persistent outward
+    // force can let it escape entirely. So we also clamp the position to the
+    // wall here and write P back. Because this POP feeds force_null →
+    // particle1's "Target Particles Update POP", the clamped P becomes the
+    // base position the Particle POP integrates from next cook — the particle
+    // deflects off the wall instead of teleporting through it.
+    //
+    // Requires `P` in the GLSL POP's Output Attributes (alongside PartVel).
     vec3 boxMin = uBoxMin + vec3(uMargin);
     vec3 boxMax = uBoxMax - vec3(uMargin);
 
-    if (pos.x < boxMin.x && vel.x < 0.0) vel.x = -vel.x * uBounce;
-    else if (pos.x > boxMax.x && vel.x > 0.0) vel.x = -vel.x * uBounce;
+    if (pos.x < boxMin.x) { pos.x = boxMin.x; if (vel.x < 0.0) vel.x = -vel.x * uBounce; }
+    else if (pos.x > boxMax.x) { pos.x = boxMax.x; if (vel.x > 0.0) vel.x = -vel.x * uBounce; }
 
-    if (pos.y < boxMin.y && vel.y < 0.0) vel.y = -vel.y * uBounce;
-    else if (pos.y > boxMax.y && vel.y > 0.0) vel.y = -vel.y * uBounce;
+    if (pos.y < boxMin.y) { pos.y = boxMin.y; if (vel.y < 0.0) vel.y = -vel.y * uBounce; }
+    else if (pos.y > boxMax.y) { pos.y = boxMax.y; if (vel.y > 0.0) vel.y = -vel.y * uBounce; }
 
-    if (pos.z < boxMin.z && vel.z < 0.0) vel.z = -vel.z * uBounce;
-    else if (pos.z > boxMax.z && vel.z > 0.0) vel.z = -vel.z * uBounce;
+    if (pos.z < boxMin.z) { pos.z = boxMin.z; if (vel.z < 0.0) vel.z = -vel.z * uBounce; }
+    else if (pos.z > boxMax.z) { pos.z = boxMax.z; if (vel.z > 0.0) vel.z = -vel.z * uBounce; }
 
+    P[id]       = pos;
     PartVel[id] = vel;
 }
