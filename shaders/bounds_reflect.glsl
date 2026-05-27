@@ -55,6 +55,8 @@ uniform float uMaxSpeed;
 uniform float uForceDeadzone;
 uniform float uForceRef;
 uniform float uForceGamma;
+uniform float uSoupturb;     // gentle base curl drift for ambient soup (Lid>=5)
+uniform float uSoupmaxspeed; // hard cap on idle soup speed (calm soup)
 
 void main()
 {
@@ -64,6 +66,8 @@ void main()
     vec3 pos   = TDIn_P().xyz;
     vec3 vel   = TDIn_PartVel().xyz;
     vec3 force = TDIn_PartForce().xyz;
+    int  lid   = int(TDIn_Lid());
+    vec3 curl  = TDIn_NoiseCurl().xyz;   // available here (curl_noise → add_to_force → here)
 
     // NaN/Inf guard. NaN P fed into instancing transforms or texture lookups
     // can crash the Vulkan device outright. Clamp to zero here so a single
@@ -106,6 +110,14 @@ void main()
     // Then per-cook damping: vel *= (1 - uDamping). uDamping=0 keeps all,
     // uDamping=1 zeroes velocity each cook.
     vel += force * uForceScale;
+
+    // Gentle base turbulence for the ambient soup only (Lid>=5). Curl is
+    // otherwise crushed by the deadzone/gamma curve above (tuned for strong
+    // movement forces), so apply it DIRECTLY here for soup, scaled by the
+    // (small) uSoupturb — this is the idle swirl. Keep it low; terminal drift
+    // ≈ |curl|·uSoupturb / uDamping.
+    if (lid >= 5) vel += curl * uSoupturb;
+
     vel *= max(0.0, 1.0 - uDamping);
 
     // Speed clamp. Without this, an emitter staring straight at a particle
@@ -113,6 +125,15 @@ void main()
     // bounds-reflect step doesn't have to work miracles.
     float spd = length(vel);
     if (spd > uMaxSpeed) vel *= (uMaxSpeed / spd);
+
+    // Soup-specific HARD speed cap. The ambient soup should drift gently when
+    // undisturbed; whatever residual velocity it picks up (curl, field tail,
+    // integration), this caps its idle speed so it never reads as fast/turbulent.
+    // A limb's flow field can still shove it — it's just capped at uSoupmaxspeed.
+    if (lid >= 5) {
+        float ss = length(vel);
+        if (ss > uSoupmaxspeed) vel *= (uSoupmaxspeed / ss);
+    }
 
     // ---- Wall reflection + hard position clamp -----------------------------
     // Reflecting velocity ALONE is not enough to contain particles: the flip

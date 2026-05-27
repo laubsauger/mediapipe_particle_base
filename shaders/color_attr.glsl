@@ -44,7 +44,34 @@ uniform float uMaxBlend;
 uniform float uAgegradient;
 uniform float uAgefalloff;
 uniform float uVelbloom;
-uniform float uSoupbright;   // steady brightness multiplier for the soup
+uniform float uSoupbright;      // steady brightness multiplier for the soup
+uniform float uTime;            // absTime.seconds, for the soup color cycle
+uniform float uSoupcyclespeed;  // how fast the soup population cycles the ramp
+uniform float uSoupspeedref;    // soup speed mapped to "fast" (velocity look)
+uniform float uSoupvelbloom;    // fast-soup brightness/bloom boost
+uniform float uSoupcolorscale;  // spatial frequency of the color gradient (bands across the box)
+uniform float uDepthdim;        // how much to dim particles toward the back (fake DoF / depth)
+
+// Procedural cyclic color ramp (Inigo-Quilez cosine palette). Smooth and
+// seamless across phase 0..1 (no seam when cycling), and needs NO TOP sampler
+// — sampling an unbound sampler in a GLSL POP crashes the GPU, so we keep the
+// ramp in-shader. Tasteful cool→magenta→teal sweep; tweak the consts to
+// re-art-direct, or later swap to a bound Ramp TOP sampler.
+vec3 soupPalette(float t)
+{
+    // a = mid/floor, b = amplitude. Kept tight + lifted so the soup is always
+    // visibly coloured (never near-black) and its peak stays below the bloom
+    // threshold (so the calm soup doesn't bloom — only movement/HDR does). The
+    // per-channel phase offsets in d give the hue shift across the cycle.
+    // Cool sweep: blue → cyan → violet → magenta (no muddy green/yellow).
+    // B baseline high (cool); G amplitude low + offset so G is never high when
+    // R is high (that's what produced yellow/green). Peak kept ≈0.86 (< bloom).
+    const vec3 a = vec3(0.50, 0.42, 0.62);
+    const vec3 b = vec3(0.34, 0.20, 0.24);
+    const vec3 c = vec3(1.0, 1.0, 1.0);
+    const vec3 d = vec3(0.55, 0.05, 0.85);
+    return a + b * cos(6.28318530718 * (c * t + d));  // range ≈ [0.16, 0.86]
+}
 
 const vec3 kPalette[5] = vec3[](
     vec3(0.95, 0.30, 0.20),  // Lid 0 — left_wrist  (warm red)
@@ -78,16 +105,36 @@ void main()
     vec3 outc;
 
     if (lid >= 5) {
-        // ---- SOUP: steady, persistent glow (NOT subject to the embers
-        // decay-to-black). Hold full brightness across life with only a brief
-        // fade-in at birth and a soft fade-out near death so particles don't
-        // pop. This is what makes the soup read as a thick persistent cloud
-        // instead of flashing on then vanishing. A gentle warm accent shows
-        // only when a flow field actually pushes the soup (speed > 0).
+        // ---- SOUP: a living, color-cycling, persistent cloud. NOT subject to
+        // the embers decay-to-black. The idle (no-pose) state is meant to be
+        // beautiful on its own; pose interaction enhances it.
+        //
+        // env: brief birth fade-in + soft death fade-out so particles don't pop
+        //   (full brightness in between => reads as a thick persistent cloud).
         float env = smoothstep(0.0, 0.05, agef) * (1.0 - smoothstep(0.80, 1.0, agef));
-        float tv  = clamp(speed * uVelGain, 0.0, uMaxBlend);
-        vec3  sc  = mix(kSoup, uAccent, tv);
-        outc = sc * uSoupbright * env;
+        // colour: a SPATIAL gradient swept over time. Phase comes from the
+        //   particle's POSITION projected onto a direction (low frequency =>
+        //   broad smooth color bands across the volume), drifting with time.
+        //   Position-based (not per-particle) so neighbours share color => the
+        //   field reads as gradients sweeping across it, not salt-and-pepper noise.
+        vec3  p     = TDIn_P().xyz;
+        float phase = fract(dot(p.xy, vec2(0.6, 0.8)) * uSoupcolorscale
+                            + uTime * uSoupcyclespeed);
+        vec3  rampC = soupPalette(phase);
+        // velocity response: faster soup (turbulence peaks, or a flow-field
+        //   shove from a limb) gets brighter and can bloom — so slow vs fast
+        //   particles read differently and pose interaction "pops".
+        float sf     = clamp(speed / max(uSoupspeedref, 1e-4), 0.0, 1.0);
+        float bright = uSoupbright * (1.0 + sf * uSoupvelbloom);
+        // depth cue (fake DoF): particles toward the back of the box (−z) are
+        //   dimmer, so the field has depth instead of a flat even mess.
+        //   z range ≈ [-0.15, +0.15]; +z is nearer the camera.
+        float dn     = clamp((p.z + 0.15) / 0.30, 0.0, 1.0);   // 0 back, 1 front
+        float depthf = mix(1.0 - uDepthdim, 1.0, dn);
+        // per-particle value variation so not every ball is identical brightness.
+        float h      = fract(sin(float(TDIn_PartId()) * 12.9898) * 43758.5453);
+        float pvar   = 0.65 + 0.35 * h;
+        outc = rampC * bright * env * depthf * pvar;
     } else {
         // ---- MOVEMENT: per-limb palette + velocity accent + Embers age ramp.
         int   k     = ((lid % 5) + 5) % 5;

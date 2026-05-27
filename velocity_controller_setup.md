@@ -777,24 +777,35 @@ Color is computed per-particle on a GLSL POP (`color_attr`) sitting on the
 back into the sim. It writes a `Cd` (vec3) attribute that `geo1` instancing
 binds to instance RGB.
 
-The shader (`color_attr.glsl`, synced to `color_attr_compute`) composites three
-layers per particle, then a velocity HDR boost:
+The shader (`color_attr.glsl`, synced to `color_attr_compute`) branches on
+`Lid`: **movement** particles (`Lid < 5`) vs **soup** (`Lid >= 5`).
 
-1. **Identity** — per-limb palette indexed by `Lid` (movement particles), or a
-   cool neutral **soup base** for `Lid >= 5` (the ambient-soup sentinel).
-2. **Velocity accent** — capped, no-clamp blend toward a warm accent by speed.
-3. **Embers age ramp** — over each particle's life (`PartAge / PartLifeSpan`,
-   exact per-particle): white-hot at birth → identity/warm → ember orange →
-   deep red → dark, with a brightness envelope that peaks at birth and fades to
-   ~0 at death. Blended in by `Agegradient` (0 = flat, 1 = full embers);
-   `Agefalloff` shapes the brightness fade.
-4. **Velocity bloom** — `Cd *= 1 + speed*Velbloom`, lifting fast particles above
-   1.0 so the `bloom1` Bloom TOP glows them (`render1` is 16-bit float). Young
-   particles are already HDR (`kEmberHot > 1`), so births bloom too.
+**Movement** (per-limb embers):
+1. Identity = per-limb palette by `Lid` + a capped velocity warm-accent.
+2. **Embers age ramp** over `PartAge / PartLifeSpan` (exact per-particle):
+   white-hot at birth → identity/warm → ember orange → deep red → dark, with a
+   brightness envelope peaking at birth. `Agegradient` (0=flat, 1=full),
+   `Agefalloff` shapes the fade.
+3. **Velocity bloom**: `Cd *= 1 + speed*Velbloom` lifts fast particles above
+   1.0 so `bloom1` glows them (`render1` is 16-bit float); `kEmberHot > 1` so
+   births bloom too.
+
+**Soup** (calm color-cycling cloud — meant to be beautiful with no pose, then
+enhanced by interaction):
+1. Color from a **procedural cyclic cosine palette** (`soupPalette()` — IQ-style
+   `a + b·cos(2π(c·t + d))`). NOT a Ramp TOP sampler — an unbound GLSL-POP
+   sampler crashes the GPU (see CLAUDE.md), so the ramp is in-shader.
+2. Phase = `fract(uTime·Soupcyclespeed + perParticle(PartId))` → the population
+   shows a drifting spread of hues that slowly cycles the whole ramp over time.
+3. Steady brightness (`Soupbright`) with a gentle birth/death `env` fade — NO
+   embers decay — so the soup persists as a thick cloud. Kept **below**
+   `Bloomthreshold` so the calm soup never blooms (avoids threshold-crossing
+   flicker). A `Soupvelbloom`/`Soupspeedref` velocity term brightens fast soup
+   (active once soup has motion — see *soup turbulence*, currently pending).
 
 Live palette: `Lid 0` left_wrist warm-red, `1` right_wrist cyan, `2`
-left_ankle yellow, `3` right_ankle lime, `4` nose magenta. Ember + soup colours
-are shader consts (`kSoup`, `kEmberHot/Mid/Old`).
+left_ankle yellow, `3` right_ankle lime, `4` nose magenta. Ember colours are
+shader consts (`kEmberHot/Mid/Old`); soup palette is the `soupPalette()` consts.
 
 | Uniform | Live value | Bound to | Meaning |
 | --- | --- | --- | --- |
@@ -933,15 +944,19 @@ emitters_chop_script → emitters_pop ──────────────
 - `merge_emitters` (Merge POP) concatenates the two emitter point sets;
   `particle1` births from both by `w`.
 
-Steady-state alive ≈ `Ambientrate × average-life`. With `Ambientrate=2500` and
-`Lifemin/max = 2/8 s`, ~12–20k soup particles. Watch Particle POP's Maximum
+Steady-state alive ≈ `Ambientrate × average-life`. With `Ambientrate=6000` and
+`Lifemin/max = 2/8 s`, ~16–30k soup particles. Watch Particle POP's Maximum
 Particles when combined with movement bursts.
 
 | Par | Live | Effect |
 | --- | --- | --- |
 | `Ambientrate` | `6000` pts/s | soup birth rate (→ density via life) |
 | `Ambientpoints` | `240` | spatial scatter sample count (coverage, not rate; keep ≥ `Ambientrate/fps`) |
-| `Soupbright` | `1.5` | steady soup brightness (soup is exempt from Embers decay) |
+| `Soupbright` | `1.0` | steady soup brightness; kept so palette-peak (≈0.86) stays **below** `Bloomthreshold` → soup doesn't bloom (no flicker) |
+| `Soupcyclespeed` | `0.03` | color-cycle speed (`uTime·Soupcyclespeed`); full ramp ≈ 33 s. 0 = static spread |
+| `Soupspeedref` | `0.2` | soup speed mapped to "fast" for the velocity look (active with turbulence) |
+| `Soupvelbloom` | `2.0` | fast-soup brightness boost (active with turbulence) |
+| `Soupturb` | `0.4` | **pending** — gentle idle curl drift; the `bounds_reflect` hook is reverted (crash-safety), re-add carefully |
 
 ### Particle size
 
@@ -966,7 +981,7 @@ the bloom keys off energy rather than blanketing everything.
 | --- | --- | --- |
 | `Bloomenable` | On | `bloom1.output` = `inputplusbloom` (on) / `input` (off, passthrough) |
 | `Bloomstrength` | `1.0` | `bloom1.bloomintensity` |
-| `Bloomthreshold` | `0.85` | `bloom1.bloomthreshold` — luminance above which a pixel blooms |
+| `Bloomthreshold` | `1.1` | `bloom1.bloomthreshold` — luminance above which a pixel blooms. Set **above** the soup peak (≈0.86) so the calm soup doesn't bloom/flicker; movement embers (~1.9) still cross it. |
 | `Velbloom` | `0.12` | speed → HDR boost in `color_attr` (how much motion drives glow) |
 
 If nothing blooms: confirm `render1` format is float (not `rgba8fixed`), and
@@ -1336,15 +1351,19 @@ forcibly re-applied via `reset_velocity_params.py`).
 | **Ambient soup** | | | |
 | `Ambientrate` | `6000` pts/s | 0..20000+ | Constant-soup birth rate. Steady alive ≈ rate × avg-life. |
 | `Ambientpoints` | `240` | 1..2000+ | Soup scatter-point count (spatial coverage). Keep ≥ `Ambientrate/fps`. |
+| `Soupcyclespeed` | `0.03` | 0..1+ | Soup color-cycle speed over time (procedural palette). 0 = static spread. |
+| `Soupspeedref` | `0.2` | 0.01..2+ | Soup speed → "fast" for the velocity look (active once soup has turbulence). |
+| `Soupvelbloom` | `2.0` | 0..6+ | Fast-soup brightness boost (active once soup has turbulence). |
+| `Soupturb` | `0.4` | 0..3+ | **Pending**: gentle idle curl drift for soup. The `bounds_reflect` hook was reverted for crash-safety; re-add carefully (verify `NoiseCurl` reaches `bounds_reflect`). |
 | **Particle size / age / bloom** | | | |
 | `Particlesize` | `0.006` | 0.0005..0.05+ | Uniform instance size (drives `geo1/sphere1` radius). |
-| `Soupbright` | `1.5` | 0..5+ | Steady soup brightness (soup exempt from Embers decay; keep below bloom threshold so it stays calm). |
+| `Soupbright` | `1.0` | 0..5+ | Steady soup brightness; kept so palette-peak (≈0.86) stays below `Bloomthreshold` so soup doesn't bloom/flicker. |
 | `Agegradient` | `1.0` | 0..1 | Embers age-gradient strength (movement particles). 0 = flat color, 1 = full white-hot→ember decay. |
 | `Agefalloff` | `1.6` | 0.2..5+ | Embers brightness fade exponent over life. >1 = stays bright then drops. |
 | `Velbloom` | `0.12` | 0..1+ | Velocity → HDR brightness boost (drives velocity-bloom). |
 | `Bloomenable` | `On` | toggle | `bloom1` output = input+bloom (on) / passthrough (off). |
 | `Bloomstrength` | `1.0` | 0..4+ | `bloom1` bloom intensity. |
-| `Bloomthreshold` | `0.85` | 0..4+ | Luminance above which a pixel blooms. |
+| `Bloomthreshold` | `1.1` | 0..4+ | Luminance above which a pixel blooms. Above soup peak (≈0.86) so soup stays calm; movement embers (~1.9) bloom. |
 | **Screen-space feedback smear (RESERVED — no smear chain wired)** | | | |
 | `Feedbackenable` | `On` | toggle | Reserved. No Feedback TOP chain reads this on the live output. |
 | `Feedbackfade` | `0.92` | 0..0.999 | Reserved (intended per-frame multiply on a feedback texture). |

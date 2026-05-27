@@ -107,11 +107,18 @@ RENDERER = {
     'Agegradient':     1.0,     # 0=flat, 1=full embers (movement particles)
     'Agefalloff':      1.6,     # brightness fade exponent over life
     'Velbloom':        0.12,    # speed → HDR brightness boost
-    'Soupbright':      1.5,     # steady soup brightness (exempt from embers decay)
+    'Soupbright':      1.0,     # steady soup brightness; kept below Bloomthreshold so soup doesn't bloom
+    'Soupturb':        0.05,    # drives soup curl drift; saturates the cap below
+    'Soupmaxspeed':    0.008,   # hard cap on idle soup speed (the real "calm" knob)
+    'Soupcyclespeed':  0.03,    # soup color-ramp cycle speed over time
+    'Soupspeedref':    0.2,     # soup speed mapped to "fast" for the velocity look
+    'Soupvelbloom':    2.0,     # fast-soup brightness/bloom boost
+    'Soupcolorscale':  0.6,     # spatial frequency of the soup color gradient (position-based)
+    'Depthdim':        0.55,    # fake DoF: dim soup toward the back of the box
     # Bloom TOP (post-render glow).
     'Bloomenable':     True,
     'Bloomstrength':   1.0,
-    'Bloomthreshold':  0.85,
+    'Bloomthreshold':  1.1,
     # Screen-space feedback — RESERVED, no smear chain wired on live output.
     'Feedbackenable':  True,
     'Feedbackfade':    0.92,

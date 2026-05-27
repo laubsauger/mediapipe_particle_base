@@ -363,7 +363,7 @@ add_float(render, 'Ambientpoints', 'Ambient Soup Scatter Points',
 # finer, more numerous-looking soup. Particle COUNT is driven by spawn/ambient
 # rates + Max Particles, not this.
 add_float(render, 'Particlesize', 'Particle Size (instance scale)',
-          0.006, 0.0005, 0.05, clamp_max=False)
+          0.004, 0.0005, 0.05, clamp_max=False)
 
 # --- Age gradient (Embers) + velocity bloom -------------------------------
 # color_attr ramps each particle from white-hot at birth through warm → red →
@@ -383,8 +383,50 @@ add_float(render, 'Velbloom', 'Velocity Bloom Boost',
 # exempt from the Embers decay-to-black so it persists as a thick cloud; this
 # scales how visible it is. Keep below ~ the bloom threshold so the calm soup
 # doesn't bloom (bloom is for fast movement).
+# Kept below Bloomthreshold so the calm soup does NOT bloom (only movement /
+# HDR embers do). Soup palette peaks ~0.86, so 1.0 keeps max ~0.86 < threshold.
 add_float(render, 'Soupbright', 'Soup Brightness',
-          1.5, 0.0, 5.0, clamp_max=False)
+          1.0, 0.0, 5.0, clamp_max=False)
+# Base turbulence: gentle curl drift applied DIRECTLY to soup particles in
+# bounds_reflect (bypassing the movement force-curve, which would crush it).
+# This is the idle swirl when no pose is present. Keep low for a calm soup;
+# the flow field shoves it harder on top when a limb passes through.
+# Low by default — terminal drift ≈ |curl|·Soupturb / Velocitydamping, so even
+# small values drift particles across the screen over their multi-second life.
+# 0.015 ≈ a gentle idle breeze; raise for livelier, 0 = fully static soup.
+# Drives soup drift via curl; set high enough to saturate the Soupmaxspeed cap,
+# so the cap below is the real "how fast does the soup drift" control.
+add_float(render, 'Soupturb', 'Soup Turbulence (idle swirl)',
+          0.05, 0.0, 1.0, clamp_max=False)
+# HARD cap on idle soup speed (PartVel units; spatial drift = this × Particle
+# POP Speed). Guarantees the soup stays calm no matter what residual force it
+# picks up. 0.012 ≈ a slow gentle drift. Raise for livelier soup.
+add_float(render, 'Soupmaxspeed', 'Soup Max Speed (calm cap)',
+          0.008, 0.0, 1.0, clamp_max=False)
+# Soup color-cycle speed: the soup samples the soup_ramp TOP at a phase that
+# advances with time (offset per-particle), so the population drifts through
+# the ramp. 0 = static palette spread; ~0.03 = full cycle every ~30s.
+add_float(render, 'Soupcyclespeed', 'Soup Color Cycle Speed',
+          0.03, 0.0, 1.0, clamp_max=False)
+# Soup velocity look: soup speed at which it reads as "fast". Below it, slow;
+# above, it hits full velocity-brightness. Match to the turbulence speed range.
+add_float(render, 'Soupspeedref', 'Soup Speed Reference (fast=ref)',
+          0.2, 0.01, 2.0, clamp_max=False)
+# Fast-soup brightness/bloom boost: how much brighter fast soup gets vs slow,
+# so velocity reads (and the fastest soup can cross the bloom threshold).
+add_float(render, 'Soupvelbloom', 'Soup Velocity Bloom',
+          2.0, 0.0, 6.0, clamp_max=False)
+# Spatial frequency of the soup color gradient: how many color bands span the
+# box. Low = one broad gradient swept across the whole field (smooth, painterly);
+# higher = more, tighter bands. Color comes from particle POSITION (not per-
+# particle), so the soup reads as gradients sweeping, not noise.
+add_float(render, 'Soupcolorscale', 'Soup Color Gradient Scale',
+          0.6, 0.0, 4.0, clamp_max=False)
+# Fake depth-of-field: how much to dim soup particles toward the back of the
+# box (−z). 0 = flat (all equal), 1 = back fully dark. Adds depth so the soup
+# isn't a flat uniform ball-mess.
+add_float(render, 'Depthdim', 'Depth Dim (back particles)',
+          0.55, 0.0, 1.0)
 
 # --- Bloom TOP (post-render) ----------------------------------------------
 # bloom1 Bloom TOP sits between render1 and out2. render1 outputs 16-bit float
@@ -393,7 +435,7 @@ add_toggle(render, 'Bloomenable', 'Bloom Enable', True)
 add_float(render, 'Bloomstrength', 'Bloom Strength',
           1.0, 0.0, 4.0, clamp_max=False)
 add_float(render, 'Bloomthreshold', 'Bloom Threshold (luminance)',
-          0.85, 0.0, 4.0, clamp_max=False)
+          1.1, 0.0, 4.0, clamp_max=False)
 
 # Screen-space feedback smear pars. RESERVED / not currently wired — no
 # Feedback TOP chain exists on the live render output (render1 → null2 →
