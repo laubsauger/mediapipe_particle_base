@@ -195,7 +195,7 @@ add_float(render, 'Spawnperpratio', 'Spawn Perp/Along Ratio',
 # produce a "wavefront that lingers" look; higher values make limbs
 # fling particles further in the motion direction.
 add_float(render, 'Spawnvelscale', 'Spawn Velocity Scale',
-          0.25, 0.0, 1.5, clamp_max=False)
+          0.12, 0.0, 1.5, clamp_max=False)
 
 # Angular fan on StartPartvel — tilts the edge sub-emitters' initial
 # velocity outward along the perpendicular direction so the wavefront
@@ -223,7 +223,7 @@ add_float(render, 'Fieldradius', 'Field Splat Radius',
 # Particle POP's own Velocity Damping / Initial Drag are left at 0. Pair
 # higher Fieldforce with higher Velocitydamping to keep particles contained.
 add_float(render, 'Fieldforce', 'Field Force Gain',
-          1.0, 0.0, 10.0, clamp_max=False)
+          0.45, 0.0, 10.0, clamp_max=False)
 # Persistence of the velocity field between frames (0 = instantaneous,
 # 1 = never fades). Applied externally via a Level TOP in the persistence
 # feedback chain. Smaller values = more responsive / less trail buildup —
@@ -288,7 +288,7 @@ add_float(render, 'Maxspeed', 'Max Speed',
 add_float(render, 'Forcedeadzone', 'Force Deadzone',
           3.0, 0.0, 100.0, clamp_max=False)
 add_float(render, 'Forceref', 'Force Reference',
-          20.0, 0.0, 200.0, clamp_max=False)
+          32.0, 0.0, 200.0, clamp_max=False)
 add_float(render, 'Forcegamma', 'Force Gamma',
           2.5, 0.1, 5.0, clamp_max=False)
 

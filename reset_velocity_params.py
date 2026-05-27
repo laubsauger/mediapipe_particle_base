@@ -61,11 +61,11 @@ RENDERER = {
     'Spawnspreadref':  0.8,    # speed at which full size is reached
     'Spawnspreadmin':  0.02,   # rest size (lump extent in both axes)
     'Spawnperpratio':  0.3,    # perp/along aspect at speed (streak shape)
-    'Spawnvelscale':   0.25,   # moderate initial launch
+    'Spawnvelscale':   0.12,   # soft initial launch (was flinging on slight motion)
     'Spawnvelfan':     0.8,    # strong cone
     # Flow field
     'Fieldradius':     0.05,   # tight splat
-    'Fieldforce':      1.0,    # field push magnitude — shaped by the force curve below
+    'Fieldforce':      0.45,   # field push magnitude — softer so slight motion doesn't fling
     'Fielddecay':      0.5,    # medium persistence (force trails ~1s)
     # Force integration + damping (bounds_reflect GLSL POP uniforms).
     # Damping lives HERE now, not on Particle POP (whose Velocity Damping /
@@ -74,7 +74,7 @@ RENDERER = {
     'Velocitydamping': 0.15,   # fraction of velocity removed per cook (water feel)
     'Maxspeed':        8.0,    # hard clamp on |PartVel|
     'Forcedeadzone':   3.0,    # |f| below this = no push (kills rest-drift)
-    'Forceref':        20.0,   # |f| mapped to full response magnitude
+    'Forceref':        32.0,   # |f| mapped to full response — higher = more headroom, proportional
     'Forcegamma':      2.5,    # response curvature (>1 = gentle small / snappy big)
     # Z (depth) scaling
     'Zgain':           0.2,    # subtle depth-to-size
