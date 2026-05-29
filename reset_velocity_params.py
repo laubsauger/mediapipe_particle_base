@@ -118,7 +118,8 @@ RENDERER = {
     'Bodyvizwidth':    0.014,   # bone capsule width
     'Bodyvizglow':     0.35,    # glow intensity (HDR core blooms; keep modest)
     'Bodyvizflow':     0.5,     # energy pulse along the limbs
-    'Bodyviztint':     (0.4, 0.8, 1.0),  # cool cyan halo (white core)
+    'Bodyviztint':     (0.4, 0.8, 1.0),  # fallback halo (used at Bodyvizblend=0)
+    'Bodyvizblend':    1.0,     # blend body color with soup palette (1=full soup, harmonises)
     'Soupbright':      1.0,     # steady soup brightness; kept below Bloomthreshold so soup doesn't bloom
     'Soupturb':        0.05,    # drives soup curl drift; saturates the cap below
     'Soupmaxspeed':    0.008,   # hard cap on idle soup speed (the real "calm" knob)

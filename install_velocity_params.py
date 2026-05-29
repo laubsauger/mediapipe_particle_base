@@ -436,7 +436,10 @@ add_toggle(render, 'Bodyviz', 'Body Viz (glowing skeleton)', True)
 add_float(render, 'Bodyvizwidth', 'Body Viz Width', 0.014, 0.005, 0.1, clamp_max=False)
 add_float(render, 'Bodyvizglow', 'Body Viz Glow', 0.35, 0.0, 5.0, clamp_max=False)
 add_float(render, 'Bodyvizflow', 'Body Viz Flow (energy pulse)', 0.5, 0.0, 1.0)
-add_rgb(render, 'Bodyviztint', 'Body Viz Tint', (0.4, 0.8, 1.0))
+add_rgb(render, 'Bodyviztint', 'Body Viz Tint (at blend=0)', (0.4, 0.8, 1.0))
+# Blend the body color with the soup's current evolving palette so it harmonises
+# with the field (1 = full soup colour, 0 = the fixed Bodyviztint above).
+add_float(render, 'Bodyvizblend', 'Body Viz Blend (soup color)', 1.0, 0.0, 1.0)
 # Steady brightness multiplier for the ambient soup (Lid>=5). The soup is
 # exempt from the Embers decay-to-black so it persists as a thick cloud; this
 # scales how visible it is. Keep below ~ the bloom threshold so the calm soup
