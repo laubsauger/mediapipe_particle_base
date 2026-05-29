@@ -116,25 +116,17 @@ def read_first(chop, names, default=0.0):
 # ---------------------------------------------------------------------------
 
 def per_person_chans(person_id, landmark, suffix):
-    """Candidate channel names in priority order for `p<P>:<lm>:<suffix>`.
-    For person 0 includes the LEGACY non-prefixed alias `<lm>:<suffix>` so
-    existing single-person MediaPipe data flows in transparently."""
-    out = ['p%d:%s:%s' % (int(person_id), landmark, suffix)]
-    if person_id == 0:
-        out.append('%s:%s' % (landmark, suffix))
-    return out
+    """Channel name for `p<P>:<lm>:<suffix>`. Single canonical form — sources
+    must emit prefixed channels (the sensor selector adds the `p0:` prefix to
+    MediaPipe's raw output upstream). Returns a list for parity with the
+    visibility helper / `read_first`."""
+    return ['p%d:%s:%s' % (int(person_id), landmark, suffix)]
 
 
 def per_person_vis_chans(person_id, mp_idx, landmark=None):
-    """Candidate visibility channel names: prefixed `p<P>:visibility<idx>`
-    first, then legacy aliases for person 0 (`visibility<idx>` raw + the
-    `<lm>:visible` rename done by `select_visibility`)."""
-    out = ['p%d:visibility%d' % (int(person_id), int(mp_idx))]
-    if person_id == 0:
-        out.append('visibility%d' % int(mp_idx))
-        if landmark:
-            out.append('%s:visible' % landmark)
-    return out
+    """Channel name for `p<P>:visibility<idx>`. `landmark` is accepted for
+    API symmetry but not used."""
+    return ['p%d:visibility%d' % (int(person_id), int(mp_idx))]
 
 
 def read_person_chan(chop, person_id, landmark, suffix, default=0.0):
@@ -166,20 +158,16 @@ if __name__ == '__main__':
     assert joint_velocity(None, cur, 0.5) == [(0.0, 0.0), (0.0, 0.0)]
     assert joint_velocity(prev, cur, 0.0) == [(0.0, 0.0), (0.0, 0.0)]
     assert visibility_index_channel(15) == 'visibility15'
-    # Multi-person channel helpers (single source of truth, used by
-    # velocity_script_chop / emitters_chop_script / body_tex_script).
-    assert per_person_chans(0, 'nose', 'x') == ['p0:nose:x', 'nose:x']
+    # Multi-person channel helpers — single canonical form `p<P>:<lm>:<x>`.
+    assert per_person_chans(0, 'nose', 'x') == ['p0:nose:x']
     assert per_person_chans(1, 'left_wrist', 'vx') == ['p1:left_wrist:vx']
-    assert per_person_vis_chans(0, 15, 'left_wrist') == \
-        ['p0:visibility15', 'visibility15', 'left_wrist:visible']
+    assert per_person_vis_chans(0, 15) == ['p0:visibility15']
     assert per_person_vis_chans(2, 15) == ['p2:visibility15']
-    # read_first returns the first finite hit
     class _C:
         def __init__(self, v): self.v = v
         def eval(self): return self.v
-    src = {'p0:nose:x': _C(0.42), 'nose:x': _C(0.50)}
-    assert read_first(src, ['p0:nose:x', 'nose:x']) == 0.42  # prefer prefixed
-    assert read_first(src, ['p1:nose:x', 'nose:x']) == 0.50  # falls back
+    src = {'p0:nose:x': _C(0.42)}
+    assert read_first(src, ['p0:nose:x']) == 0.42
     assert read_first(src, ['missing'], default=-1.0) == -1.0
     print("OK — body_logic: %d joints, %d bones, multi-person channel helpers, "
           "velocity diff + guards pass." % (NJOINTS, NBONES))

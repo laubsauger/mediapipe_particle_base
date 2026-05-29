@@ -155,48 +155,16 @@ def _fresh_landmark_state():
     }
 
 
-def _is_legacy_flat(state):
-    """True if `state` looks like the old single-person flat shape
-    ({lm: dict, ...}) rather than the nested per-person shape
-    ({person_id: {lm: dict, ...}})."""
-    return bool(state) and not any(isinstance(k, int) for k in state.keys())
-
-
 def new_state(landmarks=LANDMARKS, persons=1):
-    """Build a fresh state dict.
-
-    `persons=1` (default) → LEGACY FLAT shape `{lm: state}` so existing
-    single-person callers/tests keep working unchanged.
-    `persons>=2` → NESTED `{person_id: {lm: state}}` for multi-person sensors.
-
-    `update()` accepts either shape transparently (flat treated as person 0)."""
-    if persons <= 1:
-        return {lm: _fresh_landmark_state() for lm in landmarks}
+    """Build a fresh nested state: `{person_id: {landmark: state_dict}}`."""
     return {p: {lm: _fresh_landmark_state() for lm in landmarks}
-            for p in range(persons)}
+            for p in range(max(1, persons))}
 
 
 def ensure_schema(state, landmarks, persons=1):
-    """Migrate state forward + backfill missing fields. Cheap + idempotent.
-
-    persons=1: preserves the LEGACY FLAT shape `{lm: state}` (matches the
-    existing single-person behaviour + tests).
-    persons>=2: nests; LEGACY flat state auto-migrates under person 0."""
+    """Add missing persons / landmarks / inner fields. Mutates in place."""
     template = _fresh_landmark_state()
-    if persons <= 1:
-        for lm in landmarks:
-            if lm not in state or not isinstance(state[lm], dict):
-                state[lm] = _fresh_landmark_state()
-            else:
-                for k, v in template.items():
-                    state[lm].setdefault(k, v)
-        return state
-    # multi-person: nest legacy flat under person 0
-    if _is_legacy_flat(state):
-        legacy = {k: v for k, v in state.items()}
-        state.clear()
-        state[0] = legacy
-    for p in range(persons):
+    for p in range(max(1, persons)):
         if p not in state or not isinstance(state[p], dict):
             state[p] = {lm: _fresh_landmark_state() for lm in landmarks}
             continue
@@ -211,12 +179,9 @@ def ensure_schema(state, landmarks, persons=1):
 
 
 def reset_state(state):
-    """Clear all sampling history; call when the source drops out for a while.
-    Handles both nested per-person state and the LEGACY flat shape."""
-    persons = state if not _is_legacy_flat(state) else {0: state}
-    for person_state in persons.values():
-        for lm in person_state:
-            s = person_state[lm]
+    """Clear all sampling history across all persons."""
+    for person_state in state.values():
+        for s in person_state.values():
             s["prev_x"] = None
             s["prev_y"] = None
             s["vx"] = 0.0
@@ -506,13 +471,8 @@ def update(state, samples, dt, params):
     # Scrub dt once — a non-finite dt would pollute every landmark via
     # _ema_alpha / velocity division.
     dt = _finite(dt, 0.0)
-    # Accept LEGACY flat samples ({lm: tuple}) and nested ({person: {lm: tuple}})
-    # transparently. Don't MUTATE the caller's state/samples — work locally.
-    samples_by_person = {0: samples} if _is_legacy_flat(samples) else samples
-    persons_iter = [(0, state)] if _is_legacy_flat(state) else list(state.items())
-
-    for person_id, person_state in persons_iter:
-        person_samples = samples_by_person.get(person_id, {}) if isinstance(samples_by_person, dict) else {}
+    for person_id, person_state in state.items():
+        person_samples = samples.get(person_id, {}) if isinstance(samples, dict) else {}
         for lm, st in person_state.items():
             # Heal any NaN/Inf that sneaked into stored state on a prior frame.
             _scrub_sample(st)
