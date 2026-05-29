@@ -155,48 +155,74 @@ def _fresh_landmark_state():
     }
 
 
-def new_state(landmarks=LANDMARKS):
-    """
-    Build a fresh state dict. Keyed by landmark name. The Script CHOP
-    stashes this on the parent COMP via op.store() so it survives
-    cook-to-cook and is reset cleanly on reload.
-    """
-    return {lm: _fresh_landmark_state() for lm in landmarks}
+def _is_legacy_flat(state):
+    """True if `state` looks like the old single-person flat shape
+    ({lm: dict, ...}) rather than the nested per-person shape
+    ({person_id: {lm: dict, ...}})."""
+    return bool(state) and not any(isinstance(k, int) for k in state.keys())
 
 
-def ensure_schema(state, landmarks):
-    """
-    Migrate a state dict forward when this module adds new fields. Called
-    by the Script CHOP every cook — cheap and idempotent.
+def new_state(landmarks=LANDMARKS, persons=1):
+    """Build a fresh state dict.
 
-    - Adds landmarks that are in `landmarks` but not in `state`.
-    - Leaves landmarks in `state` that aren't in `landmarks` alone (they're
-      harmless stale data; the caller decides whether to rebuild).
-    - Backfills any missing inner-dict keys with defaults so old sessions
-      don't KeyError after a schema bump.
+    `persons=1` (default) → LEGACY FLAT shape `{lm: state}` so existing
+    single-person callers/tests keep working unchanged.
+    `persons>=2` → NESTED `{person_id: {lm: state}}` for multi-person sensors.
 
-    Mutates `state` in place and returns it.
-    """
+    `update()` accepts either shape transparently (flat treated as person 0)."""
+    if persons <= 1:
+        return {lm: _fresh_landmark_state() for lm in landmarks}
+    return {p: {lm: _fresh_landmark_state() for lm in landmarks}
+            for p in range(persons)}
+
+
+def ensure_schema(state, landmarks, persons=1):
+    """Migrate state forward + backfill missing fields. Cheap + idempotent.
+
+    persons=1: preserves the LEGACY FLAT shape `{lm: state}` (matches the
+    existing single-person behaviour + tests).
+    persons>=2: nests; LEGACY flat state auto-migrates under person 0."""
     template = _fresh_landmark_state()
-    for lm in landmarks:
-        if lm not in state or not isinstance(state[lm], dict):
-            state[lm] = _fresh_landmark_state()
-        else:
-            for k, v in template.items():
-                state[lm].setdefault(k, v)
+    if persons <= 1:
+        for lm in landmarks:
+            if lm not in state or not isinstance(state[lm], dict):
+                state[lm] = _fresh_landmark_state()
+            else:
+                for k, v in template.items():
+                    state[lm].setdefault(k, v)
+        return state
+    # multi-person: nest legacy flat under person 0
+    if _is_legacy_flat(state):
+        legacy = {k: v for k, v in state.items()}
+        state.clear()
+        state[0] = legacy
+    for p in range(persons):
+        if p not in state or not isinstance(state[p], dict):
+            state[p] = {lm: _fresh_landmark_state() for lm in landmarks}
+            continue
+        ps = state[p]
+        for lm in landmarks:
+            if lm not in ps or not isinstance(ps[lm], dict):
+                ps[lm] = _fresh_landmark_state()
+            else:
+                for k, v in template.items():
+                    ps[lm].setdefault(k, v)
     return state
 
 
 def reset_state(state):
-    """Clear all sampling history; call when the source drops out for a while."""
-    for lm in state:
-        s = state[lm]
-        s["prev_x"] = None
-        s["prev_y"] = None
-        s["vx"] = 0.0
-        s["vy"] = 0.0
-        s["prev_vx"] = 0.0
-        s["prev_vy"] = 0.0
+    """Clear all sampling history; call when the source drops out for a while.
+    Handles both nested per-person state and the LEGACY flat shape."""
+    persons = state if not _is_legacy_flat(state) else {0: state}
+    for person_state in persons.values():
+        for lm in person_state:
+            s = person_state[lm]
+            s["prev_x"] = None
+            s["prev_y"] = None
+            s["vx"] = 0.0
+            s["vy"] = 0.0
+            s["prev_vx"] = 0.0
+            s["prev_vy"] = 0.0
         s["accel"] = 0.0
         s["burst"] = 0.0
         # Keep last_good_x/y across resets — they're the whole point of
@@ -480,30 +506,40 @@ def update(state, samples, dt, params):
     # Scrub dt once — a non-finite dt would pollute every landmark via
     # _ema_alpha / velocity division.
     dt = _finite(dt, 0.0)
-    for lm, st in state.items():
-        # Heal any NaN/Inf that sneaked into stored state on a prior frame.
-        _scrub_sample(st)
-        if lm in samples:
-            s = samples[lm]
-            if len(s) == 3:
-                x, y, vis = s
-                z, trust = 0.0, vis
-            elif len(s) == 4:
-                x, y, vis, trust = s
-                z = 0.0
+    # Accept LEGACY flat samples ({lm: tuple}) and nested ({person: {lm: tuple}})
+    # transparently. Don't MUTATE the caller's state/samples — work locally.
+    samples_by_person = {0: samples} if _is_legacy_flat(samples) else samples
+    persons_iter = [(0, state)] if _is_legacy_flat(state) else list(state.items())
+
+    for person_id, person_state in persons_iter:
+        person_samples = samples_by_person.get(person_id, {}) if isinstance(samples_by_person, dict) else {}
+        for lm, st in person_state.items():
+            # Heal any NaN/Inf that sneaked into stored state on a prior frame.
+            _scrub_sample(st)
+            s = person_samples.get(lm) if person_samples else None
+            if s is not None:
+                if len(s) == 3:
+                    x, y, vis = s
+                    z, trust = 0.0, vis
+                elif len(s) == 4:
+                    x, y, vis, trust = s
+                    z = 0.0
+                else:
+                    x, y, z, vis, trust = s
+                x = _finite(x, 0.0)
+                y = _finite(y, 0.0)
+                z = _finite(z, 0.0)
             else:
-                x, y, z, vis, trust = s
-            # Scrub inputs too — MediaPipe can send NaN for invisible joints.
-            x = _finite(x, 0.0)
-            y = _finite(y, 0.0)
-            z = _finite(z, 0.0)
-        else:
-            # No sample — decay envelopes, emit zeros.
-            x, y, z, vis, trust = 0.0, 0.0, 0.0, False, False
-        out = update_landmark(st, x, y, z, vis, trust, dt, params)
-        per_landmark[lm] = out
-        total_motion += out["speed"]
-        total_burst  += out["burst"]
+                # No sample — decay envelopes, emit zeros.
+                x, y, z, vis, trust = 0.0, 0.0, 0.0, False, False
+            out = update_landmark(st, x, y, z, vis, trust, dt, params)
+            # Per-person key for multi-person consumers; LEGACY non-prefixed
+            # alias for person 0 so existing single-person callers keep working.
+            per_landmark['p%d:%s' % (person_id, lm)] = out
+            if person_id == 0:
+                per_landmark[lm] = out
+            total_motion += out["speed"]
+            total_burst  += out["burst"]
 
     return per_landmark, {
         "total_motion": _finite(total_motion, 0.0),

@@ -19,6 +19,12 @@
 # Joints we drive the body field from. (name, MediaPipe Pose landmark index.)
 # Positions come from in_pose `<name>:x/y`; visibility from `visibility<idx>`.
 # Order here == the packed texture column order (the "pack index" the BONES use).
+# Upper bound on simultaneously tracked people (matches adapters.contract).
+# Each person gets a full skeleton + per-joint visibility; persons not present
+# emit visibility 0 and are dropped by the field/viz shaders. See
+# docs/sensor_contract.md ("Multi-person support").
+MAX_PERSONS = 4
+
 JOINTS = [
     ('nose',           0),
     ('left_shoulder',  11),
@@ -69,6 +75,39 @@ def visibility_index_channel(mp_idx):
     emits raw visibility as `visibility<idx>` (e.g. `visibility15` = left_wrist);
     only a renamed subset becomes `<name>:visible` downstream."""
     return 'visibility%d' % mp_idx
+
+
+def person_position_channels(joint_name, person_id):
+    """`(x, y)` channel names for a joint of a specific person. Tries the new
+    `p<N>:<lm>:x` prefix first; falls back to the LEGACY non-prefixed names
+    (`<lm>:x`) when `person_id == 0` — that way single-person MediaPipe data
+    flows in unchanged, and multi-person sensors slot in alongside."""
+    pref = 'p%d:' % int(person_id)
+    return [pref + joint_name + ':x', pref + joint_name + ':y']
+
+
+def person_visibility_channel(mp_idx, person_id):
+    """Visibility channel for joint `mp_idx` of person `person_id`."""
+    return 'p%d:visibility%d' % (int(person_id), int(mp_idx))
+
+
+def read_first(chop, names, default=0.0):
+    """Return the first channel value found in `chop` from a list of candidate
+    names — used for transparent legacy fallback (try `p0:nose:x`, then `nose:x`).
+    Pure-ish: takes any object with `.__getitem__` returning a channel with
+    `.eval()`. `default` if none found / non-finite."""
+    import math as _m
+    for nm in names:
+        try:
+            c = chop[nm]
+            if c is None:
+                continue
+            v = float(c.eval()) if hasattr(c, 'eval') else float(c[0])
+            if _m.isfinite(v):
+                return v
+        except Exception:
+            continue
+    return default
 
 
 if __name__ == '__main__':

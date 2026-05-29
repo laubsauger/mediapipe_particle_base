@@ -118,3 +118,72 @@ can be added/swapped without touching the rest of the project.
 
 Until that's wired, MediaPipe stays the direct upstream (the existing path).
 This doc + `adapters/` already exist as the foundation.
+
+---
+
+## Multi-person support
+
+Kinect, Orbbec, and several CV models track multiple bodies simultaneously.
+The contract extends naturally with a **person prefix** so the rest of the
+pipeline can handle N people without changing what it does per person.
+
+`MAX_PERSONS = 4` is the upper bound (cap at 4 across sensors; the
+single-person MediaPipe path is just `N=1`). Adapters fill missing persons
+with zero data + visibility 0 so downstream gates them cleanly.
+
+### Channel naming with person prefix
+
+For person `p` ∈ `[0, MAX_PERSONS)` and landmark `lm`:
+
+| Channel | Example |
+| --- | --- |
+| `p<p>:<lm>:x` | `p0:left_wrist:x`, `p1:left_wrist:x` |
+| `p<p>:<lm>:y` | … |
+| `p<p>:<lm>:z` | … |
+| `p<p>:visibility<idx>` | `p0:visibility15`, `p1:visibility15` |
+
+Total channels = `MAX_PERSONS × 132 = 528` at the upper bound (4 people × 33
+landmarks × 4 fields).
+
+### Back-compat (single-person aliases)
+
+For the FIRST person (`p=0`) ONLY, the adapter also emits the LEGACY
+non-prefixed channels (`nose:x`, `visibility0`, etc.). So existing
+single-person code that reads `lag1['nose:x']` keeps working — it sees person
+0's data — and multi-person consumers read `lag1['p0:nose:x']` / `lag1['p1:…']`.
+Drop the aliases later once everything migrates.
+
+### Adapter responsibilities
+
+- **MediaPipe** (1 person): emit `p0:…` AND the legacy aliases.
+- **Kinect / Orbbec** (up to ~6 people): emit `p0:…` through `p<MAX-1>:…`,
+  plus legacy aliases for `p0`. Missing persons → zero/blank.
+- **OSC**: address pattern `/pose/p<p>/<lm>/<x|y|z>` and
+  `/pose/p<p>/visibility/<idx>`.
+
+### Downstream pipeline (planned)
+
+- **`body_tex`** packs up to `MAX_PERSONS` skeletons into one texture
+  (`width=NJOINTS, height=2×MAX_PERSONS`). Rows `2p+0` = pos+vis,
+  `2p+1` = velocity for person `p`.
+- **`body_field` / `body_viz` shaders** wrap the existing bones loop in an
+  outer person loop — each visible person contributes push/drag (field) and
+  glow (viz). Persons with all-zero visibility add nothing.
+- **`velocity_logic`** keys state by `(person_id, landmark)`. Movement
+  emitters get a `Lid` packed from `(person_id * 5 + landmark_index)` so the
+  per-limb palette in `color_attr` widens naturally (Lid 0..4 = person 0,
+  5..9 = person 1, …). Optionally hue-shift the palette per person so each
+  body wears a distinct accent.
+- **`logo_amt` standby** counts visible persons across all `p`s.
+
+### Migration path
+
+1. Land the contract names + helpers (`adapters/contract.py`).
+2. Extend `body_logic` / `body_tex` to pack N persons (legacy single-person
+   `<lm>:x` still works → person 0).
+3. Extend `body_field` / `body_viz` shaders to loop persons.
+4. Extend `velocity_logic` state + `emitters_chop` to spawn per person.
+5. Adapters emit the new schema; sensor selector routes through.
+
+Steps 1–3 don't change single-person behaviour; they're pure additions. 4–5
+are the bigger one, do them when you switch sensors.

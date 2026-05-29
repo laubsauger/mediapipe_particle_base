@@ -48,6 +48,7 @@ vec3 hueShift(vec3 c, float a)
     return c * cosA + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - cosA);
 }
 
+const int MAX_PERSONS = 4;
 const int NJOINTS = 13;
 const int NBONES  = 14;
 const ivec2 BONES[NBONES] = ivec2[](
@@ -71,34 +72,39 @@ void main()
     float halo = 0.0;   // wide soft volume
     float w = max(uWidth, 1e-4);
 
-    // --- bones as soft capsules -------------------------------------------
-    for (int i = 0; i < NBONES; ++i) {
-        vec4 ja = texelFetch(sTD2DInputs[0], ivec2(BONES[i].x, 0), 0);
-        vec4 jb = texelFetch(sTD2DInputs[0], ivec2(BONES[i].y, 0), 0);
-        float vis = min(ja.z, jb.z);
-        if (vis < 0.05) continue;
-
-        vec2 A = ja.xy * a;
-        vec2 B = jb.xy * a;
-        vec2 AB = B - A;
-        float len2 = max(dot(AB, AB), 1e-8);
-        float t = clamp(dot(P - A, AB) / len2, 0.0, 1.0);
-        float d = distance(P, A + t * AB);
-
-        // energy pulse travelling along the bone (t = 0..1 from A to B)
-        float pulse = 1.0 + uFlow * 0.8 * sin(t * 18.0 - uTime * 3.0);
-
-        halo += vis * exp(-(d * d) / (w * w)) * pulse;
-        core += vis * exp(-(d * d) / (w * w * 0.10));   // tight core
-    }
-
-    // --- joints as glowing nodes ------------------------------------------
     float node = 0.0;
-    for (int j = 0; j < NJOINTS; ++j) {
-        vec4 jt = texelFetch(sTD2DInputs[0], ivec2(j, 0), 0);
-        if (jt.z < 0.05) continue;
-        float d = distance(P, jt.xy * a);
-        node += jt.z * exp(-(d * d) / (w * w * 0.6));
+    // Outer loop over persons (body_tex packs up to MAX_PERSONS skeletons,
+    // rows 2p+0 = pos+vis). Absent persons emit visibility 0 → no contribution.
+    for (int pid = 0; pid < MAX_PERSONS; ++pid) {
+        int row_pos = 2 * pid;
+
+        // --- bones as soft capsules for this person -----------------------
+        for (int i = 0; i < NBONES; ++i) {
+            vec4 ja = texelFetch(sTD2DInputs[0], ivec2(BONES[i].x, row_pos), 0);
+            vec4 jb = texelFetch(sTD2DInputs[0], ivec2(BONES[i].y, row_pos), 0);
+            float vis = min(ja.z, jb.z);
+            if (vis < 0.05) continue;
+
+            vec2 A = ja.xy * a;
+            vec2 B = jb.xy * a;
+            vec2 AB = B - A;
+            float len2 = max(dot(AB, AB), 1e-8);
+            float t = clamp(dot(P - A, AB) / len2, 0.0, 1.0);
+            float d = distance(P, A + t * AB);
+
+            float pulse = 1.0 + uFlow * 0.8 * sin(t * 18.0 - uTime * 3.0);
+
+            halo += vis * exp(-(d * d) / (w * w)) * pulse;
+            core += vis * exp(-(d * d) / (w * w * 0.10));
+        }
+
+        // --- joint nodes for this person ----------------------------------
+        for (int j = 0; j < NJOINTS; ++j) {
+            vec4 jt = texelFetch(sTD2DInputs[0], ivec2(j, row_pos), 0);
+            if (jt.z < 0.05) continue;
+            float d = distance(P, jt.xy * a);
+            node += jt.z * exp(-(d * d) / (w * w * 0.6));
+        }
     }
 
     // Tint = the soup's CURRENT GLOBAL colour (time-only, no spatial term) so

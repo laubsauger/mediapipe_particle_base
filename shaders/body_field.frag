@@ -23,6 +23,7 @@ out vec4 fragColor;
 uniform float uBodyradius;   // bone influence radius (world-y units)
 uniform float uAspect;       // box aspect = boxWidth/boxHeight (16/9)
 
+const int MAX_PERSONS = 4;        // matches body_logic.MAX_PERSONS
 const int NBONES = 14;
 const ivec2 BONES[NBONES] = ivec2[](
     ivec2(1,2),                          // shoulders
@@ -43,37 +44,41 @@ void main()
     vec2 push = vec2(0.0);
     vec2 drag = vec2(0.0);
     float r = max(uBodyradius, 1e-4);
+    vec2 P = p * a;
 
-    for (int i = 0; i < NBONES; ++i) {
-        int ia = BONES[i].x;
-        int ib = BONES[i].y;
-        vec4 ja = texelFetch(sTD2DInputs[0], ivec2(ia, 0), 0);  // pos+vis
-        vec4 jb = texelFetch(sTD2DInputs[0], ivec2(ib, 0), 0);
-        float vis = min(ja.z, jb.z);
-        if (vis < 0.01) continue;
+    // Outer loop over persons — body_tex packs up to MAX_PERSONS skeletons
+    // (rows 2p+0 = pos+vis, 2p+1 = vel). Absent persons emit visibility 0 and
+    // contribute nothing.
+    for (int pid = 0; pid < MAX_PERSONS; ++pid) {
+        int row_pos = 2 * pid;
+        int row_vel = 2 * pid + 1;
+        for (int i = 0; i < NBONES; ++i) {
+            int ia = BONES[i].x;
+            int ib = BONES[i].y;
+            vec4 ja = texelFetch(sTD2DInputs[0], ivec2(ia, row_pos), 0);
+            vec4 jb = texelFetch(sTD2DInputs[0], ivec2(ib, row_pos), 0);
+            float vis = min(ja.z, jb.z);
+            if (vis < 0.01) continue;
 
-        // closest point on segment A→B to p, measured in aspect-corrected space
-        vec2 A = ja.xy * a;
-        vec2 B = jb.xy * a;
-        vec2 P = p * a;
-        vec2 AB = B - A;
-        float len2 = max(dot(AB, AB), 1e-8);
-        float t = clamp(dot(P - A, AB) / len2, 0.0, 1.0);
-        vec2 C = A + t * AB;            // closest point (aspect space)
-        float dist = length(P - C);
+            vec2 A = ja.xy * a;
+            vec2 B = jb.xy * a;
+            vec2 AB = B - A;
+            float len2 = max(dot(AB, AB), 1e-8);
+            float t = clamp(dot(P - A, AB) / len2, 0.0, 1.0);
+            vec2 C = A + t * AB;
+            float dist = length(P - C);
 
-        float fall = (1.0 - smoothstep(0.0, r, dist)) * vis;
-        if (fall <= 0.0) continue;
+            float fall = (1.0 - smoothstep(0.0, r, dist)) * vis;
+            if (fall <= 0.0) continue;
 
-        // push: away from the bone (back in unscaled uv direction)
-        vec2 away = (P - C);
-        away = (length(away) > 1e-5) ? normalize(away) / a : vec2(0.0);
-        push += away * fall;
+            vec2 away = (P - C);
+            away = (length(away) > 1e-5) ? normalize(away) / a : vec2(0.0);
+            push += away * fall;
 
-        // drag: blend of the two endpoints' velocities by t
-        vec2 va = texelFetch(sTD2DInputs[0], ivec2(ia, 1), 0).xy;
-        vec2 vb = texelFetch(sTD2DInputs[0], ivec2(ib, 1), 0).xy;
-        drag += mix(va, vb, t) * fall;
+            vec2 va = texelFetch(sTD2DInputs[0], ivec2(ia, row_vel), 0).xy;
+            vec2 vb = texelFetch(sTD2DInputs[0], ivec2(ib, row_vel), 0).xy;
+            drag += mix(va, vb, t) * fall;
+        }
     }
 
     fragColor = vec4(push, drag);

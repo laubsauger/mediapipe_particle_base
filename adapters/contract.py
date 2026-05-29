@@ -53,6 +53,11 @@ INDEX_OF = {n: i for i, n in LANDMARKS}
 NAME_OF  = {i: n for i, n in LANDMARKS}
 NLM = len(LANDMARKS)
 
+# Upper bound on simultaneously tracked people across the supported sensors.
+# Kinect/Orbbec advertise up to 4–6; cap at 4 so MAX_PERSONS×132 channels stays
+# manageable (528 at full saturation). See docs/sensor_contract.md.
+MAX_PERSONS = 4
+
 
 def channel_names():
     """Full canonical channel list (132 channels for 33 landmarks).
@@ -76,6 +81,30 @@ def mirror_x(x):
     return 1.0 - x
 
 
+def person_prefix(person_id):
+    """`'p<N>:'` — channel prefix for person `person_id`. Adapters emit each
+    person's block prefixed; downstream consumers iterate over persons."""
+    return 'p%d:' % int(person_id)
+
+
+def channel_names_for_person(person_id):
+    """The 132 channels for one person, prefixed with `p<N>:`."""
+    return [person_prefix(person_id) + ch for ch in channel_names()]
+
+
+def channel_names_multi(person_count=MAX_PERSONS, legacy_aliases=True):
+    """Full multi-person channel list. If `legacy_aliases=True`, person 0's
+    channels ALSO appear without prefix (so existing single-person code that
+    reads `nose:x` still works — it sees person 0). Drop the aliases later
+    once everything migrates."""
+    out = []
+    if legacy_aliases and person_count > 0:
+        out.extend(channel_names())   # p0 aliased to legacy names
+    for p in range(person_count):
+        out.extend(channel_names_for_person(p))
+    return out
+
+
 if __name__ == '__main__':
     assert NLM == 33
     assert NAMES[0] == 'nose' and NAMES[32] == 'right_foot_index'
@@ -86,4 +115,16 @@ if __name__ == '__main__':
     assert chs[-1] == 'visibility32'
     assert mirror_x(0.2) == 0.8
     assert blank_sample('left_wrist') == (0.0, 0.0, 0.0, 0.0)
-    print("OK — contract: 33 landmarks, 132 channels, mirror + blank helpers.")
+    # multi-person
+    assert person_prefix(0) == 'p0:' and person_prefix(3) == 'p3:'
+    p1 = channel_names_for_person(1)
+    assert len(p1) == 132 and p1[0] == 'p1:nose:x' and p1[-1] == 'p1:visibility32'
+    multi = channel_names_multi(person_count=2, legacy_aliases=True)
+    # 2 persons + p0 legacy aliases = 132 + 2*132 = 396 channels
+    assert len(multi) == 132 + 2 * 132, len(multi)
+    assert 'nose:x' in multi and 'p0:nose:x' in multi and 'p1:nose:x' in multi
+    multi_no_alias = channel_names_multi(person_count=2, legacy_aliases=False)
+    assert len(multi_no_alias) == 2 * 132
+    assert 'nose:x' not in multi_no_alias and 'p0:nose:x' in multi_no_alias
+    print("OK — contract: 33 landmarks; multi-person prefix `p<N>:` "
+          "+ legacy aliases for back-compat (MAX_PERSONS=%d)." % MAX_PERSONS)
