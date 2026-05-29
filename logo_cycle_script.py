@@ -47,10 +47,14 @@ def onCook(scriptOp):
 
     scriptOp.numSamples = 1
     ci = scriptOp.appendChan('index')
+    ca = scriptOp.appendChan('attmul')
+    cp = scriptOp.appendChan('pushmul')
     ct = scriptOp.appendChan('trans')
 
     if lc is None:
         ci[0] = 0.0
+        ca[0] = 1.0
+        cp[0] = 0.0
         ct[0] = 0.0
         return
 
@@ -63,9 +67,11 @@ def onCook(scriptOp):
     switch_dur = float(_par('Logoswitchdur', 1.5))
     now = float(absTime.seconds)
 
-    index, trans, st = lc.step(st, now, cycle_time, switch_dur, enabled)
+    index, attmul, pushmul, trans, st = lc.step(st, now, cycle_time, switch_dur, enabled)
     parent().store('logo_cycle_state', st)
 
     ci[0] = float(index)
+    ca[0] = float(attmul)
+    cp[0] = float(pushmul)
     ct[0] = float(trans)
     return
