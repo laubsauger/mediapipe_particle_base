@@ -47,6 +47,12 @@ uniform float uZGain;
 uniform float uVelStretch;
 uniform float uStretchSpeedRef;
 uniform float uZForceWeight;
+uniform float uAspect;     // box width/height (16/9). MediaPipe uv is normalised
+                           // by image WIDTH for x and HEIGHT for y, and the field
+                           // texture is square in uv, so a circular-in-uv splat
+                           // is an ELLIPSE in world (wider in x). Multiplying d.x
+                           // by aspect computes distance in world-equal units →
+                           // the gaussian is ROUND in world, isotropic field reach.
 
 out vec4 fragColor;
 
@@ -94,6 +100,7 @@ void main()
         vec2 vel2 = vel.xy;
         float vmag2 = length(vel2);
         vec2 d = p - pos2;
+        d.x *= uAspect;     // round-in-world splat (kills the horizontal-bias ellipse)
 
         float r_para = r_base;
         float r_perp = r_base;

@@ -31,6 +31,7 @@ uniform float uSoupcolorscale;
 uniform float uSoupcyclespeed;
 uniform float uSoupevolve;
 uniform float uBlend;      // 0 = fixed uTint, 1 = soup's current evolving colour
+uniform float uLogohueoffset;   // PERSISTENT hue offset (radians), same accum as soup
 
 vec3 soupPalette(float t)
 {
@@ -100,12 +101,13 @@ void main()
         node += jt.z * exp(-(d * d) / (w * w * 0.6));
     }
 
-    // Tint = the soup's CURRENT colour at this location (spatial gradient +
-    // time cycle + hue evolve, identical to color_attr) → the body harmonises
-    // with the field and drifts with it. uBlend dials between this and uTint.
-    float phase   = fract(dot(p, vec2(0.6, 0.8)) * uSoupcolorscale
-                          + uTime * uSoupcyclespeed);
-    vec3  soupCol = hueShift(soupPalette(phase), uTime * uSoupevolve);
+    // Tint = the soup's CURRENT GLOBAL colour (time-only, no spatial term) so
+    // the body reads as ONE coherent colour matching the surrounding soup mood,
+    // not a per-fragment sample that ends up complementary to the bg at the
+    // body's location. Same hue accumulator + evolve as the soup → harmonises.
+    float phase   = fract(uTime * uSoupcyclespeed);
+    vec3  soupCol = hueShift(soupPalette(phase),
+                             uTime * uSoupevolve + uLogohueoffset);
     vec3  tint    = mix(uTint, soupCol, clamp(uBlend, 0.0, 1.0));
 
     // composite: colored soft volume + whiter HDR core + bright nodes
