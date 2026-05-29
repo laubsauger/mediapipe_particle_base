@@ -85,25 +85,34 @@ def onCook(scriptOp):
         scriptOp.isTimeSlice = False
 
     logic = mod.velocity_logic
+    try:
+        bl = mod.body_logic        # for MAX_PERSONS
+        persons = bl.MAX_PERSONS
+    except Exception:
+        persons = 1                # single-person fallback if body_logic missing
     comp = parent()
     par = comp.par
 
     # ---- Landmark set ----------------------------------------------------
-    # Optional parent par 'Landmarks' lets an experiment fork override without
-    # editing code. Falls back to the module default.
     landmarks = _landmark_list(getattr(par, 'Landmarks', None) and par.Landmarks.eval()) \
                 or logic.LANDMARKS
 
-    # ---- State (survives cook-to-cook, cleared on reload) ----------------
+    # ---- State (nested per person; survives cook-to-cook) ---------------
     state = comp.fetch(STORAGE_KEY, None)
-    if state is None or set(state.keys()) != set(landmarks):
-        # Landmarks changed (or first cook) — rebuild.
-        state = logic.new_state(landmarks)
+    need_rebuild = (
+        state is None
+        or not isinstance(state, dict)
+        # nested shape: keys are ints (person ids), inner dicts hold landmarks
+        or (state and any(isinstance(k, int) for k in state.keys())
+            and any(set(ps.keys()) != set(landmarks) for ps in state.values() if isinstance(ps, dict)))
+        # legacy flat shape with different landmarks
+        or (state and not any(isinstance(k, int) for k in state.keys())
+            and set(state.keys()) != set(landmarks))
+    )
+    if need_rebuild:
+        state = logic.new_state(landmarks, persons=persons)
     else:
-        # Same landmarks, but the inner schema may have grown since this
-        # session last stored it (e.g. `last_good_x` added after an update).
-        # ensure_schema backfills any missing keys with defaults.
-        logic.ensure_schema(state, landmarks)
+        logic.ensure_schema(state, landmarks, persons=persons)
     comp.store(STORAGE_KEY, state)
 
     # ---- dt from absTime -------------------------------------------------
@@ -150,46 +159,85 @@ def onCook(scriptOp):
                        and par.Boundsmaxy.eval()) else 1.0),
     }
 
-    # ---- Build samples dict ---------------------------------------------
+    # ---- Build NESTED multi-person samples directly from in_pose --------
+    # Channel-name resolution (per-person prefix + legacy fallback for p=0)
+    # is centralised in body_logic — see per_person_chans / per_person_vis_chans.
+    try:
+        bl = mod.body_logic
+        name_to_mp = {}
+        try:
+            import sys as _sys
+            if project.folder not in _sys.path:
+                _sys.path.append(project.folder)
+            from adapters import contract as _ct
+            name_to_mp = _ct.INDEX_OF
+        except Exception:
+            pass
+    except Exception:
+        bl = None
+        name_to_mp = {}
+    ip = op('in_pose')
+
+    _SENTINEL = object()
+    def _read(names):
+        if ip is None or bl is None:
+            return _SENTINEL
+        # body_logic.read_first returns default when nothing matches; we want
+        # to distinguish "no channel found" (treat as fully-visible/trusted)
+        # from "channel present, value 0".
+        for nm in names:
+            try:
+                c = ip[nm]
+            except Exception:
+                continue
+            if c is None:
+                continue
+            return _finite(c[0], 0.0)
+        return _SENTINEL
+
     samples = {}
-    for lm in landmarks:
-        xch = _find_chan(scriptOp, f'{lm}:x')
-        ych = _find_chan(scriptOp, f'{lm}:y')
-        if xch is None or ych is None:
-            # Missing position channel -> treat as invisible but still decay.
-            samples[lm] = (0.0, 0.0, 0.0, False, False)
-            continue
-        x = _finite(xch[0], 0.0)
-        y = _finite(ych[0], 0.0)
-        # z is optional — MediaPipe pose does emit it, but some toxes strip
-        # it or remap to depth in meters. If missing, z=0 and the logic
-        # behaves identically to the previous 2D version.
-        zch = _find_chan(scriptOp, f'{lm}:z')
-        z = _finite(zch[0], 0.0) if zch is not None else 0.0
+    for p in range(persons):
+        person_samples = {}
+        for lm in landmarks:
+            mp_idx = name_to_mp.get(lm)
+            x = _read(bl.per_person_chans(p, lm, 'x') if bl else [])
+            y = _read(bl.per_person_chans(p, lm, 'y') if bl else [])
+            z = _read(bl.per_person_chans(p, lm, 'z') if bl else [])
+            v_raw = _read(bl.per_person_vis_chans(p, mp_idx, lm) if (bl and mp_idx is not None) else [])
+            x = x if x is not _SENTINEL else 0.0
+            y = y if y is not _SENTINEL else 0.0
+            z = z if z is not _SENTINEL else 0.0
+            if v_raw is _SENTINEL:
+                person_samples[lm] = (x, y, z, True, True)
+            else:
+                person_samples[lm] = (x, y, z,
+                                      v_raw >= vis_thresh,
+                                      v_raw >= trust_thresh)
+        samples[p] = person_samples
 
-        vch = _find_chan(scriptOp, f'{lm}:visible')
-        # :visible is MediaPipe's 0..1 confidence. Two zones:
-        #   visible = confidence >= vis_thresh   (output gate)
-        #   trusted = confidence >= trust_thresh (commit last_good & velocity)
-        # If the channel isn't present, assume fully visible and trusted.
-        # Non-finite confidence -> treat as zero (landmark effectively off).
-        if vch is not None:
-            v = _finite(vch[0], 0.0)
-            samples[lm] = (x, y, z, v >= vis_thresh, v >= trust_thresh)
-        else:
-            samples[lm] = (x, y, z, True, True)
-
-    # ---- Update logic ----------------------------------------------------
+    # ---- Update logic (handles both flat + nested) -----------------------
     per_landmark, globals_out = logic.update(state, samples, dt, params)
 
-    # ---- Emit channels ---------------------------------------------------
+    # ---- Emit channels: per-person `p<P>:<lm>:<suffix>` + legacy aliases -
     scriptOp.numSamples = 1
     scriptOp.rate = me.time.rate
 
-    for lm in landmarks:
-        o = per_landmark[lm]
-        for suffix in logic.PER_LANDMARK_CHANS:
-            scriptOp.appendChan(f'{lm}:{suffix}')[0] = o[suffix]
+    for p in range(persons):
+        for lm in landmarks:
+            o = per_landmark.get('p%d:%s' % (p, lm))
+            if o is None:
+                continue
+            for suffix in logic.PER_LANDMARK_CHANS:
+                scriptOp.appendChan('p%d:%s:%s' % (p, lm, suffix))[0] = o[suffix]
+        # legacy non-prefixed aliases for person 0 so existing emitters /
+        # downstream code that reads `lag1['nose:vx']` keeps working.
+        if p == 0:
+            for lm in landmarks:
+                o = per_landmark.get(lm) or per_landmark.get('p0:%s' % lm)
+                if o is None:
+                    continue
+                for suffix in logic.PER_LANDMARK_CHANS:
+                    scriptOp.appendChan('%s:%s' % (lm, suffix))[0] = o[suffix]
 
     for g in logic.GLOBAL_CHANS:
         scriptOp.appendChan(g)[0] = globals_out[g]

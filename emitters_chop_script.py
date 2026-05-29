@@ -1,4 +1,4 @@
-# emitters_chop_script.py
+﻿# emitters_chop_script.py
 # =======================
 # Script CHOP callback. Reshapes the sensing-side Lag CHOP output into a
 # CHOP with N SAMPLES (one per landmark) and channels named so that the
@@ -121,9 +121,26 @@ def onCook(scriptOp):
     lms = _landmark_list()
     n_lm = len(lms)
     if src is None or n_lm == 0:
-        # Emit an empty CHOP so the downstream CHOP-to-POP doesn't error.
         scriptOp.numSamples = 0
         return
+
+    # MULTI-PERSON: spawn from every active person's limbs. Lid encodes both
+    # person and limb (Lid = p*n_lm + lm_i) so color_attr can derive per-person
+    # tint from Lid/n_lm and per-limb palette from Lid%n_lm. Absent persons
+    # contribute zero w (no births) so the count stays bounded.
+    try:
+        bl = mod.body_logic
+        persons = bl.MAX_PERSONS
+    except Exception:
+        bl = None
+        persons = 1
+
+    def _read_p(p, lm, suffix, default=0.0):
+        """Per-person channel read — uses the centralised name resolver in
+        body_logic so the legacy fallback for p=0 is defined exactly ONCE."""
+        if bl is None:
+            return default
+        return bl.read_person_chan(src, p, lm, suffix, default)
 
     burst_gain        = float(_par('Burstgain',         1.0))
     spawn_count       = max(1, int(_par('Spawncount',    12)))
@@ -152,7 +169,17 @@ def onCook(scriptOp):
     # launch directions so even slow motion sheds as a soft spray. 0 = off.
     spawn_ang_jitter  = float(_par('Spawnangjitter',     0.45))
 
-    total = n_lm * spawn_count
+    # Skip persons with zero visibility across ALL their landmarks → don't waste
+    # samples on bodies that aren't tracked (single-person scene = 75% saving).
+    active_persons = []
+    for p in range(persons):
+        for lm in lms:
+            if _read_p(p, lm, 'visible', 0.0) > 0.0:
+                active_persons.append(p)
+                break
+    if not active_persons:
+        active_persons = [0]   # always emit person-0 row so the POP stays alive
+    total = len(active_persons) * n_lm * spawn_count
 
     # IMPORTANT: set numSamples BEFORE appending channels. Channels inherit
     # their sample count from the op when created; appending after changing
@@ -196,16 +223,17 @@ def onCook(scriptOp):
     def _clamp(v, lo, hi):
         return max(lo, min(hi, v))
 
-    for lm_i, lm in enumerate(lms):
-        x  = _read(src, f'{lm}:x')
-        y  = _read(src, f'{lm}:y')
-        z  = _read(src, f'{lm}:z')
-        vx = _read(src, f'{lm}:vx')
-        vy = _read(src, f'{lm}:vy')
-        vz = _read(src, f'{lm}:vz')
-        em = _read(src, f'{lm}:emit')
-        bu = _read(src, f'{lm}:burst')
-        vi = _read(src, f'{lm}:visible')
+    for p in range(persons):
+      for lm_i, lm in enumerate(lms):
+        x  = _read_p(p, lm, 'x')
+        y  = _read_p(p, lm, 'y')
+        z  = _read_p(p, lm, 'z')
+        vx = _read_p(p, lm, 'vx')
+        vy = _read_p(p, lm, 'vy')
+        vz = _read_p(p, lm, 'vz')
+        em = _read_p(p, lm, 'emit')
+        bu = _read_p(p, lm, 'burst')
+        vi = _read_p(p, lm, 'visible')
 
         # Per-sub-emitter weight — same value for all sub-emitters of a
         # given limb (see header comment for why we don't divide).
@@ -284,9 +312,10 @@ def onCook(scriptOp):
             chans['v1'][idx] = base_svx * st + base_svy * ct
             chans['v2'][idx] = svz
             chans['w'][idx]  = w_per
-            # id stays the landmark index so per-limb colouring still works
-            # across all sub-emitters of the same limb.
-            chans['id'][idx] = float(lm_i)
+            # id encodes BOTH person and limb: Lid = p*n_lm + lm_i.
+            # color_attr derives per-limb palette by `lid % n_lm` and per-person
+            # tint by `lid / n_lm` (each person wears a distinct hue shift).
+            chans['id'][idx] = float(p * n_lm + lm_i)
             idx += 1
 
     return

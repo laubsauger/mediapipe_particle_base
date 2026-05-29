@@ -58,6 +58,7 @@ uniform float uSoupevolve;      // hue-rotation speed of the soup palette over t
 uniform float uLogotrans;       // 0..1 logo-swap shockwave: fades the logo glow out then back
 uniform float uLogoburstcolor;  // swap-time glow-up amount (HDR flare through Bloom)
 uniform float uLogohueoffset;   // PERSISTENT hue offset (radians) — accumulates per swap, holds
+uniform float uPersonhuestep;   // hue (rad) added per PERSON index so each body wears a distinct tint
 
 // Soup palette + ember colours come from COMP color pars (uniforms) so PRESETS
 // can recolor the whole look. No TOP sampler (that crashes a GLSL POP).
@@ -112,7 +113,7 @@ void main()
 
     vec3 outc;
 
-    if (lid >= 5) {
+    if (lid >= 100) {
         // ---- SOUP: a living, color-cycling, persistent cloud. NOT subject to
         // the embers decay-to-black. The idle (no-pose) state is meant to be
         // beautiful on its own; pose interaction enhances it.
@@ -158,15 +159,16 @@ void main()
         float pvar   = 0.65 + 0.35 * h;
         outc = rampC * bright * env * depthf * pvar;
     } else {
-        // ---- MOVEMENT: per-limb palette + velocity accent + Embers age ramp.
-        // Speed is normalised to uVelref. Movement PartVel is small (~0.01..0.13
-        // box-units), so a small ref (~0.08) maps a brisk swipe to "full". The
-        // whole intensity scales with mv so SLOW emission stays dim and colored
-        // instead of blowing out to white — the old code flashed the HDR
-        // uEmberHot at *every* birth regardless of speed.
+        // ---- MOVEMENT: per-LIMB palette + per-PERSON hue + Embers age ramp.
+        // Lid encodes BOTH person and limb: Lid = person*5 + limb_index. Each
+        // person wears the same 5-colour limb palette but rotated by
+        // person * uPersonhuestep so the bodies are visually distinct in
+        // multi-person scenes.
         float mv    = clamp(speed / max(uVelref, 1e-4), 0.0, 1.0);
-        int   k     = ((lid % 5) + 5) % 5;
-        vec3  ident = uBase + kPalette[k];
+        int   limb  = ((lid % 5) + 5) % 5;
+        int   pid   = lid / 5;                              // 0..MAX_PERSONS-1
+        vec3  ident = uBase + kPalette[limb];
+        ident       = hueShift(ident, float(pid) * uPersonhuestep);
         vec3  col   = mix(ident, uAccent, clamp(mv, 0.0, uMaxBlend));
 
         // Birth flash GATED BY SPEED: at mv≈0 the particle is born at its (LDR,

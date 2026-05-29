@@ -29,7 +29,8 @@
 #   carrying the fractional remainder across cooks. Positions are re-randomised
 #   every cook so the soup spawns uniformly through the volume over time.
 
-SOUP_ID = 5  # sentinel Lid for ambient particles (palette has 0..4)
+SOUP_ID = 100  # sentinel Lid for ambient particles; sits above all multi-person
+               # movement Lids (max = MAX_PERSONS*5-1 = 19) so they never collide.
 
 
 def _par(name, default):

@@ -110,6 +110,44 @@ def read_first(chop, names, default=0.0):
     return default
 
 
+# ---------------------------------------------------------------------------
+# Per-person channel-name resolution (centralised; used by every script that
+# reads pose data so the legacy fallback is defined exactly ONCE).
+# ---------------------------------------------------------------------------
+
+def per_person_chans(person_id, landmark, suffix):
+    """Candidate channel names in priority order for `p<P>:<lm>:<suffix>`.
+    For person 0 includes the LEGACY non-prefixed alias `<lm>:<suffix>` so
+    existing single-person MediaPipe data flows in transparently."""
+    out = ['p%d:%s:%s' % (int(person_id), landmark, suffix)]
+    if person_id == 0:
+        out.append('%s:%s' % (landmark, suffix))
+    return out
+
+
+def per_person_vis_chans(person_id, mp_idx, landmark=None):
+    """Candidate visibility channel names: prefixed `p<P>:visibility<idx>`
+    first, then legacy aliases for person 0 (`visibility<idx>` raw + the
+    `<lm>:visible` rename done by `select_visibility`)."""
+    out = ['p%d:visibility%d' % (int(person_id), int(mp_idx))]
+    if person_id == 0:
+        out.append('visibility%d' % int(mp_idx))
+        if landmark:
+            out.append('%s:visible' % landmark)
+    return out
+
+
+def read_person_chan(chop, person_id, landmark, suffix, default=0.0):
+    """Convenience: try every candidate name + return the first finite value."""
+    return read_first(chop, per_person_chans(person_id, landmark, suffix), default)
+
+
+def read_person_visibility(chop, person_id, mp_idx, landmark=None, default=0.0):
+    """Convenience: try every candidate visibility channel name."""
+    return read_first(chop, per_person_vis_chans(person_id, mp_idx, landmark),
+                      default)
+
+
 if __name__ == '__main__':
     # Every bone references valid, distinct packed joints.
     for a, b in BONES:
@@ -128,5 +166,20 @@ if __name__ == '__main__':
     assert joint_velocity(None, cur, 0.5) == [(0.0, 0.0), (0.0, 0.0)]
     assert joint_velocity(prev, cur, 0.0) == [(0.0, 0.0), (0.0, 0.0)]
     assert visibility_index_channel(15) == 'visibility15'
-    print("OK — body_logic: %d joints, %d bones, velocity diff + guards pass."
-          % (NJOINTS, NBONES))
+    # Multi-person channel helpers (single source of truth, used by
+    # velocity_script_chop / emitters_chop_script / body_tex_script).
+    assert per_person_chans(0, 'nose', 'x') == ['p0:nose:x', 'nose:x']
+    assert per_person_chans(1, 'left_wrist', 'vx') == ['p1:left_wrist:vx']
+    assert per_person_vis_chans(0, 15, 'left_wrist') == \
+        ['p0:visibility15', 'visibility15', 'left_wrist:visible']
+    assert per_person_vis_chans(2, 15) == ['p2:visibility15']
+    # read_first returns the first finite hit
+    class _C:
+        def __init__(self, v): self.v = v
+        def eval(self): return self.v
+    src = {'p0:nose:x': _C(0.42), 'nose:x': _C(0.50)}
+    assert read_first(src, ['p0:nose:x', 'nose:x']) == 0.42  # prefer prefixed
+    assert read_first(src, ['p1:nose:x', 'nose:x']) == 0.50  # falls back
+    assert read_first(src, ['missing'], default=-1.0) == -1.0
+    print("OK — body_logic: %d joints, %d bones, multi-person channel helpers, "
+          "velocity diff + guards pass." % (NJOINTS, NBONES))

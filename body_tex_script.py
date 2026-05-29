@@ -66,22 +66,14 @@ def onCook(scriptOp):
     buf = np.zeros((2 * max_p, n, 4), dtype=np.float32)
 
     for p in range(max_p):
-        # Read this person's joints. For p=0 the LEGACY non-prefixed channel
-        # name is the fallback (so existing single-person MediaPipe data flows
-        # in as person 0 without sensor changes).
+        # Per-person channel resolution centralised in body_logic — same fallback
+        # ladder used by velocity_script_chop + emitters_chop_script.
         pos = []
         vis = []
         for name, mp_idx in joints:
-            x_chans = ['p%d:%s:x' % (p, name)]
-            y_chans = ['p%d:%s:y' % (p, name)]
-            v_chans = ['p%d:visibility%d' % (p, mp_idx)]
-            if p == 0:
-                x_chans.append('%s:x' % name)
-                y_chans.append('%s:y' % name)
-                v_chans.append('visibility%d' % mp_idx)
-            x = next((_read(src, c) for c in x_chans if src[c] is not None), 0.0)
-            y = next((_read(src, c) for c in y_chans if src[c] is not None), 0.0)
-            v = next((_read(src, c) for c in v_chans if src[c] is not None), 0.0)
+            x = bl.read_first(src, bl.per_person_chans(p, name, 'x'), 0.0)
+            y = bl.read_first(src, bl.per_person_chans(p, name, 'y'), 0.0)
+            v = bl.read_first(src, bl.per_person_vis_chans(p, mp_idx, name), 0.0)
             pos.append((x, y))
             vis.append(v)
 
