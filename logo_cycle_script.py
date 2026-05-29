@@ -46,12 +46,12 @@ def onCook(scriptOp):
         pass
 
     scriptOp.numSamples = 1
-    cb = scriptOp.appendChan('blend')   # fractional switch index (cross-dissolve)
-    cm = scriptOp.appendChan('morph')   # 0..1 mid-transition (trap release + FX)
+    cb = scriptOp.appendChan('blend')      # fractional switch index (cross-dissolve)
+    cm = scriptOp.appendChan('morph')      # 0..1 mid-transition (trap release + FX)
+    ch = scriptOp.appendChan('hueoffset')  # persistent hue offset (radians) — accumulates per swap, holds
 
     if lc is None:
-        cb[0] = 0.0
-        cm[0] = 0.0
+        cb[0] = 0.0; cm[0] = 0.0; ch[0] = 0.0
         return
 
     st = parent().fetch('logo_cycle_state', None)
@@ -61,11 +61,13 @@ def onCook(scriptOp):
     enabled = bool(_par('Logocycle', True))
     cycle_time = float(_par('Logocycletime', 12.0))
     switch_dur = float(_par('Logoswitchdur', 1.5))
+    hue_step   = float(_par('Logohuestep', 2.4))    # rad added per swap (golden-ish → distinct colors)
     now = float(absTime.seconds)
 
-    blend, morph, st = lc.step(st, now, cycle_time, switch_dur, enabled)
+    blend, morph, hueoff, st = lc.step(st, now, cycle_time, switch_dur, enabled, hue_step)
     parent().store('logo_cycle_state', st)
 
     cb[0] = float(blend)
     cm[0] = float(morph)
+    ch[0] = float(hueoff)
     return

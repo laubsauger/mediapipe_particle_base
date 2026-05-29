@@ -173,12 +173,16 @@ void main()
         //    it isn't throttled. The gradient is ~0 inside the bright plateau
         //    (contents move freely) and strong at the edges (escaping particles
         //    get pushed back in) → the shape behaves like a container.
-        //    POSITIONAL MORPH on swap: attract stays ON while the logo_cycle
-        //    cross-dissolves the two logo images → this gradient field smoothly
-        //    morphs old→new, so settled particles MIGRATE to their new homes
-        //    (a real position lerp, not an alpha blend). The trap is released by
-        //    uLogomorph so they're free to flow during the morph.
+        //    SWAP = positional morph + explosion AT THE SAME TIME:
+        //    • attract stays ON while the logo_cycle cross-dissolves the two
+        //      logo images → the gradient field smoothly morphs old→new, so
+        //      particles migrate to their new homes (real position lerp).
+        //    • a simultaneous OUTWARD PUSH pulse (uLogomorph) blasts them off
+        //      the old shape mid-swap. Push fades with morph, attract gathers
+        //      them onto the NEW shape. So they explode AND reform together —
+        //      not in series.
         vel.xy += logo.xy * uLogoattract * uLogoamt;
+        vel.xy -= logo.xy * uLogopush    * uLogoamt * uLogomorph;
 
         // 2. Keep the CONTENTS ALIVE: inject extra (un-capped) 3D curl swirl
         //    ONLY inside the shape, so contained particles tumble like a filled

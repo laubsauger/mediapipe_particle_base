@@ -564,7 +564,13 @@ add_float(look, 'Logoswitchdur', 'Logo Switch Shockwave (s)', 1.5, 0.2, 5.0, cla
 # the old shape); Logoburstcolor = hue-by-fly-direction + glow-up so the scatter
 # bursts into varied colours and flares through Bloom.
 add_float(look, 'Logopush', 'Logo Swap Push-Back', 2.0, 0.0, 6.0, clamp_max=False)
-add_float(look, 'Logoburstcolor', 'Logo Swap Color Burst', 1.0, 0.0, 3.0, clamp_max=False)
+add_float(look, 'Logoburstcolor', 'Logo Swap Glow-Up', 1.0, 0.0, 3.0, clamp_max=False)
+# PERSISTENT hue step per swap (radians). logo_cycle accumulates this each time
+# the logos swap and HOLDS at the new baseline — the colour ramps to a new hue
+# during the morph and stays there (no bounce). Soupevolve keeps drifting from
+# that new baseline. 2.4 rad ≈ 137° (golden-ish) → each swap lands on a
+# distinct colour for a long time before repeating.
+add_float(look, 'Logohuestep', 'Logo Hue Step per Swap (rad)', 2.4, 0.0, 6.283)
 add_float(look, 'Logofade', 'Logo Fade (standby crossfade s)', 1.5, 0.05, 10.0, clamp_max=False)
 
 # --- Palette (drives color_attr uniforms; presets recolor via these) -------

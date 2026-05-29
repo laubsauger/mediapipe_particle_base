@@ -152,7 +152,8 @@ RENDERER = {
     'Logocycletime':   12.0,   # seconds a logo holds before the next swap
     'Logoswitchdur':   1.5,    # swap shockwave duration (particles blow out + reform)
     'Logopush':        2.0,    # outward push-back strength during the swap
-    'Logoburstcolor':  1.0,    # hue-by-direction + glow-up during the swap (color pop)
+    'Logoburstcolor':  1.0,    # glow-up amount during the swap (HDR flare through Bloom)
+    'Logohuestep':     2.4,    # hue (rad) added per swap — persistent, no bounce-back
 }
 
 

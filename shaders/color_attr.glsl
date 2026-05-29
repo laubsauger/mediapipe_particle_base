@@ -56,7 +56,8 @@ uniform float uLogoamt;         // 0..1 standby fade (op('logo_amt')['amt']); ga
 uniform float uVelref;          // movement speed mapped to full hot/bloom (slow stays dim)
 uniform float uSoupevolve;      // hue-rotation speed of the soup palette over time (evolving color)
 uniform float uLogotrans;       // 0..1 logo-swap shockwave: fades the logo glow out then back
-uniform float uLogoburstcolor;  // swap shockwave: hue-by-fly-direction + glow-up amount
+uniform float uLogoburstcolor;  // swap-time glow-up amount (HDR flare through Bloom)
+uniform float uLogohueoffset;   // PERSISTENT hue offset (radians) — accumulates per swap, holds
 
 // Soup palette + ember colours come from COMP color pars (uniforms) so PRESETS
 // can recolor the whole look. No TOP sampler (that crashes a GLSL POP).
@@ -128,14 +129,11 @@ void main()
         float phase = fract(dot(p.xy, vec2(0.6, 0.8)) * uSoupcolorscale
                             + uTime * uSoupcyclespeed);
         vec3  rampC = soupPalette(phase);
-        // evolve the palette hue over time so the whole soup colour drifts
-        // through the spectrum (not just the fixed A→B→C bands sweeping by).
-        // During a logo swap, ALSO shift hue by each particle's fly DIRECTION
-        // (atan2 of velocity) × uLogotrans → the scattering soup bursts into
-        // varied colours by which way it blasts. Makes the shockwave pop.
-        float burst = uLogotrans * uLogoburstcolor;
-        rampC = hueShift(rampC, uTime * uSoupevolve
-                                + burst * atan(vel.y, vel.x));
+        // evolve the palette hue over time so the soup colour drifts through
+        // the spectrum (continuous). PLUS a PERSISTENT per-swap hue offset that
+        // ramps IN SYNC with the field morph and HOLDS afterward — each logo
+        // swap shifts the colour to a new baseline and stays there (no bounce).
+        rampC = hueShift(rampC, uTime * uSoupevolve + uLogohueoffset);
         // velocity response: faster soup (turbulence peaks, or a flow-field
         //   shove from a limb) gets brighter and can bloom — so slow vs fast
         //   particles read differently and pose interaction "pops".
@@ -147,8 +145,9 @@ void main()
         // fade the logo glow out during a swap (1 - trans) so the image-cut +
         // brightness mismatch between the two logos is hidden in the shockwave.
         bright += TDIn_logodata().w * uLogobright * uLogoamt * (1.0 - uLogotrans);
-        // glow up during the swap (HDR → Bloom catches it) so the burst flares.
-        bright *= (1.0 + burst * 2.0);
+        // glow up during the swap (HDR → Bloom catches it). No hue change here —
+        // colour shifts happen via uLogohueoffset (persistent, see above).
+        bright *= (1.0 + uLogotrans * uLogoburstcolor * 2.0);
         // depth cue (fake DoF): particles toward the back of the box (−z) are
         //   dimmer, so the field has depth instead of a flat even mess.
         //   z range ≈ [-0.15, +0.15]; +z is nearer the camera.

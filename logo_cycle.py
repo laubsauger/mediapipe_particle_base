@@ -19,11 +19,17 @@ import math
 
 def fresh_state():
     return {
-        't_last':   0.0,    # wall time the last cycle completed
-        'in_trans': False,  # currently mid-swap?
-        't_start':  0.0,    # wall time the current transition started
-        'target':   0,      # which logo we're settled on (0/1)
-        'primed':   False,  # t_last seeded to first real clock?
+        't_last':    0.0,   # wall time the last cycle completed
+        'in_trans':  False, # currently mid-swap?
+        't_start':   0.0,   # wall time the current transition started
+        'target':    0,     # which logo we're settled on (0/1)
+        'primed':    False, # t_last seeded to first real clock?
+        # Persistent hue accumulator: each swap adds `hue_step` (ramps smoothly
+        # IN SYNC with the field morph), then HOLDS at the new value. Soupevolve
+        # continues drifting from that new baseline. So a swap shifts colour
+        # permanently — no bounce-back to the original.
+        'hue_accum': 0.0,
+        'hue_start': 0.0,   # accum value at the start of the current transition
     }
 
 
@@ -34,8 +40,8 @@ def _smoothstep(a, b, x):
     return t * t * (3.0 - 2.0 * t)
 
 
-def step(state, now, cycle_time, switch_dur, enabled=True):
-    """Advance the cycler. Returns (blend, morph, state).
+def step(state, now, cycle_time, switch_dur, enabled=True, hue_step=2.4):
+    """Advance the cycler. Returns (blend, morph, hueoffset, state).
 
     POSITIONAL MORPH (not an alpha blend of the render): `blend` (0..1) is a
     fractional Switch index — with the Switch TOP's Blend ON it cross-dissolves
@@ -52,76 +58,85 @@ def step(state, now, cycle_time, switch_dur, enabled=True):
     if not s.get('primed'):
         s['t_last'] = now
         s['primed'] = True
-        s.setdefault('target', s.get('index', 0))   # which logo we're settled on
+        s.setdefault('target', s.get('index', 0))
+        s.setdefault('hue_accum', 0.0)
+        s.setdefault('hue_start', 0.0)
 
     switch_dur = max(1e-3, switch_dur)
     target = s.get('target', 0)
+    accum = s.get('hue_accum', 0.0)
 
     if not enabled:
         s['in_trans'] = False
-        return float(target), 0.0, s
+        return float(target), 0.0, accum, s
 
     if not s['in_trans']:
         if (now - s['t_last']) >= max(0.0, cycle_time):
             s['in_trans'] = True
             s['t_start'] = now
-        return float(target), 0.0, s
+            s['hue_start'] = accum                 # remember where the hue was
+        return float(target), 0.0, accum, s
 
     p = (now - s['t_start']) / switch_dur          # 0..1 across the swap
     if p >= 1.0:
-        s['target'] = 1 - target                   # now settled on the other logo
-        s['in_trans'] = False
-        s['t_last'] = now
-        return float(s['target']), 0.0, s
+        s['target']    = 1 - target                # now settled on the other logo
+        s['hue_accum'] = s['hue_start'] + hue_step # commit the new hue baseline
+        s['in_trans']  = False
+        s['t_last']    = now
+        return float(s['target']), 0.0, s['hue_accum'], s
 
-    e = _smoothstep(0.0, 1.0, p)                    # eased ramp old→new
+    e = _smoothstep(0.0, 1.0, p)                   # eased ramp old→new
     dest = 1 - target
     blend = target + (dest - target) * e           # 0→1 or 1→0
     sp = math.sin(p * math.pi)
     morph = sp * sp                                # peak mid (trap release + FX)
-    return blend, morph, s
+    hueoff = s['hue_start'] + e * hue_step         # hue ramps IN SYNC with morph
+    return blend, morph, hueoff, s
 
 
 if __name__ == '__main__':
     st = fresh_state()
     dt = 1.0 / 60.0
-    t = 1000.0   # large clock → priming must prevent an instant swap
-    # First call primes; settled on logo 0 (blend 0), no morph.
-    bl, mo, st = step(st, t, cycle_time=2.0, switch_dur=1.0)
-    assert bl == 0.0 and mo == 0.0 and not st['in_trans'], (bl, mo)
+    t = 1000.0
+    bl, mo, hu, st = step(st, t, cycle_time=2.0, switch_dur=1.0, hue_step=2.4)
+    assert bl == 0.0 and mo == 0.0 and hu == 0.0, (bl, mo, hu)
 
-    # Run ~1.9s — still holding on logo 0.
     for _ in range(int(1.9 / dt)):
         t += dt
-        bl, mo, st = step(st, t, 2.0, 1.0)
-    assert not st['in_trans'] and bl == 0.0, st
+        bl, mo, hu, st = step(st, t, 2.0, 1.0, hue_step=2.4)
+    assert not st['in_trans'] and bl == 0.0 and hu == 0.0, st
 
-    # Cross 2s → blend ramps 0→1 (cross-dissolve), morph bumps, settles at 1.
-    peak_morph = 0.0
-    blends = []
+    # First swap: blend 0→1, morph bumps, hue ramps 0 → 2.4 IN SYNC.
+    peak_morph = 0.0; blends = []; hues = []
     for i in range(int(1.2 / dt)):
         t += dt
-        bl, mo, st = step(st, t, 2.0, 1.0)
+        bl, mo, hu, st = step(st, t, 2.0, 1.0, hue_step=2.4)
         peak_morph = max(peak_morph, mo)
-        blends.append(bl)
-    assert peak_morph > 0.95, ("morph should peak ~1", peak_morph)
-    # blend is monotonic-ish 0→1 and ends at 1 (settled on the other logo)
-    assert blends[-1] == 1.0 and st['target'] == 1, ("settle on logo 1", blends[-1], st)
-    assert max(blends) <= 1.0 and min(blends) >= 0.0
-    # mid-ramp it actually crossed ~0.5 (real positional dissolve, not a jump)
-    assert any(0.3 < b < 0.7 for b in blends), "blend should pass through the middle"
-    assert not st['in_trans'] and mo == 0.0
+        blends.append(bl); hues.append(hu)
+    assert peak_morph > 0.95
+    assert blends[-1] == 1.0 and st['target'] == 1
+    assert any(0.3 < b < 0.7 for b in blends), "blend passes through the middle"
+    assert abs(hues[-1] - 2.4) < 1e-6, ("hue lands at +hue_step and STAYS", hues[-1])
+    # mid-transition hue is partway between 0 and 2.4 (synced with blend ramp)
+    assert any(0.5 < h < 2.0 for h in hues), "hue ramps smoothly"
 
-    # next swap ramps back 1→0
-    t += 2.0
-    for i in range(int(1.2 / dt)):
+    # Hold between swaps: hue stays at 2.4 (no bounce-back).
+    held = []
+    for _ in range(int(1.5 / dt)):
         t += dt
-        bl, mo, st = step(st, t, 2.0, 1.0)
-    assert bl == 0.0 and st['target'] == 0, ("settle back on logo 0", bl, st)
+        bl, mo, hu, st = step(st, t, 2.0, 1.0, hue_step=2.4)
+        held.append(hu)
+    assert all(abs(h - 2.4) < 1e-6 for h in held), "hue HOLDS at new baseline (not temporary)"
 
-    # disabled → held, morph 0
+    # Second swap: hue accumulates 2.4 → 4.8 (run past the full ramp).
+    for i in range(int(1.7 / dt)):
+        t += dt
+        bl, mo, hu, st = step(st, t, 2.0, 1.0, hue_step=2.4)
+    assert abs(hu - 4.8) < 1e-5, ("each swap adds hue_step (no bounce)", hu)
+    assert st['target'] == 0 and not st['in_trans']
+
     st2 = fresh_state()
-    bl2, mo2, st2 = step(st2, 5000.0, 2.0, 1.0, enabled=False)
-    assert mo2 == 0.0
-    print("OK — logo_cycle: blend cross-dissolves 0↔1 through the middle "
-          "(positional morph), morph bump peaks mid, settles + holds.")
+    bl2, mo2, hu2, st2 = step(st2, 5000.0, 2.0, 1.0, enabled=False)
+    assert mo2 == 0.0 and hu2 == 0.0
+    print("OK — logo_cycle: blend cross-dissolves (positional morph); hue ramps "
+          "in sync and STAYS on new baseline; each swap accumulates hue_step.")
