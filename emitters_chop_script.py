@@ -146,6 +146,11 @@ def onCook(scriptOp):
     # get an outward kick on their StartPartvel. 0 = parallel, higher =
     # fanned cone. Scaled by limb speed so at rest there's no fan.
     spawn_vel_fan     = float(_par('Spawnvelfan',        0.5))
+    # Speed-INDEPENDENT angular jitter (radians) on each particle's launch
+    # direction. The fan above scales with limb speed, so slight motion gets no
+    # spread and reads as one tight stream; this baseline jitter spreads the
+    # launch directions so even slow motion sheds as a soft spray. 0 = off.
+    spawn_ang_jitter  = float(_par('Spawnangjitter',     0.45))
 
     total = n_lm * spawn_count
 
@@ -270,8 +275,16 @@ def onCook(scriptOp):
             chans['P0'][idx] = _clamp(wx, bx_min + margin, bx_max - margin)
             chans['P1'][idx] = _clamp(wy, by_min + margin, by_max - margin)
             chans['P2'][idx] = _clamp(wz, bz_min + margin, bz_max - margin)
-            chans['v0'][idx] = base_svx + fan_vx
-            chans['v1'][idx] = base_svy + fan_vy
+            # Launch velocity = limb direction + fan, then rotated by a random
+            # speed-independent angle so the spray sheds in varied directions
+            # (smooth) instead of one tight axis-aligned stream.
+            vlx = base_svx + fan_vx
+            vly = base_svy + fan_vy
+            theta = _RNG.uniform(-1.0, 1.0) * spawn_ang_jitter
+            ct = math.cos(theta)
+            st = math.sin(theta)
+            chans['v0'][idx] = vlx * ct - vly * st
+            chans['v1'][idx] = vlx * st + vly * ct
             chans['v2'][idx] = svz
             chans['w'][idx]  = w_per
             # id stays the landmark index so per-limb colouring still works

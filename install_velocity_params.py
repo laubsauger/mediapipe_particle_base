@@ -162,7 +162,7 @@ add_float(render, 'Spawncount', 'Spawn Sub-emitters per Limb',
 # this is the half-width of that region in the direction of motion,
 # producing a "streak" shape when the limb is moving fast.
 add_float(render, 'Spawnspread', 'Wavefront Width at Full Speed (UV)',
-          0.08, 0.0, 0.3)
+          0.14, 0.0, 0.3)
 
 # Speed (UV/s) at which the region reaches its full Spawnspread extent.
 # Below it, size scales linearly with speed down to Spawnspreadmin.
@@ -178,7 +178,7 @@ add_float(render, 'Spawnspreadref', 'Wavefront Full-width Speed (UV/s)',
 # from a near-point; too large = always-visible cloud around every
 # limb even when still.
 add_float(render, 'Spawnspreadmin', 'Spawn Region Min (UV at rest)',
-          0.02, 0.0, 0.1)
+          0.05, 0.0, 0.1)
 
 # Ratio of perpendicular to along-velocity extent at speed. 0 = pure
 # along-velocity line (all sub-emitters on the motion axis), 1 = square
@@ -186,7 +186,7 @@ add_float(render, 'Spawnspreadmin', 'Spawn Region Min (UV at rest)',
 # with some width. This is what gives the emission shape its "streak vs
 # lump" feel during fast motion.
 add_float(render, 'Spawnperpratio', 'Spawn Perp/Along Ratio',
-          0.3, 0.0, 1.0)
+          0.6, 0.0, 1.0)
 
 # Multiplier on the limb's velocity when writing it to each particle's
 # StartPartvel at birth. 1.0 = particles launch at full limb speed
@@ -205,7 +205,13 @@ add_float(render, 'Spawnvelscale', 'Spawn Velocity Scale',
 # 0.5 = ~27° edge tilt (visible cone), 1.0 = ~45° (strong fan),
 # 1.5+ = explosive burst-outward.
 add_float(render, 'Spawnvelfan', 'Spawn Velocity Fan (0=parallel, 1=cone)',
-          0.8, 0.0, 2.0, clamp_max=False)
+          1.2, 0.0, 2.0, clamp_max=False)
+# Speed-independent angular jitter (radians) on each particle's launch
+# direction. The fan scales with limb speed (so slight motion = tight stream);
+# this spreads launch directions even at slow motion → soft shedding spray.
+# 0 = directional, 0.45 ≈ ±26° spread, higher = wider/fuzzier.
+add_float(render, 'Spawnangjitter', 'Spawn Angle Jitter (rad)',
+          0.45, 0.0, 1.57, clamp_max=False)
 
 # Velocity field splatter — base radius of each emitter's gaussian kernel
 # (in 0..1 UV space of the velocity-field TOP). Smaller = tighter blob per

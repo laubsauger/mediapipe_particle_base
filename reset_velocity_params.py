@@ -57,12 +57,13 @@ RENDERER = {
     'Burstgain':       12.0,
     # Emission region (2D velocity-aligned scatter)
     'Spawncount':      18,
-    'Spawnspread':     0.08,   # max along-velocity extent at full speed
+    'Spawnspread':     0.14,   # max along-velocity extent at full speed (enlarged area)
     'Spawnspreadref':  0.8,    # speed at which full size is reached
-    'Spawnspreadmin':  0.02,   # rest size (lump extent in both axes)
-    'Spawnperpratio':  0.3,    # perp/along aspect at speed (streak shape)
+    'Spawnspreadmin':  0.05,   # rest birth zone (enlarged so emission isn't from a point)
+    'Spawnperpratio':  0.6,    # perp/along aspect at speed (wider, rounder area)
     'Spawnvelscale':   0.12,   # soft initial launch (was flinging on slight motion)
-    'Spawnvelfan':     0.8,    # strong cone
+    'Spawnvelfan':     1.2,    # cone fan at speed
+    'Spawnangjitter':  0.45,   # speed-independent launch-angle jitter (soft shedding)
     # Flow field
     'Fieldradius':     0.05,   # tight splat
     'Fieldforce':      0.45,   # field push magnitude — softer so slight motion doesn't fling
