@@ -493,11 +493,7 @@ def update(state, samples, dt, params):
                 # No sample — decay envelopes, emit zeros.
                 x, y, z, vis, trust = 0.0, 0.0, 0.0, False, False
             out = update_landmark(st, x, y, z, vis, trust, dt, params)
-            # Per-person key for multi-person consumers; LEGACY non-prefixed
-            # alias for person 0 so existing single-person callers keep working.
             per_landmark['p%d:%s' % (person_id, lm)] = out
-            if person_id == 0:
-                per_landmark[lm] = out
             total_motion += out["speed"]
             total_burst  += out["burst"]
 
@@ -551,7 +547,7 @@ if __name__ == "__main__":
             per, glb = update(
                 state, {"left_wrist": (x, y, True)}, dt, params
             )
-            o = per["left_wrist"]
+            o = per["p0:left_wrist"]
             if i % 5 == 0 or i == n_frames - 1:
                 print(f"{i:>3} {x:>5.2f} {y:>5.2f} "
                       f"{o['speed']:>6.2f} {o['accel']:>7.2f} "
@@ -576,7 +572,7 @@ if __name__ == "__main__":
     print("    expected: out.x=0.80 out.y=0.50  (last good, not garbage)")
     for i in range(10):
         per, glb = update(state, {"left_wrist": (0.0, 1.0, False)}, dt, params)
-        o = per["left_wrist"]
+        o = per["p0:left_wrist"]
         print(f"  f{i}: out=({o['x']:.2f},{o['y']:.2f}) "
               f"burst={o['burst']:.3f} accel={o['accel']:.3f} "
               f"visible={o['visible']}")
@@ -598,16 +594,16 @@ if __name__ == "__main__":
     # Build up trusted continuous tracking at (0.80, 0.50).
     for _ in range(10):
         update(state_tele, {"left_wrist": (0.8, 0.5, True, True)}, dt, params)
-    burst_before = state_tele["left_wrist"]["burst"]
+    burst_before = state_tele[0]["left_wrist"]["burst"]
     # Inject one frame of glitch at (0.05, 0.95)
     per, _ = update(state_tele, {"left_wrist": (0.05, 0.95, True, True)}, dt, params)
-    o = per["left_wrist"]
+    o = per["p0:left_wrist"]
     print(f"  glitch frame: out=({o['x']:.2f},{o['y']:.2f}) burst={o['burst']:.3f}")
     assert abs(o["x"] - 0.8) < 1e-6, "intra-continuity teleport should be rejected"
     assert o["burst"] <= burst_before + 1e-6, "teleport should NOT fire a burst"
     # Next frame back at a plausible position — should re-seed and accept.
     per, _ = update(state_tele, {"left_wrist": (0.81, 0.51, True, True)}, dt, params)
-    o = per["left_wrist"]
+    o = per["p0:left_wrist"]
     print(f"  recovery frame: out=({o['x']:.2f},{o['y']:.2f}) (tracking resumed)")
     assert abs(o["x"] - 0.81) < 1e-6, "stream should recover on next non-glitched frame"
 
@@ -625,7 +621,7 @@ if __name__ == "__main__":
         per, _ = update(state2,
                         {"left_wrist": (dx_val, 0.95, True, False)},
                         dt, params)
-        o = per["left_wrist"]
+        o = per["p0:left_wrist"]
         print(f"  f{i}: raw_in=({dx_val:.2f}, 0.95)  out=({o['x']:.2f},{o['y']:.2f})  "
               f"visible={o['visible']}")
         assert abs(o["x"] - 0.8) < 1e-6, "marginal frame leaked drifting x"
@@ -634,7 +630,7 @@ if __name__ == "__main__":
 
     # Then fully invisible — position should still be 0.8, visible=0
     per, _ = update(state2, {"left_wrist": (0.0, 1.0, False, False)}, dt, params)
-    o = per["left_wrist"]
+    o = per["p0:left_wrist"]
     print(f"  invisible: out=({o['x']:.2f},{o['y']:.2f}) visible={o['visible']}")
     assert abs(o["x"] - 0.8) < 1e-6 and o["visible"] == 0.0
 
@@ -653,7 +649,7 @@ if __name__ == "__main__":
         update(state3, {"left_wrist": (0.0, 1.0, False, False)}, dt, params)
     # Reappear at a totally different position
     per, _ = update(state3, {"left_wrist": (0.2, 0.3, True, True)}, dt, params)
-    o = per["left_wrist"]
+    o = per["p0:left_wrist"]
     print(f"  first trusted frame after dropout: out=({o['x']:.2f},{o['y']:.2f}) "
           f"visible={o['visible']}")
     assert abs(o["x"] - 0.2) < 1e-6, (
@@ -664,7 +660,7 @@ if __name__ == "__main__":
         per, _ = update(state3,
                         {"left_wrist": (0.2 + 0.02 * i, 0.3, True, True)},
                         dt, params)
-        o = per["left_wrist"]
+        o = per["p0:left_wrist"]
         print(f"  follow-up f{i}: out=({o['x']:.2f},{o['y']:.2f})")
         expected_x = 0.2 + 0.02 * i
         assert abs(o["x"] - expected_x) < 1e-6, "follow-up not tracking"
@@ -687,7 +683,7 @@ if __name__ == "__main__":
     reacq = [(0.03, 0.40), (0.35, 0.40), (0.36, 0.40), (0.37, 0.40), (0.38, 0.40)]
     for i, (rx, ry) in enumerate(reacq):
         per, _ = update(state4, {"left_wrist": (rx, ry, True, True)}, dt, params)
-        o = per["left_wrist"]
+        o = per["p0:left_wrist"]
         print(f"  f{i}: raw=({rx:.2f},{ry:.2f}) out=({o['x']:.2f},{o['y']:.2f}) "
               f"settle={state4['left_wrist']['settle_counter']}")
     # After the settle period we want to be tracking the real joint, NOT
@@ -704,7 +700,7 @@ if __name__ == "__main__":
     inf = float('inf')
     # Feed NaN/Inf directly through update() — should NOT poison state.
     per, glb = update(state5, {"left_wrist": (nan, inf, True, True)}, dt, params)
-    o = per["left_wrist"]
+    o = per["p0:left_wrist"]
     print(f"  after NaN input: out=({o['x']:.2f},{o['y']:.2f}) "
           f"speed={o['speed']:.3f} accel={o['accel']:.3f}")
     for k, v in o.items():
@@ -712,7 +708,7 @@ if __name__ == "__main__":
     # Follow up with clean frames; pipeline should recover.
     for _ in range(3):
         per, _ = update(state5, {"left_wrist": (0.5, 0.5, True, True)}, dt, params)
-    o = per["left_wrist"]
+    o = per["p0:left_wrist"]
     for k in ("x", "y", "vx", "vy", "speed", "accel", "emit", "burst"):
         assert math.isfinite(float(o[k])), f"{k} stayed non-finite after recovery"
     print(f"  recovered cleanly: vx={o['vx']:.4f} accel={o['accel']:.4f}")
@@ -731,7 +727,7 @@ if __name__ == "__main__":
         zv = -0.1 * (i + 1)
         per, _ = update(state6,
                         {"left_wrist": (0.5, 0.5, zv, True, True)}, dt, params)
-        o = per["left_wrist"]
+        o = per["p0:left_wrist"]
         print(f"  f{i}: z={zv:+.2f} vz={o['vz']:+.3f} vx={o['vx']:+.3f} "
               f"speed={o['speed']:.3f} burst={o['burst']:.3f}")
     # Expect vz negative (moving toward camera), vx/vy ~0.
@@ -752,7 +748,7 @@ if __name__ == "__main__":
         per, _ = update(state_xy,
                         {"wrist": (0.5 + 0.04 * (5 + i), 0.5, 0.0, True, True)},
                         dt, params)
-        xy_speed = per["wrist"]["speed"]
+        xy_speed = per["p0:wrist"]["speed"]
 
     # Same magnitude of motion but purely in z.
     state_z = new_state(("wrist",))
@@ -764,7 +760,7 @@ if __name__ == "__main__":
         per, _ = update(state_z,
                         {"wrist": (0.5, 0.5, 0.04 * (5 + i), True, True)},
                         dt, params)
-        z_speed = per["wrist"]["speed"]
+        z_speed = per["p0:wrist"]["speed"]
     print(f"  xy-only speed: {xy_speed:.3f}")
     print(f"  z-only  speed: {z_speed:.3f}   (expect ≈ xy_speed * z_weight "
           f"= {xy_speed * params['z_speed_weight']:.3f})")
