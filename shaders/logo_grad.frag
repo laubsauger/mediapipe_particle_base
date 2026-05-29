@@ -46,10 +46,11 @@ void main()
     // letters, instead of all sliding to the global centroid. gB is a gentle
     // medium-range assist only — too much of it collapses everything to the
     // middle (the wordmark's center of mass).
-    // Scaled so a human-range Logoattract (~0.5) gives a reasonable pull — the
-    // signed-float gradient is large (edges hit ±several), so the raw weights
-    // are kept small. Ratio (gB:gS = ~1:2.5) keeps it sharp/local-dominant.
-    vec2 grad = (gB * 0.12 + gS * 0.30) * uGradamp;
+    // Broad-dominant gradient — gB does the long-range gather, a SMALL gS term
+    // gives just enough local definition for the shape to read once particles
+    // are inside (without strongly tracing line-art / clinging to edges). Mask
+    // uses the SHARP luma so the trap and vessel-charge keep the shape sharp.
+    vec2 grad = (gB * 0.55) * uGradamp;   // pure broad pull — particles slip into the shape, no edge tracing
     float mask = lumaS(uv);
     fragColor = vec4(grad, 0.0, mask);
 }

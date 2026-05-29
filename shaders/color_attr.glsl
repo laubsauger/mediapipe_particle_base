@@ -59,6 +59,7 @@ uniform float uLogotrans;       // 0..1 logo-swap shockwave: fades the logo glow
 uniform float uLogoburstcolor;  // swap-time glow-up amount (HDR flare through Bloom)
 uniform float uLogohueoffset;   // PERSISTENT hue offset (radians) — accumulates per swap, holds
 uniform float uPersonhuestep;   // hue (rad) added per PERSON index so each body wears a distinct tint
+uniform float uLogocharge;      // "charged-in-vessel" look — inside particles brighter + hue-shifted, softened mask
 
 // Soup palette + ember colours come from COMP color pars (uniforms) so PRESETS
 // can recolor the whole look. No TOP sampler (that crashes a GLSL POP).
@@ -158,6 +159,17 @@ void main()
         float h      = fract(sin(float(TDIn_PartId()) * 12.9898) * 43758.5453);
         float pvar   = 0.65 + 0.35 * h;
         outc = rampC * bright * env * depthf * pvar;
+
+        // VESSEL CHARGE: particles whose position falls on the logo mask are
+        // the "contents" of the vessel — visually distinguish them from the bg
+        // soup with extra brightness and a slight hue offset. Mask is softened
+        // via smoothstep so there's no hard outline bleeding into the output;
+        // contribution fades smoothly toward the mask edges.
+        float inside = smoothstep(0.10, 0.55, TDIn_logodata().w) * uLogoamt;
+        if (inside > 0.0 && uLogocharge > 0.0) {
+            outc = hueShift(outc, 0.5 * inside * uLogocharge);
+            outc *= 1.0 + inside * uLogocharge * 1.3;
+        }
     } else {
         // ---- MOVEMENT: per-LIMB palette + per-PERSON hue + Embers age ramp.
         // Lid encodes BOTH person and limb: Lid = person*5 + limb_index. Each
@@ -171,13 +183,18 @@ void main()
         ident       = hueShift(ident, float(pid) * uPersonhuestep);
         vec3  col   = mix(ident, uAccent, clamp(mv, 0.0, uMaxBlend));
 
-        // Birth flash GATED BY SPEED: at mv≈0 the particle is born at its (LDR,
-        // sub-1.0) identity color → no bloom, no white. Only fast particles
-        // (mv→1) flash the HDR ember-hot color that the Bloom TOP catches.
-        vec3 hot = mix(col, uEmberHot, mv);
+        // Birth glow-up: just a mild HDR multiplier on the limb COLOUR. Keep
+        // the boost modest so ACES tonemap doesn't desaturate it to white, and
+        // so the trail feedback loop (which keeps re-blooming bright pixels)
+        // doesn't accumulate to white over many frames.
+        vec3 hot = col * (1.0 + 0.5 * mv);
+        // Hot/glow flash is BRIEF — long enough to feel an ember pop, short
+        // enough that COLOUR identity reads almost immediately. Was 0.15
+        // (≈0.75s of life) which combined with trail feedback washed the
+        // whole emission white for ~3s. 0.04 ≈ 0.2s at 5s life.
         vec3 ageCol;
-        if (agef < 0.15)      ageCol = mix(hot, col,       smoothstep(0.0, 0.15, agef));
-        else if (agef < 0.60) ageCol = mix(col, uEmberMid, smoothstep(0.15, 0.60, agef));
+        if (agef < 0.04)      ageCol = mix(hot, col,       smoothstep(0.0, 0.04, agef));
+        else if (agef < 0.60) ageCol = mix(col, uEmberMid, smoothstep(0.04, 0.60, agef));
         else                  ageCol = mix(uEmberMid, uEmberOld, smoothstep(0.60, 1.00, agef));
         float bright = pow(1.0 - agef, max(uAgefalloff, 0.01));  // peaks at birth
         ageCol *= bright;
