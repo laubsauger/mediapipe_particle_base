@@ -1,1 +1,18 @@
 Backup/
+
+# Third-party MediaPipe tox (172 MB — too large for GitHub + we don't
+# redistribute it). Drop it into toxes/ manually. The pipeline accepts ANY pose
+# source via the sensor adapter layer; see docs/sensor_contract.md for the
+# canonical channel contract (MediaPipe, Kinect, Orbbec, OSC, …).
+toxes/MediaPipe.tox
+
+# Crash recovery + autosave artefacts (per-session, not project state)
+*_crash.*.toe
+*.toe.lock
+.DS_Store
+
+# Test footage (user-specific recordings, not project state)
+*.mov
+*.mp4
+!docs/**/*.mov
+!docs/**/*.mp4
