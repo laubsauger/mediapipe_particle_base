@@ -419,7 +419,7 @@ add_float(render, 'Velbloom', 'Velocity Bloom Boost',
 # Kept below Bloomthreshold so the calm soup does NOT bloom (only movement /
 # HDR embers do). Soup palette peaks ~0.86, so 1.0 keeps max ~0.86 < threshold.
 add_float(render, 'Soupbright', 'Soup Brightness',
-          1.0, 0.0, 5.0, clamp_max=False)
+          0.65, 0.0, 5.0, clamp_max=False)
 # Base turbulence: gentle curl drift applied DIRECTLY to soup particles in
 # bounds_reflect (bypassing the movement force-curve, which would crush it).
 # This is the idle swirl when no pose is present. Keep low for a calm soup;
@@ -502,6 +502,13 @@ look = _page('Look')
 # --- Preset selector (applied by apply_preset parexec via presets.py) ------
 add_menu(look, 'Preset', 'Preset', ['Cosmic', 'Ember', 'Ink', 'Neon'], 'Cosmic')
 add_pulse(look, 'Applypreset', 'Apply Preset')
+
+# --- Logo attractor (passive-state hero; samples null_logo) ----------------
+# Off / Always / Standby (fades in when no pose, out when a person appears).
+add_menu(look, 'Logomode', 'Logo Mode', ['Off', 'Standby', 'Always'], 'Standby')
+add_float(look, 'Logoattract', 'Logo Attract (pull into shape)', 0.5, 0.0, 4.0, clamp_max=False)
+add_float(look, 'Logobright', 'Logo Brightness (glow on shape)', 1.0, 0.0, 4.0, clamp_max=False)
+add_float(look, 'Logofade', 'Logo Fade (standby crossfade s)', 1.5, 0.05, 10.0, clamp_max=False)
 
 # --- Palette (drives color_attr uniforms; presets recolor via these) -------
 # Soup = cyclic 3-stop gradient A→B→C. Keep peaks below Bloomthreshold so the
