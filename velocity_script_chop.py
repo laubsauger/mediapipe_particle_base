@@ -140,6 +140,14 @@ def onCook(scriptOp):
         "max_jump":        par.Maxjump.eval() if hasattr(par, 'Maxjump') else 0.3,
         "settle_frames":   int(par.Settleframes.eval()) if hasattr(par, 'Settleframes') else 5,
         "z_speed_weight":  par.Zspeedweight.eval() if hasattr(par, 'Zspeedweight') else 0.35,
+        # Aspect = box width/height (16:9). MediaPipe normalises x by image
+        # WIDTH and y by HEIGHT, so equal physical motion gives a smaller vx
+        # than vy → a vertical bias in velocity/emission. Scaling vx by aspect
+        # makes the velocity isotropic (horizontal motion reads as strong as
+        # vertical). 1.0 = no correction.
+        "aspect": ((par.Boundsmaxx.eval() / par.Boundsmaxy.eval())
+                   if (hasattr(par, 'Boundsmaxx') and hasattr(par, 'Boundsmaxy')
+                       and par.Boundsmaxy.eval()) else 1.0),
     }
 
     # ---- Build samples dict ---------------------------------------------

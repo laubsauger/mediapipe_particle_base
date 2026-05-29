@@ -63,6 +63,7 @@ uniform float uLogoattract;  // soup pull toward the logo shape (gradient force)
 uniform float uLogoamt;      // 0..1 standby fade (op('logo_amt')['amt']); gates logo
 uniform float uLogotrap;     // velocity damping ON the logo mask (sticks soup → fills shape)
 uniform float uLogovigor;    // liveliness of contained particles (0=static decal, 1=churning vessel)
+uniform float uLogotrans;    // 0..1 swap shockwave: pull inverts to push, trap releases
 uniform float uBodypush;     // repel strength: particles parted by the skeleton
 uniform float uBodydrag;     // advect strength: particles dragged along limb motion
 
@@ -170,7 +171,11 @@ void main()
         //    it isn't throttled. The gradient is ~0 inside the bright plateau
         //    (contents move freely) and strong at the edges (escaping particles
         //    get pushed back in) → the shape behaves like a container.
-        vel.xy += logo.xy * uLogoattract * uLogoamt;
+        //    SWAP SHOCKWAVE: as uLogotrans→1 the attract inverts to a PUSH
+        //    (1 - 2·trans), so on a logo change the soup blows outward off the
+        //    old shape, hiding the swap, then reforms onto the new one.
+        float att = uLogoattract * (1.0 - 2.0 * uLogotrans);
+        vel.xy += logo.xy * att * uLogoamt;
 
         // 2. Keep the CONTENTS ALIVE: inject extra (un-capped) 3D curl swirl
         //    ONLY inside the shape, so contained particles tumble like a filled
@@ -180,8 +185,10 @@ void main()
 
         // 3. Gentle settle (NOT a freeze) so speed doesn't run away — weakened
         //    by vigor so the swirl persists (vigor 0 → sticky/static like a
-        //    decal; vigor 1 → lively churn inside the shape).
-        vel.xy *= (1.0 - inside * uLogotrap * (1.0 - 0.7 * uLogovigor));
+        //    decal; vigor 1 → lively churn inside the shape). RELEASED during a
+        //    swap (1 - trans) so particles are free to blow outward.
+        vel.xy *= (1.0 - inside * uLogotrap * (1.0 - 0.7 * uLogovigor)
+                        * (1.0 - uLogotrans));
 
         // 4. Overall logo-speed limit, with headroom for the vessel swirl so
         //    step 2 isn't immediately clamped away.

@@ -553,6 +553,13 @@ add_float(look, 'Logotrap', 'Logo Trap (stick on shape)', 0.9, 0.0, 1.0)
 # (they freeze on the mask), 1 = churning vessel (un-capped 3D curl swirl inside
 # the shape, walled in by the gradient edge). The shape stays legible either way.
 add_float(look, 'Logovigor', 'Logo Vigor (vessel liveliness)', 0.5, 0.0, 1.0)
+# Auto-cycle between the two logos wired into switch_logo, with a particle
+# "shockwave" at each swap (logo_cycle Script CHOP → switch_logo index +
+# bounds_reflect uLogotrans). The attract briefly inverts to a push so the soup
+# blows off the old shape, then reforms onto the new one.
+add_toggle(look, 'Logocycle', 'Logo Auto-Cycle', True)
+add_float(look, 'Logocycletime', 'Logo Cycle Time (s)', 12.0, 1.0, 120.0, clamp_max=False)
+add_float(look, 'Logoswitchdur', 'Logo Switch Shockwave (s)', 1.5, 0.2, 5.0, clamp_max=False)
 add_float(look, 'Logofade', 'Logo Fade (standby crossfade s)', 1.5, 0.05, 10.0, clamp_max=False)
 
 # --- Palette (drives color_attr uniforms; presets recolor via these) -------

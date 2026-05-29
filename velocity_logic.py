@@ -368,7 +368,12 @@ def update_landmark(sample, x, y, z, visible, trusted, dt, params):
         sample["accel"] = 0.0
         return _emit(sample, x, y, z, visible, params)
 
-    raw_vx = (x - sample["prev_x"]) / dt
+    # x is MediaPipe-normalised by image WIDTH, y by HEIGHT, so on a 16:9 feed
+    # equal physical motion gives a smaller vx than vy → a vertical bias in
+    # velocity/emission/field. Scale vx by aspect (box width/height) so the
+    # velocity is isotropic. aspect defaults to 1.0 (no-op) for the self-tests.
+    aspect = params.get("aspect", 1.0)
+    raw_vx = (x - sample["prev_x"]) / dt * aspect
     raw_vy = (y - sample["prev_y"]) / dt
     raw_vz = (z - sample["prev_z"]) / dt
 

@@ -148,6 +148,9 @@ RENDERER = {
     'Logogradamp':     1.0,    # logo gradient amplification
     'Logotrap':        0.9,    # velocity damping on the mask (soup STICKS → fills the shape)
     'Logovigor':       0.5,    # liveliness inside the shape (0=static decal, 1=churning vessel)
+    'Logocycle':       1,      # auto-cycle between the two switch_logo inputs
+    'Logocycletime':   12.0,   # seconds a logo holds before the next swap
+    'Logoswitchdur':   1.5,    # swap shockwave duration (particles blow out + reform)
 }
 
 

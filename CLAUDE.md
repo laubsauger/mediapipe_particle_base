@@ -458,6 +458,19 @@ If the user says "X is broken", here's where to start looking:
 - **Parameter Execute DAT fires DEFERRED** (next frame), not synchronously — a same-script readback right after setting the watched par sees pre-callback values. Check the log / re-read next call.
 - **Billboard sprites:** Rectangle SOP `orient=xy` faces the −Z camera (simplest, no per-instance billboard needed for a thin z-slab); `orient=cam` mis-transformed the instances. `texture=face` needed to generate UVs for the colormap.
 
+**⚠️ NEVER extract a full Particle/POP point stream to a CHOP (hangs/crashes TD).**
+A `poptoCHOP` (or CHOP-to-DAT, etc.) with `extract=points` on `particle1`/
+`render_null`/`force_null` pulls ALL ~30k–150k points × attributes back from the
+GPU each cook → a massive synchronous readback that **freezes TD (fps 0) or
+crashes it** (this caused a real crash + several apparent "borked soup" scares;
+the `maxpoints` par doesn't exist on `poptoCHOP`, so there's no quick cap). For
+diagnostics use instead: `op.numPoints` (cheap), a **TOP** `numpyArray()` (one
+readback of a render/field), or if you truly need point values, a `poptoCHOP`
+with heavy **thinning** (`thinstep` large, or `thinrandom`) so it grabs ≤a few
+hundred. Always `destroy()` the temp op in the SAME call. Symptom: `fps 0
+critical` right after creating a temp `_`-prefixed POP op. (Also: `fps 0` can
+just mean the user pressed **Pause** — check before assuming a hang.)
+
 **⚠️ GLSL POP sampler crash (cost a TD crash + unloadable saves):** never let a synced GLSL POP/TOP reference a `sampler2D` (or `texture()`) before that sampler is bound to a real TOP on the op's Samplers page. Sampling an **unbound** sampler in a compute POP is a GPU device fault that crashes TD — and because the shader is a synced file, every save then re-crashes on load until the file is fixed on disk. If you want a Ramp TOP palette, create + bind it FIRST, then edit the shader to sample it. (The soup color ramp is currently an **in-shader procedural cosine palette** in `color_attr.glsl` — no sampler — for exactly this reason.) Plain float/vec uniforms are safe unbound (default 0).
 | Particles drifting in z when only moving horizontally | `Zforceweight` (renderer side, scales `vz` in both `emitters_tex_script.py` and `emitters_chop_script.py`) |
 | Particles biased toward one corner | scatter-list mean centering in `emitters_chop_script.py` + `Curlscale` (must be < cloud extent) |
