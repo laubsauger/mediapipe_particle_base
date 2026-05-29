@@ -1477,10 +1477,51 @@ and movement embers from **`uEmberHot/Mid/Old`** — all bound to COMP color par
 - `Preset` (menu: Cosmic / Ember / Ink / Neon) + `Applypreset` (pulse).
 - `preset_exec` (Parameter Execute DAT, synced to `apply_preset.py`) watches
   those and calls `presets.apply(comp, name)` from **`presets.py`** — each preset
-  a bundle of palette + post-FX + motion/density values. *(Parexec fires
-  deferred — next frame, not synchronously.)*
+  a **LOOK-only** bundle: palette + post-FX (bloom / streak / grade / lens) +
+  trail length. *(Parexec fires deferred — next frame, not synchronously.)*
+- **Presets do NOT touch physics** (soup speed/turbulence, curl, ambient rate,
+  particle size, field force, spawn). Those are hand-tuned and live in
+  `reset_velocity_params.py`'s `RENDERER` dict; a mood switch leaves them alone
+  so it can't silently undo motion tuning. The four moods read distinctly through
+  color + glow + grade anyway. (Want mood-driven physics? Add the keys back in
+  `presets.py` — explicitly.)
 - Edit/extend looks in `presets.py` (`python3 presets.py` self-tests; live
   `importlib.reload` on apply). `reset_velocity_params.py` applies `Cosmic`.
+
+### Logo attractor + brighten (standby screensaver)
+The passive (no-pose) state can resolve into a logo: the soup is pulled into the
+logo's shape **and** lit there, so the install reads as "a logo emerging from the
+particle field" when no one's present, and dissolves back to free soup when a
+person steps in.
+
+Source = **`/project1/null_logo`** (a TOP whose luminance is the logo shape).
+Crash-safe sampling only — **no `sampler2D` in a GLSL POP**:
+
+1. **`/project1/logo_grad`** — GLSL **TOP** (`shaders/logo_grad.frag`, fed by
+   `null_logo`): RGB = ∇(luma) (gradient pointing toward the bright shape =
+   attractor direction), A = luma (the mask). Fragment shader sampling
+   `sTD2DInputs[0]` — safe.
+2. **`logo_force_pop`** — Lookup Texture POP in the **force chain**
+   (`p_to_uv → logo_force_pop → field_sample`), `top = /project1/logo_grad`,
+   samples at each particle's `Puv` → writes a **4-comp `logodata`** attribute
+   (`channelmask = 15` / RGBA, `attrnumcomps = 4`). `.xy` = attract dir, `.w` =
+   mask. `bounds_reflect` reads it: soup `vel += logodata.xy · Logoattract ·
+   Logoamt` (capped by `Soupmaxspeed`, so it's a gentle settle, not a yank).
+3. **`c_p_to_uv → c_logo_lookup`** — a clone of the same two ops inserted in the
+   **render chain** (`particle1 → c_p_to_uv → c_logo_lookup → color_attr`) so
+   `color_attr` also sees `logodata` (the force-chain copy doesn't reach the
+   color stream — separate POP branch). `color_attr` brightens soup by
+   `logodata.w · Logobright · Logoamt`.
+4. **`logo_amt`** — Script CHOP (synced to `logo_amt.py`) outputs `amt` (0..1),
+   bound into both shaders' `uLogoamt`. `Logomode`: `Off`→0, `Always`→1,
+   `Standby`→fades to 1 when no pose (`sum(lag1 *:visible) < 0.5`), 0 when a
+   person appears, smoothed over `Logofade` s.
+
+**Look-page pars:** `Logomode` (Off/Standby/Always, default Standby),
+`Logoattract` (0.5), `Logobright` (1.0), `Logofade` (1.5 s). To swap the logo,
+repoint `null_logo`'s source (the logo PNG lives in the project `Images/` folder,
+referenced relative — never an absolute path). Verify by setting `Logomode =
+Always`: the soup should brighten + condense into the wordmark within ~1–2 s.
 
 ## Forking for another experiment
 

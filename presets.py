@@ -14,6 +14,15 @@ Applied via `apply_preset.py` (a Parameter Execute DAT) when the COMP's
 Values are float, or (r, g, b) tuples for RGB pars — `apply()` writes the
 `<name>r/g/b` component pars for tuples.
 
+SCOPE — LOOK ONLY. Presets set palette + post-FX (bloom / streak / grade /
+lens) + trail length. They DELIBERATELY do NOT touch the soup/particle PHYSICS
+(`Soupmaxspeed`, `Soupturb*`, `Curlgain`, `Ambientrate`/`points`, `Particlesize`,
+`Fieldforce`, `Spawnvelscale`, clustering, bounds, damping, …). Those were tuned
+by hand over many iterations; a mood switch must never silently undo that. The
+four moods differ purely through color + glow + grade, which is plenty. (If you
+want mood-driven physics later, add the keys back here — but make it an explicit,
+documented choice, not a surprise.)
+
 Tuning note: keep soup colors' peak channel below `Bloomthreshold` (so the
 calm soup doesn't bloom); `Emberhot` is intentionally HDR (> 1) so movement
 births bloom. `Feedbackfade` is trail length — keep < ~0.8 to avoid additive
@@ -21,6 +30,7 @@ trail blow-out.
 """
 
 # Each preset shares the same key set so switching is a clean crossfade of values.
+# LOOK-ONLY (see SCOPE above): colors + post-FX + trail length. No physics.
 PRESETS = {
     # Deep space — cool blues/violets/magenta, soft glowing dust, calm.
     'Cosmic': {
@@ -28,14 +38,11 @@ PRESETS = {
         'Soupcolc': (0.16, 0.58, 0.85),
         'Emberhot': (1.5, 1.7, 2.4), 'Embermid': (0.35, 0.55, 1.5),
         'Emberold': (0.08, 0.12, 0.45),
-        'Soupbright': 0.9, 'Soupmaxspeed': 0.006, 'Curlgain': 0.05,
-        'Ambientrate': 6000.0, 'Particlesize': 0.004,
         'Bloomstrength': 1.2, 'Bloomthreshold': 1.05, 'Feedbackfade': 0.55,
         'Streakenable': 1.0, 'Streakintensity': 0.5, 'Streaklength': 150.0,
         'Exposure': 1.0, 'Contrast': 1.05, 'Saturation': 1.15,
         'Tint': (0.95, 0.98, 1.12),
         'Vignette': 0.45, 'Chromab': 0.0025, 'Grain': 0.03,
-        'Fieldforce': 0.45, 'Spawnvelscale': 0.12,
     },
     # Fire — white-hot cores → orange → red embers, sparky, energetic.
     'Ember': {
@@ -43,14 +50,11 @@ PRESETS = {
         'Soupcolc': (0.40, 0.08, 0.10),
         'Emberhot': (2.4, 1.8, 1.0), 'Embermid': (1.4, 0.5, 0.08),
         'Emberold': (0.5, 0.05, 0.02),
-        'Soupbright': 1.0, 'Soupmaxspeed': 0.012, 'Curlgain': 0.08,
-        'Ambientrate': 5000.0, 'Particlesize': 0.0045,
         'Bloomstrength': 1.6, 'Bloomthreshold': 0.95, 'Feedbackfade': 0.7,
         'Streakenable': 1.0, 'Streakintensity': 0.8, 'Streaklength': 110.0,
         'Exposure': 1.05, 'Contrast': 1.1, 'Saturation': 1.25,
         'Tint': (1.12, 0.96, 0.85),
         'Vignette': 0.5, 'Chromab': 0.003, 'Grain': 0.04,
-        'Fieldforce': 0.55, 'Spawnvelscale': 0.16,
     },
     # Ink / fluid — near-monochrome, painterly, smoky, high-contrast, calm.
     'Ink': {
@@ -58,14 +62,11 @@ PRESETS = {
         'Soupcolc': (0.10, 0.14, 0.20),
         'Emberhot': (1.8, 1.9, 2.0), 'Embermid': (0.6, 0.65, 0.7),
         'Emberold': (0.12, 0.13, 0.16),
-        'Soupbright': 1.1, 'Soupmaxspeed': 0.005, 'Curlgain': 0.06,
-        'Ambientrate': 6500.0, 'Particlesize': 0.0038,
         'Bloomstrength': 0.7, 'Bloomthreshold': 1.3, 'Feedbackfade': 0.78,
         'Streakenable': 0.0, 'Streakintensity': 0.0, 'Streaklength': 80.0,
         'Exposure': 1.0, 'Contrast': 1.25, 'Saturation': 0.35,
         'Tint': (1.0, 1.0, 1.02),
         'Vignette': 0.55, 'Chromab': 0.0015, 'Grain': 0.05,
-        'Fieldforce': 0.4, 'Spawnvelscale': 0.1,
     },
     # Neon / cyber — saturated electric cyan/magenta/lime, punchy, strong glow.
     'Neon': {
@@ -73,14 +74,11 @@ PRESETS = {
         'Soupcolc': (0.45, 0.75, 0.10),
         'Emberhot': (2.2, 2.2, 2.4), 'Embermid': (0.1, 1.2, 1.0),
         'Emberold': (0.5, 0.05, 0.5),
-        'Soupbright': 1.0, 'Soupmaxspeed': 0.01, 'Curlgain': 0.07,
-        'Ambientrate': 6000.0, 'Particlesize': 0.004,
         'Bloomstrength': 1.8, 'Bloomthreshold': 0.9, 'Feedbackfade': 0.68,
         'Streakenable': 1.0, 'Streakintensity': 1.1, 'Streaklength': 180.0,
         'Exposure': 1.05, 'Contrast': 1.15, 'Saturation': 1.5,
         'Tint': (1.0, 1.0, 1.0),
         'Vignette': 0.4, 'Chromab': 0.006, 'Grain': 0.025,
-        'Fieldforce': 0.5, 'Spawnvelscale': 0.14,
     },
 }
 

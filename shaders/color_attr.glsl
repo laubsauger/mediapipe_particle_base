@@ -51,6 +51,9 @@ uniform float uSoupspeedref;    // soup speed mapped to "fast" (velocity look)
 uniform float uSoupvelbloom;    // fast-soup brightness/bloom boost
 uniform float uSoupcolorscale;  // spatial frequency of the color gradient (bands across the box)
 uniform float uDepthdim;        // how much to dim particles toward the back (fake DoF / depth)
+uniform float uLogobright;      // extra brightness for soup sitting on the logo mask
+uniform float uLogoamt;         // 0..1 standby fade (op('logo_amt')['amt']); gates logo
+uniform float uVelref;          // movement speed mapped to full hot/bloom (slow stays dim)
 
 // Soup palette + ember colours come from COMP color pars (uniforms) so PRESETS
 // can recolor the whole look. No TOP sampler (that crashes a GLSL POP).
@@ -117,6 +120,10 @@ void main()
         //   particles read differently and pose interaction "pops".
         float sf     = clamp(speed / max(uSoupspeedref, 1e-4), 0.0, 1.0);
         float bright = uSoupbright * (1.0 + sf * uSoupvelbloom);
+        // logo brighten (standby): soup particles that have drifted onto the
+        // logo's bright mask glow harder, so the shape reads boldly out of the
+        // cloud. .w = luma mask from c_logo_lookup; uLogoamt fades with Logomode.
+        bright += TDIn_logodata().w * uLogobright * uLogoamt;
         // depth cue (fake DoF): particles toward the back of the box (−z) are
         //   dimmer, so the field has depth instead of a flat even mess.
         //   z range ≈ [-0.15, +0.15]; +z is nearer the camera.
@@ -128,19 +135,30 @@ void main()
         outc = rampC * bright * env * depthf * pvar;
     } else {
         // ---- MOVEMENT: per-limb palette + velocity accent + Embers age ramp.
+        // Speed is normalised to uVelref. Movement PartVel is small (~0.01..0.13
+        // box-units), so a small ref (~0.08) maps a brisk swipe to "full". The
+        // whole intensity scales with mv so SLOW emission stays dim and colored
+        // instead of blowing out to white — the old code flashed the HDR
+        // uEmberHot at *every* birth regardless of speed.
+        float mv    = clamp(speed / max(uVelref, 1e-4), 0.0, 1.0);
         int   k     = ((lid % 5) + 5) % 5;
         vec3  ident = uBase + kPalette[k];
-        float tv    = clamp(speed * uVelGain, 0.0, uMaxBlend);
-        vec3  col   = mix(ident, uAccent, tv);
+        vec3  col   = mix(ident, uAccent, clamp(mv, 0.0, uMaxBlend));
 
+        // Birth flash GATED BY SPEED: at mv≈0 the particle is born at its (LDR,
+        // sub-1.0) identity color → no bloom, no white. Only fast particles
+        // (mv→1) flash the HDR ember-hot color that the Bloom TOP catches.
+        vec3 hot = mix(col, uEmberHot, mv);
         vec3 ageCol;
-        if (agef < 0.15)      ageCol = mix(uEmberHot, col,       smoothstep(0.0, 0.15, agef));
-        else if (agef < 0.60) ageCol = mix(col,       uEmberMid, smoothstep(0.15, 0.60, agef));
-        else                  ageCol = mix(uEmberMid,  uEmberOld, smoothstep(0.60, 1.00, agef));
+        if (agef < 0.15)      ageCol = mix(hot, col,       smoothstep(0.0, 0.15, agef));
+        else if (agef < 0.60) ageCol = mix(col, uEmberMid, smoothstep(0.15, 0.60, agef));
+        else                  ageCol = mix(uEmberMid, uEmberOld, smoothstep(0.60, 1.00, agef));
         float bright = pow(1.0 - agef, max(uAgefalloff, 0.01));  // peaks at birth
         ageCol *= bright;
 
-        outc = mix(col, ageCol, clamp(uAgegradient, 0.0, 1.0));
+        // Movement brightness also scales with speed so a dense slow emission
+        // can't additively sum to a white wash: dim births, dim cloud.
+        outc = mix(col, ageCol, clamp(uAgegradient, 0.0, 1.0)) * (0.25 + 0.75 * mv);
     }
 
     // velocity bloom: push fast particles into HDR so Bloom catches them.

@@ -59,6 +59,8 @@ uniform float uSoupturb;     // gentle base curl drift for ambient soup (Lid>=5)
 uniform float uSoupmaxspeed; // hard cap on idle soup speed (calm soup)
 uniform float uSoupturb2;    // strength of the broad/slow second curl layer
 uniform float uSouplayermix; // fraction of soup on layer B (broad) vs A (fine)
+uniform float uLogoattract;  // soup pull toward the logo shape (gradient force)
+uniform float uLogoamt;      // 0..1 standby fade (op('logo_amt')['amt']); gates logo
 
 void main()
 {
@@ -71,6 +73,7 @@ void main()
     int  lid   = int(TDIn_Lid());
     vec3 curl  = TDIn_NoiseCurl().xyz;   // fine layer (curl_noise)
     vec3 curl2 = TDIn_NoiseCurl2().xyz;  // broad/slow layer (curl_noise2)
+    vec4 logo  = TDIn_logodata();        // .xy = ∇luma (attractor dir), .w = mask
 
     // NaN/Inf guard. NaN P fed into instancing transforms or texture lookups
     // can crash the Vulkan device outright. Clamp to zero here so a single
@@ -126,6 +129,12 @@ void main()
         float h = fract(sin(float(TDIn_PartId()) * 91.17) * 43758.5453);
         if (h < uSouplayermix) vel += curl2 * uSoupturb2;
         else                   vel += curl  * uSoupturb;
+
+        // Logo attractor (standby): pull soup up the logo's luma gradient toward
+        // its bright shape, so the cloud condenses into the logo when no one's
+        // present. ∇luma is in UV; +u→+x, +v→+y (box-aligned). uLogoamt fades it
+        // in/out with Logomode. Capped by uSoupmaxspeed below → gentle settle.
+        vel += vec3(logo.xy, 0.0) * uLogoattract * uLogoamt;
     }
 
     vel *= max(0.0, 1.0 - uDamping);

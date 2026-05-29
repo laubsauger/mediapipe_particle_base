@@ -412,6 +412,13 @@ add_float(render, 'Agefalloff', 'Age Brightness Falloff',
 # (threshold ~0.85) blooms them. 0 = no speed glow.
 add_float(render, 'Velbloom', 'Velocity Bloom Boost',
           0.12, 0.0, 1.0, clamp_max=False)
+# Movement speed (box-units/cook) mapped to "full" intensity for the velocity
+# look: the white-hot ember birth flash + accent are gated by speed/Velref so
+# SLOW emission stays dim/colored instead of blowing out to white. Movement
+# PartVel is small (~0.01..0.13), so the ref is small too. Lower = more easily
+# hot (everything blooms); higher = only fast swipes flash.
+add_float(render, 'Velref', 'Velocity Reference (hot at this speed)',
+          0.08, 0.005, 0.5, clamp_max=False)
 # Steady brightness multiplier for the ambient soup (Lid>=5). The soup is
 # exempt from the Embers decay-to-black so it persists as a thick cloud; this
 # scales how visible it is. Keep below ~ the bloom threshold so the calm soup
@@ -506,8 +513,8 @@ add_pulse(look, 'Applypreset', 'Apply Preset')
 # --- Logo attractor (passive-state hero; samples null_logo) ----------------
 # Off / Always / Standby (fades in when no pose, out when a person appears).
 add_menu(look, 'Logomode', 'Logo Mode', ['Off', 'Standby', 'Always'], 'Standby')
-add_float(look, 'Logoattract', 'Logo Attract (pull into shape)', 0.5, 0.0, 4.0, clamp_max=False)
-add_float(look, 'Logobright', 'Logo Brightness (glow on shape)', 1.0, 0.0, 4.0, clamp_max=False)
+add_float(look, 'Logoattract', 'Logo Attract (pull into shape)', 1.5, 0.0, 4.0, clamp_max=False)
+add_float(look, 'Logobright', 'Logo Brightness (glow on shape)', 2.5, 0.0, 6.0, clamp_max=False)
 add_float(look, 'Logofade', 'Logo Fade (standby crossfade s)', 1.5, 0.05, 10.0, clamp_max=False)
 
 # --- Palette (drives color_attr uniforms; presets recolor via these) -------
