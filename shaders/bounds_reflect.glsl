@@ -57,6 +57,8 @@ uniform float uForceRef;
 uniform float uForceGamma;
 uniform float uSoupturb;     // gentle base curl drift for ambient soup (Lid>=5)
 uniform float uSoupmaxspeed; // hard cap on idle soup speed (calm soup)
+uniform float uSoupturb2;    // strength of the broad/slow second curl layer
+uniform float uSouplayermix; // fraction of soup on layer B (broad) vs A (fine)
 
 void main()
 {
@@ -67,7 +69,8 @@ void main()
     vec3 vel   = TDIn_PartVel().xyz;
     vec3 force = TDIn_PartForce().xyz;
     int  lid   = int(TDIn_Lid());
-    vec3 curl  = TDIn_NoiseCurl().xyz;   // available here (curl_noise → add_to_force → here)
+    vec3 curl  = TDIn_NoiseCurl().xyz;   // fine layer (curl_noise)
+    vec3 curl2 = TDIn_NoiseCurl2().xyz;  // broad/slow layer (curl_noise2)
 
     // NaN/Inf guard. NaN P fed into instancing transforms or texture lookups
     // can crash the Vulkan device outright. Clamp to zero here so a single
@@ -116,7 +119,14 @@ void main()
     // movement forces), so apply it DIRECTLY here for soup, scaled by the
     // (small) uSoupturb — this is the idle swirl. Keep it low; terminal drift
     // ≈ |curl|·uSoupturb / uDamping.
-    if (lid >= 5) vel += curl * uSoupturb;
+    if (lid >= 5) {
+        // Two interleaved flow layers: each soup particle follows the broad
+        // slow curl (B) or the fine curl (A) by a stable PartId hash, so the
+        // field reads as layered structure rather than one uniform drift.
+        float h = fract(sin(float(TDIn_PartId()) * 91.17) * 43758.5453);
+        if (h < uSouplayermix) vel += curl2 * uSoupturb2;
+        else                   vel += curl  * uSoupturb;
+    }
 
     vel *= max(0.0, 1.0 - uDamping);
 

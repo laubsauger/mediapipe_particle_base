@@ -61,6 +61,33 @@ def add_toggle(page, name, label, default):
     p.val = p.default
 
 
+def add_rgb(page, name, label, default):
+    """RGB color par (3 components). default = (r, g, b)."""
+    if _has(name):
+        return
+    pg = page.appendRGB(name, label=label)
+    for p, v in zip(pg, default):
+        p.default = v
+        p.val = v
+
+
+def add_menu(page, name, label, names, default):
+    if _has(name):
+        return
+    pg = page.appendMenu(name, label=label)
+    p = pg[0]
+    p.menuNames = names
+    p.menuLabels = names
+    p.default = default
+    p.val = default
+
+
+def add_pulse(page, name, label):
+    if _has(name):
+        return
+    page.appendPulse(name, label=label)
+
+
 # ---------------------------------------------------------------------------
 # Page 1: Sensing  —  everything velocity_script_chop.py reads.
 # ---------------------------------------------------------------------------
@@ -434,6 +461,19 @@ add_float(render, 'Soupcolorscale', 'Soup Color Gradient Scale',
 add_float(render, 'Depthdim', 'Depth Dim (back particles)',
           0.55, 0.0, 1.0)
 
+# --- Soup structure: clustering + two-layer flow --------------------------
+# Clustering: bias soup births toward a slow-drifting noise field so density
+# clumps instead of being uniform. Scale = clump size, Amt 0=even / 1=strong.
+add_float(render, 'Soupclumpscale', 'Soup Clump Scale', 2.0, 0.1, 12.0, clamp_max=False)
+add_float(render, 'Soupclumpamt', 'Soup Clump Amount', 0.6, 0.0, 1.0)
+# Second curl layer (curl_noise2): a large, slow broad swirl. Each soup
+# particle follows layer A (curl_noise) or B (curl_noise2) by a PartId hash, so
+# the two flows interleave. Souplayermix = fraction on layer B.
+add_float(render, 'Soupturb2', 'Soup Turbulence 2 (broad layer)', 0.05, 0.0, 1.0, clamp_max=False)
+add_float(render, 'Curlscale2', 'Curl Scale 2 (broad period)', 2.0, 0.05, 20.0, clamp_max=False)
+add_float(render, 'Curlspeed2', 'Curl Speed 2', 0.12, 0.0, 3.0, clamp_max=False)
+add_float(render, 'Souplayermix', 'Soup Layer Mix (B fraction)', 0.5, 0.0, 1.0)
+
 # --- Bloom TOP (post-render) ----------------------------------------------
 # bloom1 Bloom TOP sits between render1 and out2. render1 outputs 16-bit float
 # so HDR (young/fast) particles survive > 1.0 and bloom.
@@ -443,18 +483,67 @@ add_float(render, 'Bloomstrength', 'Bloom Strength',
 add_float(render, 'Bloomthreshold', 'Bloom Threshold (luminance)',
           1.1, 0.0, 4.0, clamp_max=False)
 
-# Screen-space feedback smear pars. RESERVED / not currently wired — no
-# Feedback TOP chain exists on the live render output (render1 → null2 →
-# out2, no smear). Kept so a future smear branch can read them without a
-# re-install. Nothing consumes these today.
-add_toggle(render, 'Feedbackenable', 'Screen-Space Feedback', True)
-add_float(render, 'Feedbackfade', 'Feedback Fade',
-          0.92, 0.0, 0.999)
-add_float(render, 'Feedbackzoom', 'Feedback Zoom',
-          1.0, 0.95, 1.05)
+# Motion-trail (screen-space feedback smear) pars — NOW WIRED: render1 feeds a
+# Feedback→Level(×fade)→Transform(zoom)→Composite(Add) loop before bloom, so
+# moving particles leave light trails. Feedbackfade = trail length (→1 longer).
+add_toggle(render, 'Feedbackenable', 'Motion Trails', True)
+add_float(render, 'Feedbackfade', 'Trail Length (feedback fade)',
+          0.85, 0.0, 0.999)
+add_float(render, 'Feedbackzoom', 'Trail Zoom', 1.0, 0.95, 1.05)
 
 
-print("velocity_controller: Sensing + Renderer pages installed "
+# ---------------------------------------------------------------------------
+# Page 3: Look  —  post-FX stack (streaks, color grade, lens finish) + the
+# preset/macro controls. These drive the GLSL TOP uniforms (grade.frag,
+# lens_finish.frag) and the native streak chain.
+# ---------------------------------------------------------------------------
+look = _page('Look')
+
+# --- Preset selector (applied by apply_preset parexec via presets.py) ------
+add_menu(look, 'Preset', 'Preset', ['Cosmic', 'Ember', 'Ink', 'Neon'], 'Cosmic')
+add_pulse(look, 'Applypreset', 'Apply Preset')
+
+# --- Palette (drives color_attr uniforms; presets recolor via these) -------
+# Soup = cyclic 3-stop gradient A→B→C. Keep peaks below Bloomthreshold so the
+# calm soup doesn't bloom. Embers = movement birth→death (Hot is HDR > 1).
+add_rgb(look, 'Soupcola', 'Soup Color A', (0.15, 0.55, 0.65))
+add_rgb(look, 'Soupcolb', 'Soup Color B', (0.30, 0.25, 0.70))
+add_rgb(look, 'Soupcolc', 'Soup Color C', (0.65, 0.20, 0.55))
+add_rgb(look, 'Emberhot', 'Ember Hot (birth, HDR)', (1.90, 1.55, 1.15))
+add_rgb(look, 'Embermid', 'Ember Mid', (1.00, 0.42, 0.10))
+add_rgb(look, 'Emberold', 'Ember Old (death)', (0.45, 0.06, 0.02))
+
+# --- Motion-trail velocity gate -------------------------------------------
+# Trails feed from a brightness-thresholded copy of the render so only fast /
+# energetic particles (which color_attr makes HDR-bright) trail — the calm dim
+# soup stays crisp. Higher = trailing only kicks in at higher speed/energy.
+add_float(look, 'Trailthreshold', 'Trail Threshold (speed gate)',
+          0.9, 0.0, 4.0, clamp_max=False)
+
+# --- Anamorphic streaks (threshold → big H/V blur → add over bloom) --------
+add_toggle(look, 'Streakenable', 'Streaks Enable', True)
+add_float(look, 'Streakthresh', 'Streak Threshold', 0.8, 0.0, 4.0, clamp_max=False)
+add_float(look, 'Streaklength', 'Streak Length (px)', 120.0, 0.0, 600.0, clamp_max=False)
+add_float(look, 'Streakintensity', 'Streak Intensity', 0.7, 0.0, 4.0, clamp_max=False)
+
+# --- Color grade (grade.frag) ---------------------------------------------
+add_toggle(look, 'Gradeenable', 'Grade Enable', True)
+add_float(look, 'Exposure', 'Exposure', 1.0, 0.0, 4.0, clamp_max=False)
+add_float(look, 'Contrast', 'Contrast', 1.05, 0.0, 3.0, clamp_max=False)
+add_float(look, 'Saturation', 'Saturation', 1.15, 0.0, 3.0, clamp_max=False)
+add_rgb(look, 'Lift',  'Lift (shadows)',   (0.0, 0.0, 0.0))
+add_rgb(look, 'Gammacolor', 'Gamma (mids)', (1.0, 1.0, 1.0))
+add_rgb(look, 'Gain',  'Gain (highlights)', (1.0, 1.0, 1.0))
+add_rgb(look, 'Tint',  'Tint',              (1.0, 1.0, 1.0))
+
+# --- Lens finish (lens_finish.frag) ---------------------------------------
+add_toggle(look, 'Lensenable', 'Lens Finish Enable', True)
+add_float(look, 'Vignette', 'Vignette', 0.4, 0.0, 1.0)
+add_float(look, 'Chromab', 'Chromatic Aberration', 0.003, 0.0, 0.05, clamp_max=False)
+add_float(look, 'Grain', 'Film Grain', 0.04, 0.0, 0.3, clamp_max=False)
+
+
+print("velocity_controller: Sensing + Renderer + Look pages installed "
       "({} params total).".format(
           len([pr for pr in comp.customPars
-               if pr.page.name in ('Sensing', 'Renderer')])))
+               if pr.page.name in ('Sensing', 'Renderer', 'Look')])))

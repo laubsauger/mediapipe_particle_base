@@ -1432,6 +1432,56 @@ On the **Attributes** page: transfer `v` → `StartPartvel` (not `PartVel`
    tox uses a different suffix, change `f'{lm}:visible'` in
    `velocity_script_chop.py` to match.
 
+## Production look layer (soft sprites + post-FX + presets)
+
+Layered on top of the sim to take it from prototype to production-ready.
+
+### Soft-sprite particles
+`geo1` instances a **camera-facing quad** (`sprite_quad`, Rectangle SOP,
+`orient=xy`, `texture=face`) textured with a **soft radial gradient**
+(`sprite_grad`, radial Ramp TOP, white core → black edge) on an **additive
+Constant MAT** (`particle_mat`: `blending=Add`, src/dest = One/One, depth-write
+off). Instance color = HDR `Cd` from `color_attr`. Result: soft glowing "light"
+motes that stack/bloom, instead of hard lit spheres (the old `sphere1` + Phong
++ lights are unused). `Particlesize` scales the quad.
+
+### Post-FX chain (after `render1`, RGBA 16-bit float)
+```
+render1 → trail_comp(Comp Add) → bloom1 → streak_comp(Comp Add)
+        → grade(GLSL TOP) → lens_finish(GLSL TOP) → null2 → out2
+```
+- **Motion trails** — `trail_comp` adds `render1` + a faded/zoomed feedback of
+  itself: `trail_fb` (Feedback TOP, **input=render1**, **par.top=trail_comp**) →
+  `trail_level` (×`Feedbackfade`·`Feedbackenable`) → `trail_xform` (sx/sy=`Feedbackzoom`)
+  → `trail_comp.in1`. `Feedbackfade` = trail length. *(Feedback wiring: the
+  delayed back-reference is via `par.top`; the input is the passthrough source —
+  wiring the loop-end into the input causes a cook-loop.)*
+- **Bloom** — `bloom1` Bloom TOP (`Bloomstrength`/`Bloomthreshold`).
+- **Anamorphic streaks** — `streak_thresh` (Level: `blacklevel=Streakthresh`,
+  `opacity=Streakintensity·Streakenable`) → `streak_blur` (Blur `size=Streaklength`)
+  → `streak_comp` adds it over the bloom.
+- **Color grade** — `grade` GLSL TOP (`shaders/grade.frag`): ACES tonemap +
+  lift/gamma/gain + saturation/contrast/tint. Uniforms ← Look pars; `uEnable`=`Gradeenable`.
+- **Lens finish** — `lens_finish` GLSL TOP (`shaders/lens_finish.frag`):
+  chromatic aberration + vignette + film grain. `uEnable`=`Lensenable`.
+
+> All post-FX TOPs are set to **explicit `custom` 1280×720** resolution —
+> `Use Input` collapses to 128² inside the trail feedback loop.
+
+### Palette uniforms + Look page + presets
+`color_attr`'s soup palette is a cyclic 3-stop gradient from **`uSoupA/B/C`**
+and movement embers from **`uEmberHot/Mid/Old`** — all bound to COMP color pars
+(`Soupcola/b/c`, `Emberhot/mid/old`), so presets recolor the whole look. The
+**Look page** also carries the post-FX pars and the preset controls:
+
+- `Preset` (menu: Cosmic / Ember / Ink / Neon) + `Applypreset` (pulse).
+- `preset_exec` (Parameter Execute DAT, synced to `apply_preset.py`) watches
+  those and calls `presets.apply(comp, name)` from **`presets.py`** — each preset
+  a bundle of palette + post-FX + motion/density values. *(Parexec fires
+  deferred — next frame, not synchronously.)*
+- Edit/extend looks in `presets.py` (`python3 presets.py` self-tests; live
+  `importlib.reload` on apply). `reset_velocity_params.py` applies `Cosmic`.
+
 ## Forking for another experiment
 
 Same playbook as `painting_controller`:

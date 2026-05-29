@@ -65,6 +65,17 @@ def births_this_cook(rate, dt, accum):
     return k, accum
 
 
+def clump_weight(x, y, scale, t):
+    """Smooth, slowly-drifting 0..1 'clump' field from summed sines (cheap,
+    no numpy). Births are biased toward high values → the soup clusters into
+    soft clumps instead of spreading evenly. `scale` = clump frequency, `t` =
+    drift phase. Pure — unit-testable."""
+    import math as _m
+    v = (_m.sin((x * scale + t) * 3.1) * _m.cos((y * scale - t * 0.7) * 3.7)
+         + 0.5 * _m.sin((x * scale * 2.3 - t * 1.3) * 2.1 + y * scale * 4.9))
+    return max(0.0, min(1.0, 0.5 + 0.32 * v))
+
+
 import random as _rnd
 _RNG = _rnd.Random()
 
@@ -113,9 +124,23 @@ def onCook(scriptOp):
     k, accum = births_this_cook(rate, dt, accum)
     parent().store('Ambientaccum', accum)
 
-    # Choose k random point indices to fire this cook.
+    # Choose k point indices to fire this cook, biased toward clump-high
+    # regions so the soup clusters (instead of uniform density). Expected total
+    # stays ≈ k via p_i = k·w_i / Σw. Soupclumpamt 0 = even, 1 = strong clumps.
     k = min(k, n)
-    fire = set(_RNG.sample(range(n), k)) if k > 0 else set()
+    clump_scale = float(_par('Soupclumpscale', 2.0))
+    clump_amt = max(0.0, min(1.0, float(_par('Soupclumpamt', 0.6))))
+    tt = absTime.seconds * 0.05
+    ws = []
+    for (x, y, z) in pts:
+        c = clump_weight(x, y, clump_scale, tt)
+        ws.append((1.0 - clump_amt) + clump_amt * (c * 2.0))
+    sw = sum(ws) or 1.0
+    fire = set()
+    if k > 0:
+        for i in range(n):
+            if _RNG.random() < (k * ws[i] / sw):
+                fire.add(i)
 
     for i, (x, y, z) in enumerate(pts):
         chans['P0'][i] = x

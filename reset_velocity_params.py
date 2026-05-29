@@ -120,9 +120,10 @@ RENDERER = {
     'Bloomenable':     True,
     'Bloomstrength':   1.0,
     'Bloomthreshold':  1.1,
-    # Screen-space feedback — RESERVED, no smear chain wired on live output.
+    # Motion trails (screen-space feedback smear) — now wired before bloom.
+    # Feedbackfade = trail length; the Cosmic preset (applied below) sets it.
     'Feedbackenable':  True,
-    'Feedbackfade':    0.92,
+    'Feedbackfade':    0.6,
     'Feedbackzoom':    1.0,
 }
 
@@ -147,6 +148,21 @@ def _apply(mapping, page_label):
 
 _apply(SENSING, 'Sensing')
 _apply(RENDERER, 'Renderer')
+
+# Look page (palette + post-FX) — single source of truth is presets.py.
+# Apply the default 'Cosmic' preset so the look pars reset to a known-good
+# bundle without duplicating their values here.
+try:
+    import sys
+    if project.folder not in sys.path:
+        sys.path.append(project.folder)
+    import importlib, presets
+    importlib.reload(presets)
+    n = presets.apply(comp, 'Cosmic')
+    comp.par.Preset = 'Cosmic'
+    print(f"Look: 'Cosmic' preset applied ({n} pars).")
+except Exception as e:
+    print(f"Look preset apply skipped: {e}")
 
 print("reset_velocity_params: done. All existing pars forced to current "
       "defaults. Save a note of your previous tuning if you had custom "

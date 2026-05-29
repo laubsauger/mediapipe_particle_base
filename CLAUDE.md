@@ -72,12 +72,21 @@ Inside a single `velocity_controller` Base COMP, two sub-chains:
   `particle1` (Particle POP). Force chain `p_to_uv → field_sample → curl_noise
   → add_to_force → bounds_reflect → force_null` (the `bounds_reflect` GLSL POP
   does force integration + damping + position-clamp/wall-reflection); render
-  tee `particle1 → color_attr → render_null → geo1` (instanced low-poly
-  Phong-lit spheres, sized by `Particlesize`) → `render1` Render TOP (16-bit
-  float) → `bloom1` Bloom TOP → `out2`. `color_attr` does the per-limb /
-  soup color, the **Embers age gradient**, and a **velocity HDR boost** that
-  `bloom1` blooms. **Force integration and velocity damping live in the
-  `bounds_reflect` GLSL POP, NOT on Particle POP** (whose damping stays 0).
+  tee `particle1 → color_attr → render_null → geo1` → `render1` → post-FX → `out2`.
+  - **Render:** `geo1` instances a **camera-facing quad** (`sprite_quad`, orient=xy)
+    textured with a soft radial gradient (`sprite_grad`) on an **additive Constant
+    MAT** (`particle_mat`) → soft glowing "light" motes (no lit spheres/lights).
+    `Particlesize` scales the quad. `color_attr` writes HDR `Cd`: soup = cyclic
+    3-stop position gradient (`uSoupA/B/C`, color-cycling), movement = per-limb +
+    **Embers** age ramp (`uEmberHot/Mid/Old`); palette is uniforms so presets recolor.
+  - **Post-FX chain** (`render1` 16f → … → `out2`, each with enable+intensity pars):
+    motion trails (`trail_*` feedback smear) → `bloom1` → anamorphic streaks
+    (`streak_thresh/blur/comp`) → `grade` (GLSL TOP grade.frag) → `lens_finish`
+    (GLSL TOP, vignette+CA+grain).
+  - **Look presets:** `Preset` menu + `Applypreset` pulse (Look page) → `preset_exec`
+    parexec → `presets.apply()` sets palette + post-FX + motion bundles.
+  - **Force integration and velocity damping live in `bounds_reflect` GLSL POP**,
+    NOT Particle POP (damping 0). Soup idle drift is capped by `Soupmaxspeed`.
 
 The render side has had a long debug history — see "Known issues" below.
 
@@ -115,6 +124,8 @@ Two Base COMPs:
 | `bootstrap_velocity_controller.py` | One-shot builder for the whole `velocity_controller` COMP skeleton. |
 | `emitters_chop_script.py` | Script CHOP — turns `lag1`'s channels into N points (`p/v/w/Lid` attribs on the POP) for the Particle POP. Has 2D scatter logic with bias correction. |
 | `ambient_chop_script.py` | Script CHOP — emits the constant "particle soup": `Ambientpoints` points scattered through the bounds volume each cook, birthing `Ambientrate` pts/s (fractional accumulator), `Lid`=5 sentinel. Merged with `emitters_pop` via `merge_emitters` Merge POP into `particle1`, so the soup is advected/displaced by the same force chain. Self-testable: `python3 ambient_chop_script.py`. |
+| `presets.py` | Pure-Python Look presets (`Cosmic`/`Ember`/`Ink`/`Neon`) — each a bundle of palette + post-FX + motion par values; `apply(comp, name)` writes them (RGB tuples → `<name>r/g/b`). Self-testable: `python3 presets.py`. |
+| `apply_preset.py` | Parameter Execute DAT callback (`preset_exec`) — on the COMP's `Applypreset` pulse or `Preset` menu change, imports `presets` and applies the bundle. Fires deferred (next frame). |
 | `emitters_tex_script.py` | Script TOP — packs `lag1`'s channels into an N×2 RGBA32F texture for the velocity-field shader. |
 | `painting_logic.py`, `painting_script_chop.py`, `install_painting_params.py` | The original first experiment ("painting controller") — predates this work. Kept as reference for the architectural conventions. |
 | `beatsaber_game_tick.py` | Script CHOP callback that runs the Beat Saber game loop. Reads landmark channels, calls `Game.tick()`, stores snapshot. |
@@ -136,8 +147,14 @@ Two Base COMPs:
 | `p_to_uv.glsl` | GLSL POP — writes `Puv` = `P` remapped into box UV (aspect-correct) for `field_sample` to index. Synced to `p_to_uv_compute`. |
 | `color_attr.glsl` | GLSL POP — writes per-particle `Cd`: per-limb palette (`Lid` 0..4) or cool soup base (`Lid>=5`), velocity warm-accent, **Embers age ramp** (white-hot at birth → warm → ember → dark, via `PartAge/PartLifeSpan`), and a velocity HDR boost so fast/young particles bloom. Synced to `color_attr_compute`. |
 
-All four shaders above are real files under `shaders/`, each synced to its
-GLSL POP/TOP DAT (`Sync File` On) — edit the file, TD reloads.
+| `grade.frag` | GLSL **TOP** — cinematic color grade: ACES tonemap (HDR→display) + lift/gamma/gain + saturation/contrast/tint. `uEnable` passthrough toggle. Synced to `grade_pixel`. |
+| `lens_finish.frag` | GLSL **TOP** — final lens finish: chromatic aberration + vignette + animated film grain. `uEnable` passthrough. Synced to `lens_pixel`. |
+
+All shaders above are real files under `shaders/`, each synced to its
+GLSL POP/TOP DAT (`Sync File` On) — edit the file, TD reloads. **GLSL TOPs**
+(velocity_field, grade, lens_finish) are fragment shaders sampling
+`sTD2DInputs[0]` — safe. The crash-prone case is a GLSL **POP** referencing an
+unbound `sampler2D` (never do that).
 
 ### Beat Saber package (`beatsaber/`)
 
@@ -420,7 +437,18 @@ If the user says "X is broken", here's where to start looking:
 | No glow / bloom | `Bloomenable`/`Bloomstrength`/`Bloomthreshold`; needs `render1` format = 16-bit float + `color_attr` HDR (`Velbloom`, Embers `kEmberHot`). |
 | Age gradient wrong | `color_attr.glsl` Embers ramp (`Agegradient`/`Agefalloff`), normalized by `PartAge/PartLifeSpan`. |
 | Static / frozen curl swirls | `curl_noise` Translate-4D (`t4d`) must be animated = `absTime.seconds × Curlspeed` (Simplex-4D's 4th axis is time). `t4d=0` → frozen field. `Curlgain` (bound to `amp0`) sets curl amount; 0 = none. |
+| Switch the whole look / preset | `Preset` menu + `Applypreset` pulse (Look page) → `preset_exec` parexec → `presets.py` `apply()`. Edit/add looks in `presets.py` (live `importlib.reload`). |
+| Post-FX wrong (bloom/streaks/grade/vignette/grain/trails) | Chain `render1 → trail_comp → bloom1 → streak_comp → grade → lens_finish → out2`. Pars on Look page (+ `Feedback*` on Renderer for trails). `grade`/`lens_finish` = GLSL TOPs (`grade.frag`/`lens_finish.frag`). |
+| Particles hard / want soft glow | `geo1` instances `sprite_quad` (camera-facing) + `sprite_grad` (soft radial tex) on additive `particle_mat`. Not the old Phong spheres. |
+| Post-FX TOPs render tiny/low-res | Set their `Output Resolution` to explicit `custom` 1280×720 — `Use Input` collapses inside the trail feedback loop. |
 | Bloom flickers / unstable even at idle | Soup brightness straddling `Bloomthreshold`: particles cross it as they fade in/out + churn. Keep `Soupbright × palette-peak` (≈0.86) **below** `Bloomthreshold` (1.1) so the calm soup never blooms — reserve bloom for HDR movement embers. |
+
+**Production-pass TD gotchas (post-FX build):**
+- **Feedback TOP wiring:** `input` = passthrough/init source (e.g. `render1`), `par.top` = the loop-end TOP to feed back (1-frame delayed). The back-reference MUST be via `par.top` — wiring the loop-end into the Feedback TOP's *input* closes the cycle forward → "cook dependency loop." (Took 3 tries; see `trail_*`.)
+- **GLSL TOP resolution through a feedback loop:** `Output Resolution = Use Input` collapses to a tiny default (128²) inside a feedback loop (circular res dependency). Set the post-FX TOPs to explicit `custom` resolution (matched 1280×720).
+- **GLSL POP vec uniform type:** when binding a vec3 uniform on the Vectors page, set `vecNtype='vec3'` to match the shader's `uniform vec3` decl — otherwise TD auto-declares it `float` → `Redeclaration` compile error.
+- **Parameter Execute DAT fires DEFERRED** (next frame), not synchronously — a same-script readback right after setting the watched par sees pre-callback values. Check the log / re-read next call.
+- **Billboard sprites:** Rectangle SOP `orient=xy` faces the −Z camera (simplest, no per-instance billboard needed for a thin z-slab); `orient=cam` mis-transformed the instances. `texture=face` needed to generate UVs for the colormap.
 
 **⚠️ GLSL POP sampler crash (cost a TD crash + unloadable saves):** never let a synced GLSL POP/TOP reference a `sampler2D` (or `texture()`) before that sampler is bound to a real TOP on the op's Samplers page. Sampling an **unbound** sampler in a compute POP is a GPU device fault that crashes TD — and because the shader is a synced file, every save then re-crashes on load until the file is fixed on disk. If you want a Ramp TOP palette, create + bind it FIRST, then edit the shader to sample it. (The soup color ramp is currently an **in-shader procedural cosine palette** in `color_attr.glsl` — no sampler — for exactly this reason.) Plain float/vec uniforms are safe unbound (default 0).
 | Particles drifting in z when only moving horizontally | `Zforceweight` (renderer side, scales `vz` in both `emitters_tex_script.py` and `emitters_chop_script.py`) |

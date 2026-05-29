@@ -52,25 +52,23 @@ uniform float uSoupvelbloom;    // fast-soup brightness/bloom boost
 uniform float uSoupcolorscale;  // spatial frequency of the color gradient (bands across the box)
 uniform float uDepthdim;        // how much to dim particles toward the back (fake DoF / depth)
 
-// Procedural cyclic color ramp (Inigo-Quilez cosine palette). Smooth and
-// seamless across phase 0..1 (no seam when cycling), and needs NO TOP sampler
-// — sampling an unbound sampler in a GLSL POP crashes the GPU, so we keep the
-// ramp in-shader. Tasteful cool→magenta→teal sweep; tweak the consts to
-// re-art-direct, or later swap to a bound Ramp TOP sampler.
+// Soup palette + ember colours come from COMP color pars (uniforms) so PRESETS
+// can recolor the whole look. No TOP sampler (that crashes a GLSL POP).
+uniform vec3 uSoupA;
+uniform vec3 uSoupB;
+uniform vec3 uSoupC;
+uniform vec3 uEmberHot;   // white-hot at birth (keep HDR > 1 so births bloom)
+uniform vec3 uEmberMid;   // mid-life
+uniform vec3 uEmberOld;   // near-death ember
+
+// Cyclic 3-stop gradient over phase t (A→B→C→A, wraps seamlessly). Smooth,
+// art-directable, preset-driven.
 vec3 soupPalette(float t)
 {
-    // a = mid/floor, b = amplitude. Kept tight + lifted so the soup is always
-    // visibly coloured (never near-black) and its peak stays below the bloom
-    // threshold (so the calm soup doesn't bloom — only movement/HDR does). The
-    // per-channel phase offsets in d give the hue shift across the cycle.
-    // Cool sweep: blue → cyan → violet → magenta (no muddy green/yellow).
-    // B baseline high (cool); G amplitude low + offset so G is never high when
-    // R is high (that's what produced yellow/green). Peak kept ≈0.86 (< bloom).
-    const vec3 a = vec3(0.50, 0.42, 0.62);
-    const vec3 b = vec3(0.34, 0.20, 0.24);
-    const vec3 c = vec3(1.0, 1.0, 1.0);
-    const vec3 d = vec3(0.55, 0.05, 0.85);
-    return a + b * cos(6.28318530718 * (c * t + d));  // range ≈ [0.16, 0.86]
+    t = fract(t);
+    if (t < 0.3333)      return mix(uSoupA, uSoupB, t * 3.0);
+    else if (t < 0.6667) return mix(uSoupB, uSoupC, (t - 0.3333) * 3.0);
+    else                 return mix(uSoupC, uSoupA, (t - 0.6667) * 3.0);
 }
 
 const vec3 kPalette[5] = vec3[](
@@ -81,14 +79,7 @@ const vec3 kPalette[5] = vec3[](
     vec3(0.85, 0.40, 0.95)   // Lid 4 — nose        (magenta)
 );
 
-// Soup base (ambient particles, Lid >= 5): cool dim so the soup reads as a
-// quiet field that the warm movement embers pop against.
-const vec3 kSoup = vec3(0.16, 0.18, 0.28);
-
-// Embers ramp colours (kEmberHot is intentionally HDR > 1 so births bloom).
-const vec3 kEmberHot = vec3(1.90, 1.55, 1.15);  // white-hot at birth
-const vec3 kEmberMid = vec3(1.00, 0.42, 0.10);  // warm orange, mid-life
-const vec3 kEmberOld = vec3(0.45, 0.06, 0.02);  // deep red ember, near death
+// (soup base + ember colours are now uniforms uSoupA/B/C + uEmberHot/Mid/Old)
 
 void main()
 {
@@ -143,9 +134,9 @@ void main()
         vec3  col   = mix(ident, uAccent, tv);
 
         vec3 ageCol;
-        if (agef < 0.15)      ageCol = mix(kEmberHot, col,       smoothstep(0.0, 0.15, agef));
-        else if (agef < 0.60) ageCol = mix(col,       kEmberMid, smoothstep(0.15, 0.60, agef));
-        else                  ageCol = mix(kEmberMid,  kEmberOld, smoothstep(0.60, 1.00, agef));
+        if (agef < 0.15)      ageCol = mix(uEmberHot, col,       smoothstep(0.0, 0.15, agef));
+        else if (agef < 0.60) ageCol = mix(col,       uEmberMid, smoothstep(0.15, 0.60, agef));
+        else                  ageCol = mix(uEmberMid,  uEmberOld, smoothstep(0.60, 1.00, agef));
         float bright = pow(1.0 - agef, max(uAgefalloff, 0.01));  // peaks at birth
         ageCol *= bright;
 
