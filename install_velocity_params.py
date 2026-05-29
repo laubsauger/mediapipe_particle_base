@@ -419,6 +419,15 @@ add_float(render, 'Velbloom', 'Velocity Bloom Boost',
 # hot (everything blooms); higher = only fast swipes flash.
 add_float(render, 'Velref', 'Velocity Reference (hot at this speed)',
           0.08, 0.005, 0.5, clamp_max=False)
+# Body force field — the performer's skeleton parts the soup (push, away from
+# bones) and drags it along limb motion (drag). Driven by body_tex → body_field
+# → body_force lookup → bounds_reflect. Per-joint visibility gates each bone.
+add_float(render, 'Bodypush', 'Body Push (repel soup)',
+          0.04, 0.0, 0.2, clamp_max=False)
+add_float(render, 'Bodydrag', 'Body Drag (advect soup along motion)',
+          0.03, 0.0, 0.2, clamp_max=False)
+add_float(render, 'Bodyradius', 'Body Influence Radius (bone thickness)',
+          0.12, 0.01, 0.5, clamp_max=False)
 # Steady brightness multiplier for the ambient soup (Lid>=5). The soup is
 # exempt from the Embers decay-to-black so it persists as a thick cloud; this
 # scales how visible it is. Keep below ~ the bloom threshold so the calm soup

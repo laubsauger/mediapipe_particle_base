@@ -109,6 +109,10 @@ RENDERER = {
     'Agefalloff':      1.6,     # brightness fade exponent over life
     'Velbloom':        0.12,    # speed → HDR brightness boost
     'Velref':          0.08,    # movement speed mapped to full hot/bloom (slow births stay dim)
+    # Body force field (skeleton parts + drags the soup).
+    'Bodypush':        0.04,    # repel strength (soup pushed away from bones)
+    'Bodydrag':        0.03,    # advect strength (soup dragged along limb motion)
+    'Bodyradius':      0.12,    # bone influence radius (world-y units)
     'Soupbright':      1.0,     # steady soup brightness; kept below Bloomthreshold so soup doesn't bloom
     'Soupturb':        0.05,    # drives soup curl drift; saturates the cap below
     'Soupmaxspeed':    0.008,   # hard cap on idle soup speed (the real "calm" knob)

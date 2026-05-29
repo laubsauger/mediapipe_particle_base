@@ -61,6 +61,8 @@ uniform float uSoupturb2;    // strength of the broad/slow second curl layer
 uniform float uSouplayermix; // fraction of soup on layer B (broad) vs A (fine)
 uniform float uLogoattract;  // soup pull toward the logo shape (gradient force)
 uniform float uLogoamt;      // 0..1 standby fade (op('logo_amt')['amt']); gates logo
+uniform float uBodypush;     // repel strength: particles parted by the skeleton
+uniform float uBodydrag;     // advect strength: particles dragged along limb motion
 
 void main()
 {
@@ -74,6 +76,7 @@ void main()
     vec3 curl  = TDIn_NoiseCurl().xyz;   // fine layer (curl_noise)
     vec3 curl2 = TDIn_NoiseCurl2().xyz;  // broad/slow layer (curl_noise2)
     vec4 logo  = TDIn_logodata();        // .xy = ∇luma (attractor dir), .w = mask
+    vec4 body  = TDIn_bodyforce();       // .xy = push (repel dir), .zw = drag (limb vel)
 
     // NaN/Inf guard. NaN P fed into instancing transforms or texture lookups
     // can crash the Vulkan device outright. Clamp to zero here so a single
@@ -116,6 +119,12 @@ void main()
     // Then per-cook damping: vel *= (1 - uDamping). uDamping=0 keeps all,
     // uDamping=1 zeroes velocity each cook.
     vel += force * uForceScale;
+
+    // Body field: the performer's skeleton parts the soup (push = away from the
+    // nearest bone) and drags it along limb motion (drag = bone velocity).
+    // Applies to ALL particles. Per-joint visibility already gated the field, so
+    // off-frame / low-confidence joints contribute nothing (no phantom pushes).
+    vel += vec3(body.xy, 0.0) * uBodypush + vec3(body.zw, 0.0) * uBodydrag;
 
     // Gentle base turbulence for the ambient soup only (Lid>=5). Curl is
     // otherwise crushed by the deadzone/gamma curve above (tuned for strong
