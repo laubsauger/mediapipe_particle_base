@@ -545,7 +545,7 @@ if __name__ == "__main__":
         for i in range(n_frames):
             x, y = traj_fn(i)
             per, glb = update(
-                state, {"left_wrist": (x, y, True)}, dt, params
+                state, {0: {"left_wrist": (x, y, True)}}, dt, params
             )
             o = per["p0:left_wrist"]
             if i % 5 == 0 or i == n_frames - 1:
@@ -571,7 +571,7 @@ if __name__ == "__main__":
     print("\n--- landmark dropped (visible=False, input garbage (0, 1)) ---")
     print("    expected: out.x=0.80 out.y=0.50  (last good, not garbage)")
     for i in range(10):
-        per, glb = update(state, {"left_wrist": (0.0, 1.0, False)}, dt, params)
+        per, glb = update(state, {0: {"left_wrist": (0.0, 1.0, False)}}, dt, params)
         o = per["p0:left_wrist"]
         print(f"  f{i}: out=({o['x']:.2f},{o['y']:.2f}) "
               f"burst={o['burst']:.3f} accel={o['accel']:.3f} "
@@ -593,16 +593,16 @@ if __name__ == "__main__":
     state_tele = new_state(("left_wrist",))
     # Build up trusted continuous tracking at (0.80, 0.50).
     for _ in range(10):
-        update(state_tele, {"left_wrist": (0.8, 0.5, True, True)}, dt, params)
+        update(state_tele, {0: {"left_wrist": (0.8, 0.5, True, True)}}, dt, params)
     burst_before = state_tele[0]["left_wrist"]["burst"]
     # Inject one frame of glitch at (0.05, 0.95)
-    per, _ = update(state_tele, {"left_wrist": (0.05, 0.95, True, True)}, dt, params)
+    per, _ = update(state_tele, {0: {"left_wrist": (0.05, 0.95, True, True)}}, dt, params)
     o = per["p0:left_wrist"]
     print(f"  glitch frame: out=({o['x']:.2f},{o['y']:.2f}) burst={o['burst']:.3f}")
     assert abs(o["x"] - 0.8) < 1e-6, "intra-continuity teleport should be rejected"
     assert o["burst"] <= burst_before + 1e-6, "teleport should NOT fire a burst"
     # Next frame back at a plausible position — should re-seed and accept.
-    per, _ = update(state_tele, {"left_wrist": (0.81, 0.51, True, True)}, dt, params)
+    per, _ = update(state_tele, {0: {"left_wrist": (0.81, 0.51, True, True)}}, dt, params)
     o = per["p0:left_wrist"]
     print(f"  recovery frame: out=({o['x']:.2f},{o['y']:.2f}) (tracking resumed)")
     assert abs(o["x"] - 0.81) < 1e-6, "stream should recover on next non-glitched frame"
@@ -614,13 +614,11 @@ if __name__ == "__main__":
     # Reset state to a known-trusted position.
     state2 = new_state(("left_wrist",))
     for _ in range(5):
-        update(state2, {"left_wrist": (0.8, 0.5, True, True)}, dt, params)
+        update(state2, {0: {"left_wrist": (0.8, 0.5, True, True)}}, dt, params)
     # Now feed marginal frames where raw x drifts from 0.8 toward 0.1.
     drift_xs = [0.70, 0.55, 0.40, 0.25, 0.10]
     for i, dx_val in enumerate(drift_xs):
-        per, _ = update(state2,
-                        {"left_wrist": (dx_val, 0.95, True, False)},
-                        dt, params)
+        per, _ = update(state2, {0: {"left_wrist": (dx_val, 0.95, True, False)}}, dt, params)
         o = per["p0:left_wrist"]
         print(f"  f{i}: raw_in=({dx_val:.2f}, 0.95)  out=({o['x']:.2f},{o['y']:.2f})  "
               f"visible={o['visible']}")
@@ -629,7 +627,7 @@ if __name__ == "__main__":
         assert o["visible"] == 1.0, "marginal frame should still be visible=1"
 
     # Then fully invisible — position should still be 0.8, visible=0
-    per, _ = update(state2, {"left_wrist": (0.0, 1.0, False, False)}, dt, params)
+    per, _ = update(state2, {0: {"left_wrist": (0.0, 1.0, False, False)}}, dt, params)
     o = per["p0:left_wrist"]
     print(f"  invisible: out=({o['x']:.2f},{o['y']:.2f}) visible={o['visible']}")
     assert abs(o["x"] - 0.8) < 1e-6 and o["visible"] == 0.0
@@ -643,12 +641,12 @@ if __name__ == "__main__":
     state3 = new_state(("left_wrist",))
     # Build up state: tracked at (0.8, 0.5)
     for _ in range(5):
-        update(state3, {"left_wrist": (0.8, 0.5, True, True)}, dt, params)
+        update(state3, {0: {"left_wrist": (0.8, 0.5, True, True)}}, dt, params)
     # Go invisible for a bit
     for _ in range(10):
-        update(state3, {"left_wrist": (0.0, 1.0, False, False)}, dt, params)
+        update(state3, {0: {"left_wrist": (0.0, 1.0, False, False)}}, dt, params)
     # Reappear at a totally different position
-    per, _ = update(state3, {"left_wrist": (0.2, 0.3, True, True)}, dt, params)
+    per, _ = update(state3, {0: {"left_wrist": (0.2, 0.3, True, True)}}, dt, params)
     o = per["p0:left_wrist"]
     print(f"  first trusted frame after dropout: out=({o['x']:.2f},{o['y']:.2f}) "
           f"visible={o['visible']}")
@@ -657,9 +655,7 @@ if __name__ == "__main__":
     assert abs(o["y"] - 0.3) < 1e-6
     # Keep tracking at the new position; confirm it follows.
     for i in range(3):
-        per, _ = update(state3,
-                        {"left_wrist": (0.2 + 0.02 * i, 0.3, True, True)},
-                        dt, params)
+        per, _ = update(state3, {0: {"left_wrist": (0.2 + 0.02 * i, 0.3, True, True)}}, dt, params)
         o = per["p0:left_wrist"]
         print(f"  follow-up f{i}: out=({o['x']:.2f},{o['y']:.2f})")
         expected_x = 0.2 + 0.02 * i
@@ -674,18 +670,18 @@ if __name__ == "__main__":
     state4 = new_state(("left_wrist",))
     # Build up tracked state elsewhere, then drop out.
     for _ in range(5):
-        update(state4, {"left_wrist": (0.5, 0.5, True, True)}, dt, params)
+        update(state4, {0: {"left_wrist": (0.5, 0.5, True, True)}}, dt, params)
     for _ in range(15):
-        update(state4, {"left_wrist": (0.0, 1.0, False, False)}, dt, params)
+        update(state4, {0: {"left_wrist": (0.0, 1.0, False, False)}}, dt, params)
     # Re-acquisition sequence: frame 0 at edge (0.03, 0.4), next frames at
     # real joint position (0.35, 0.4). Jump is 0.32, exceeds max_jump=0.3.
     print("    input: edge (0.03, 0.40) then joint (0.35, 0.40)...")
     reacq = [(0.03, 0.40), (0.35, 0.40), (0.36, 0.40), (0.37, 0.40), (0.38, 0.40)]
     for i, (rx, ry) in enumerate(reacq):
-        per, _ = update(state4, {"left_wrist": (rx, ry, True, True)}, dt, params)
+        per, _ = update(state4, {0: {"left_wrist": (rx, ry, True, True)}}, dt, params)
         o = per["p0:left_wrist"]
         print(f"  f{i}: raw=({rx:.2f},{ry:.2f}) out=({o['x']:.2f},{o['y']:.2f}) "
-              f"settle={state4['left_wrist']['settle_counter']}")
+              f"settle={state4[0]['left_wrist']['settle_counter']}")
     # After the settle period we want to be tracking the real joint, NOT
     # stuck at 0.03 (the edge).
     assert abs(o["x"] - 0.38) < 1e-6, \
@@ -695,11 +691,11 @@ if __name__ == "__main__":
     print("\n--- NaN/Inf input resilience ---")
     state5 = new_state(("left_wrist",))
     for _ in range(5):
-        update(state5, {"left_wrist": (0.5, 0.5, True, True)}, dt, params)
+        update(state5, {0: {"left_wrist": (0.5, 0.5, True, True)}}, dt, params)
     nan = float('nan')
     inf = float('inf')
     # Feed NaN/Inf directly through update() — should NOT poison state.
-    per, glb = update(state5, {"left_wrist": (nan, inf, True, True)}, dt, params)
+    per, glb = update(state5, {0: {"left_wrist": (nan, inf, True, True)}}, dt, params)
     o = per["p0:left_wrist"]
     print(f"  after NaN input: out=({o['x']:.2f},{o['y']:.2f}) "
           f"speed={o['speed']:.3f} accel={o['accel']:.3f}")
@@ -707,7 +703,7 @@ if __name__ == "__main__":
         assert math.isfinite(float(v)), f"{k} leaked non-finite: {v}"
     # Follow up with clean frames; pipeline should recover.
     for _ in range(3):
-        per, _ = update(state5, {"left_wrist": (0.5, 0.5, True, True)}, dt, params)
+        per, _ = update(state5, {0: {"left_wrist": (0.5, 0.5, True, True)}}, dt, params)
     o = per["p0:left_wrist"]
     for k in ("x", "y", "vx", "vy", "speed", "accel", "emit", "burst"):
         assert math.isfinite(float(o[k])), f"{k} stayed non-finite after recovery"
@@ -720,13 +716,12 @@ if __name__ == "__main__":
     state6 = new_state(("left_wrist",))
     # Build stable tracking at (0.5, 0.5, z=0.0)
     for _ in range(10):
-        update(state6, {"left_wrist": (0.5, 0.5, 0.0, True, True)}, dt, params)
+        update(state6, {0: {"left_wrist": (0.5, 0.5, 0.0, True, True)}}, dt, params)
     o = None
     # Push hand forward toward camera over 5 frames: z goes 0.0 → -0.5
     for i in range(5):
         zv = -0.1 * (i + 1)
-        per, _ = update(state6,
-                        {"left_wrist": (0.5, 0.5, zv, True, True)}, dt, params)
+        per, _ = update(state6, {0: {"left_wrist": (0.5, 0.5, zv, True, True)}}, dt, params)
         o = per["p0:left_wrist"]
         print(f"  f{i}: z={zv:+.2f} vz={o['vz']:+.3f} vx={o['vx']:+.3f} "
               f"speed={o['speed']:.3f} burst={o['burst']:.3f}")
@@ -741,8 +736,7 @@ if __name__ == "__main__":
     # First: xy motion at speed 2.5 (hits emit=1 at default Speedscale).
     state_xy = new_state(("wrist",))
     for i in range(5):
-        update(state_xy, {"wrist": (0.5 + 0.04 * i, 0.5, 0.0, True, True)},
-               dt, params)
+        update(state_xy, {0: {"wrist": (0.5 + 0.04 * i, 0.5, 0.0, True, True)}}, dt, params)
     xy_speed = None
     for i in range(3):
         per, _ = update(state_xy,
@@ -753,8 +747,7 @@ if __name__ == "__main__":
     # Same magnitude of motion but purely in z.
     state_z = new_state(("wrist",))
     for i in range(5):
-        update(state_z, {"wrist": (0.5, 0.5, 0.04 * i, True, True)},
-               dt, params)
+        update(state_z, {0: {"wrist": (0.5, 0.5, 0.04 * i, True, True)}}, dt, params)
     z_speed = None
     for i in range(3):
         per, _ = update(state_z,
