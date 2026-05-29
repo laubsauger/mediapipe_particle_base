@@ -110,8 +110,8 @@ RENDERER = {
     'Velbloom':        0.12,    # speed → HDR brightness boost
     'Velref':          0.08,    # movement speed mapped to full hot/bloom (slow births stay dim)
     # Body force field (skeleton parts + drags the soup).
-    'Bodypush':        0.04,    # repel strength (soup pushed away from bones)
-    'Bodydrag':        0.03,    # advect strength (soup dragged along limb motion)
+    'Bodypush':        0.06,    # repel strength (soup pushed away from bones)
+    'Bodydrag':        0.045,   # advect strength (soup dragged along limb motion)
     'Bodyradius':      0.12,    # bone influence radius (world-y units)
     # Body VIZ (glowing skeleton render — our replacement for MediaPipe circles).
     'Bodyviz':         1,       # on
@@ -151,6 +151,8 @@ RENDERER = {
     'Logocycle':       1,      # auto-cycle between the two switch_logo inputs
     'Logocycletime':   12.0,   # seconds a logo holds before the next swap
     'Logoswitchdur':   1.5,    # swap shockwave duration (particles blow out + reform)
+    'Logopush':        2.0,    # outward push-back strength during the swap
+    'Logoburstcolor':  1.0,    # hue-by-direction + glow-up during the swap (color pop)
 }
 
 

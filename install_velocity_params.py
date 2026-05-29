@@ -423,9 +423,9 @@ add_float(render, 'Velref', 'Velocity Reference (hot at this speed)',
 # bones) and drags it along limb motion (drag). Driven by body_tex → body_field
 # → body_force lookup → bounds_reflect. Per-joint visibility gates each bone.
 add_float(render, 'Bodypush', 'Body Push (repel soup)',
-          0.04, 0.0, 0.2, clamp_max=False)
+          0.06, 0.0, 0.2, clamp_max=False)
 add_float(render, 'Bodydrag', 'Body Drag (advect soup along motion)',
-          0.03, 0.0, 0.2, clamp_max=False)
+          0.045, 0.0, 0.2, clamp_max=False)
 add_float(render, 'Bodyradius', 'Body Influence Radius (bone thickness)',
           0.12, 0.01, 0.5, clamp_max=False)
 # Body VIZ — an elegant glowing render of the skeleton (soft capsule bones +
@@ -560,6 +560,11 @@ add_float(look, 'Logovigor', 'Logo Vigor (vessel liveliness)', 0.5, 0.0, 1.0)
 add_toggle(look, 'Logocycle', 'Logo Auto-Cycle', True)
 add_float(look, 'Logocycletime', 'Logo Cycle Time (s)', 12.0, 1.0, 120.0, clamp_max=False)
 add_float(look, 'Logoswitchdur', 'Logo Switch Shockwave (s)', 1.5, 0.2, 5.0, clamp_max=False)
+# Swap shockwave punch: Logopush = outward push-back strength (soup blasts off
+# the old shape); Logoburstcolor = hue-by-fly-direction + glow-up so the scatter
+# bursts into varied colours and flares through Bloom.
+add_float(look, 'Logopush', 'Logo Swap Push-Back', 2.0, 0.0, 6.0, clamp_max=False)
+add_float(look, 'Logoburstcolor', 'Logo Swap Color Burst', 1.0, 0.0, 3.0, clamp_max=False)
 add_float(look, 'Logofade', 'Logo Fade (standby crossfade s)', 1.5, 0.05, 10.0, clamp_max=False)
 
 # --- Palette (drives color_attr uniforms; presets recolor via these) -------

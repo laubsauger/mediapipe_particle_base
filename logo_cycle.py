@@ -28,18 +28,29 @@ def fresh_state():
     }
 
 
-def step(state, now, cycle_time, switch_dur, enabled=True):
-    """Advance the cycler. Returns (index, trans, state).
+def _smoothstep(a, b, x):
+    if b <= a:
+        return 0.0 if x < a else 1.0
+    t = max(0.0, min(1.0, (x - a) / (b - a)))
+    return t * t * (3.0 - 2.0 * t)
 
-    now         : wall seconds (monotonic).
-    cycle_time  : seconds a logo stays before the next swap starts.
-    switch_dur  : seconds the swap shockwave lasts (envelope width).
-    enabled     : False → no auto-cycle (index held, trans decays to 0).
+
+def step(state, now, cycle_time, switch_dur, enabled=True):
+    """Advance the cycler. Returns (index, attmul, pushmul, trans, state).
+
+    Two clean phases make ONE organic out-then-in motion (not a suck-blast-suck):
+      • SHED   (p<0.5): attract OFF, an outward PUSH pulse blows the soup off
+                        the old shape (pushmul = sin(2πp): 0→1→0).
+      • GATHER (p≥0.5): push OFF, attract fades IN (attmul = smoothstep) so the
+                        scattered soup settles onto the NEW shape. Index flips at
+                        the midpoint, when the soup is most dispersed (hidden).
+      • trans  : a smooth Hann bump (peak at the swap) driving the VISUALS only
+                 (logo-glow fade + colour burst + glow-up).
+
+    now/cycle_time/switch_dur as before. enabled False → held, all 0/attract.
     Pure — unit-testable.
     """
     s = dict(state)
-    # Prime the clock on first call so a huge absTime doesn't trigger an
-    # instant swap (mirrors the beatsaber wall-clock priming gotcha).
     if not s.get('primed'):
         s['t_last'] = now
         s['primed'] = True
@@ -48,69 +59,81 @@ def step(state, now, cycle_time, switch_dur, enabled=True):
 
     if not enabled:
         s['in_trans'] = False
-        return s['index'], 0.0, s
+        return s['index'], 1.0, 0.0, 0.0, s     # full attract, no push
 
     if not s['in_trans']:
         if (now - s['t_last']) >= max(0.0, cycle_time):
             s['in_trans'] = True
             s['t_start'] = now
             s['swapped'] = False
-        return s['index'], 0.0, s
+        return s['index'], 1.0, 0.0, 0.0, s
 
-    # mid-transition
     p = (now - s['t_start']) / switch_dur          # 0..1 across the swap
     if p >= 1.0:
         s['in_trans'] = False
         s['t_last'] = now
-        return s['index'], 0.0, s
+        return s['index'], 1.0, 0.0, 0.0, s
 
-    # Hann window (sin²): 0→1→0 with ZERO slope at both ends, so the shockwave
-    # eases in and out instead of snapping on/off (plain sin has max slope at
-    # the ends → abrupt start/finish).
-    sp = math.sin(p * math.pi)
-    trans = sp * sp
-    if p >= 0.5 and not s['swapped']:              # flip at the peak (hidden)
+    if p >= 0.5 and not s['swapped']:              # flip at the dispersed midpoint
         s['index'] = 1 - s['index']
         s['swapped'] = True
-    return s['index'], trans, s
+
+    if p < 0.5:                                    # SHED: push out, no attract
+        attmul = 0.0
+        pushmul = math.sin(p * 2.0 * math.pi)      # 0→1→0 over the shed half
+        if pushmul < 0.0:
+            pushmul = 0.0
+    else:                                          # GATHER: attract fades in
+        attmul = _smoothstep(0.5, 1.0, p)
+        pushmul = 0.0
+
+    sp = math.sin(p * math.pi)
+    trans = sp * sp                                # smooth visual bump (peak mid)
+    return s['index'], attmul, pushmul, trans, s
 
 
 if __name__ == '__main__':
     st = fresh_state()
     dt = 1.0 / 60.0
     t = 1000.0   # large clock → priming must prevent an instant swap
-    # First call primes; no transition yet.
-    idx, tr, st = step(st, t, cycle_time=2.0, switch_dur=1.0)
-    assert idx == 0 and tr == 0.0 and not st['in_trans'], (idx, tr)
+    # First call primes; no transition (full attract, no push).
+    idx, att, push, tr, st = step(st, t, cycle_time=2.0, switch_dur=1.0)
+    assert idx == 0 and att == 1.0 and push == 0.0 and tr == 0.0, (idx, att, push, tr)
 
-    # Run ~1.9s — still before cycle_time (2s), no transition.
+    # Run ~1.9s — still before cycle_time, held at full attract.
     for _ in range(int(1.9 / dt)):
         t += dt
-        idx, tr, st = step(st, t, 2.0, 1.0)
-    assert not st['in_trans'] and idx == 0, st
+        idx, att, push, tr, st = step(st, t, 2.0, 1.0)
+    assert not st['in_trans'] and idx == 0 and att == 1.0, st
 
-    # Cross 2s → transition starts; collect the envelope + the index flip.
-    peak = 0.0
-    flipped_at = None
-    saw_index1 = False
+    # Cross 2s → transition. Track phases: SHED (push pulse, att 0) before the
+    # flip; GATHER (att fades in, push 0) after.
+    peak_push = 0.0
+    peak_trans = 0.0
+    flip_idx_seen = False
+    att_after_flip = []
+    push_after_flip = []
     for i in range(int(1.2 / dt)):
         t += dt
-        idx, tr, st = step(st, t, 2.0, 1.0)
-        peak = max(peak, tr)
-        if idx == 1 and flipped_at is None:
-            flipped_at = tr
+        idx, att, push, tr, st = step(st, t, 2.0, 1.0)
+        peak_push = max(peak_push, push)
+        peak_trans = max(peak_trans, tr)
         if idx == 1:
-            saw_index1 = True
-    assert peak > 0.95, ("envelope should peak ~1", peak)
-    assert saw_index1, "index should have flipped to 1"
-    # flip happens near the peak (trans high when it flips)
-    assert flipped_at is not None and flipped_at > 0.8, ("flip near peak", flipped_at)
-    # transition ends, envelope back to 0
-    assert not st['in_trans'] and abs(tr) < 1e-6, (st, tr)
+            flip_idx_seen = True
+            att_after_flip.append(att)
+            push_after_flip.append(push)
+    assert peak_push > 0.95, ("shed push should peak ~1", peak_push)
+    assert peak_trans > 0.95, ("visual bump should peak ~1", peak_trans)
+    assert flip_idx_seen, "index should have flipped to 1"
+    # after the flip we GATHER: attract climbs to 1, push stays 0
+    assert max(att_after_flip) > 0.95, ("attract should fade in", max(att_after_flip))
+    assert max(push_after_flip) < 1e-6, ("no push after flip", max(push_after_flip))
+    # ends back at full attract, no transition
+    assert not st['in_trans'] and att == 1.0 and push == 0.0, (st, att, push)
 
-    # disabled → no transition, trans 0
+    # disabled → held, full attract, no push/trans
     st2 = fresh_state()
-    _, tr2, st2 = step(st2, 5000.0, 2.0, 1.0, enabled=False)
-    assert tr2 == 0.0
-    print("OK — logo_cycle: prime guards instant swap, envelope peaks ~1, "
-          "index flips at the peak, resets clean.")
+    _, att2, push2, tr2, st2 = step(st2, 5000.0, 2.0, 1.0, enabled=False)
+    assert att2 == 1.0 and push2 == 0.0 and tr2 == 0.0
+    print("OK — logo_cycle: prime guards swap; SHED (push pulse, no attract) "
+          "then GATHER (attract fades in, no push); flip at dispersed midpoint.")

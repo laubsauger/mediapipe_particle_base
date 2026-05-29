@@ -63,7 +63,8 @@ uniform float uLogoattract;  // soup pull toward the logo shape (gradient force)
 uniform float uLogoamt;      // 0..1 standby fade (op('logo_amt')['amt']); gates logo
 uniform float uLogotrap;     // velocity damping ON the logo mask (sticks soup → fills shape)
 uniform float uLogovigor;    // liveliness of contained particles (0=static decal, 1=churning vessel)
-uniform float uLogotrans;    // 0..1 swap shockwave: pull inverts to push, trap releases
+uniform float uLogotrans;    // 0..1 swap shockwave: pull fades, push ramps in, trap releases
+uniform float uLogopush;     // outward push-back strength during the swap shockwave
 uniform float uBodypush;     // repel strength: particles parted by the skeleton
 uniform float uBodydrag;     // advect strength: particles dragged along limb motion
 
@@ -171,11 +172,12 @@ void main()
         //    it isn't throttled. The gradient is ~0 inside the bright plateau
         //    (contents move freely) and strong at the edges (escaping particles
         //    get pushed back in) → the shape behaves like a container.
-        //    SWAP SHOCKWAVE: as uLogotrans→1 the attract inverts to a PUSH
-        //    (1 - 2·trans), so on a logo change the soup blows outward off the
-        //    old shape, hiding the swap, then reforms onto the new one.
-        float att = uLogoattract * (1.0 - 2.0 * uLogotrans);
-        vel.xy += logo.xy * att * uLogoamt;
+        //    SWAP SHOCKWAVE: the inward pull fades out as uLogotrans→1 while a
+        //    dedicated, stronger OUTWARD push ramps in (uLogopush), so on a logo
+        //    change the soup blasts off the old shape, hiding the swap, then
+        //    reforms onto the new one as trans falls back to 0.
+        vel.xy += logo.xy * uLogoattract * uLogoamt * (1.0 - uLogotrans);
+        vel.xy -= logo.xy * uLogopush    * uLogoamt * uLogotrans;
 
         // 2. Keep the CONTENTS ALIVE: inject extra (un-capped) 3D curl swirl
         //    ONLY inside the shape, so contained particles tumble like a filled
