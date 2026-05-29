@@ -64,7 +64,11 @@ def step(state, now, cycle_time, switch_dur, enabled=True):
         s['t_last'] = now
         return s['index'], 0.0, s
 
-    trans = math.sin(p * math.pi)                  # smooth 0→1→0
+    # Hann window (sin²): 0→1→0 with ZERO slope at both ends, so the shockwave
+    # eases in and out instead of snapping on/off (plain sin has max slope at
+    # the ends → abrupt start/finish).
+    sp = math.sin(p * math.pi)
+    trans = sp * sp
     if p >= 0.5 and not s['swapped']:              # flip at the peak (hidden)
         s['index'] = 1 - s['index']
         s['swapped'] = True

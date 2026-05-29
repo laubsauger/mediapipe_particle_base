@@ -55,6 +55,7 @@ uniform float uLogobright;      // extra brightness for soup sitting on the logo
 uniform float uLogoamt;         // 0..1 standby fade (op('logo_amt')['amt']); gates logo
 uniform float uVelref;          // movement speed mapped to full hot/bloom (slow stays dim)
 uniform float uSoupevolve;      // hue-rotation speed of the soup palette over time (evolving color)
+uniform float uLogotrans;       // 0..1 logo-swap shockwave: fades the logo glow out then back
 
 // Soup palette + ember colours come from COMP color pars (uniforms) so PRESETS
 // can recolor the whole look. No TOP sampler (that crashes a GLSL POP).
@@ -137,7 +138,9 @@ void main()
         // logo brighten (standby): soup particles that have drifted onto the
         // logo's bright mask glow harder, so the shape reads boldly out of the
         // cloud. .w = luma mask from c_logo_lookup; uLogoamt fades with Logomode.
-        bright += TDIn_logodata().w * uLogobright * uLogoamt;
+        // fade the logo glow out during a swap (1 - trans) so the image-cut +
+        // brightness mismatch between the two logos is hidden in the shockwave.
+        bright += TDIn_logodata().w * uLogobright * uLogoamt * (1.0 - uLogotrans);
         // depth cue (fake DoF): particles toward the back of the box (−z) are
         //   dimmer, so the field has depth instead of a flat even mess.
         //   z range ≈ [-0.15, +0.15]; +z is nearer the camera.
