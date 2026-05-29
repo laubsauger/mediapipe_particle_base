@@ -518,7 +518,7 @@ add_rgb(look, 'Emberold', 'Ember Old (death)', (0.45, 0.06, 0.02))
 # energetic particles (which color_attr makes HDR-bright) trail — the calm dim
 # soup stays crisp. Higher = trailing only kicks in at higher speed/energy.
 add_float(look, 'Trailthreshold', 'Trail Threshold (speed gate)',
-          0.9, 0.0, 4.0, clamp_max=False)
+          1.6, 0.0, 4.0, clamp_max=False)
 
 # --- Anamorphic streaks (threshold → big H/V blur → add over bloom) --------
 add_toggle(look, 'Streakenable', 'Streaks Enable', True)
