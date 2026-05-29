@@ -1518,10 +1518,47 @@ Crash-safe sampling only — **no `sampler2D` in a GLSL POP**:
    person appears, smoothed over `Logofade` s.
 
 **Look-page pars:** `Logomode` (Off/Standby/Always, default Standby),
-`Logoattract` (0.5), `Logobright` (1.0), `Logofade` (1.5 s). To swap the logo,
+`Logoattract` (1.5), `Logobright` (2.5), `Logofade` (1.5 s). To swap the logo,
 repoint `null_logo`'s source (the logo PNG lives in the project `Images/` folder,
 referenced relative — never an absolute path). Verify by setting `Logomode =
 Always`: the soup should brighten + condense into the wordmark within ~1–2 s.
+**If the logo is black after a reopen:** the Movie File In (`204_logo_gold_frame`)
+didn't read the file on load — pulse its **Reload** par (a crash-recovered `.toe`
+can land it in the 128×128 default-black state).
+
+### Body push + drag (skeleton field)
+The performer's whole skeleton parts the soup (push) and drags it along limb
+motion (drag), so a body reads as a moving void with limb-streaks — not just the
+5 debug points. All native/crash-safe (GLSL **TOP** + Lookup POP, no GLSL-POP
+sampler):
+
+1. **`body_tex`** — Script TOP (synced to `body_tex_script.py`, wraps pure
+   `body_logic.py`): packs 13 joints from `in_pose` (`<name>:x/y` +
+   `visibility<idx>`) into an NJOINTS×2 RGBA32F texture — row0 = pos+vis, row1 =
+   per-joint velocity (differenced from a stored prev). `in_pose` shares `lag1`'s
+   coordinate convention, so the field lands where the particles are.
+2. **`body_field`** — GLSL TOP (`shaders/body_field.frag`): splats the 14 BONES
+   as soft capsules → RG = push (away from nearest bone), BA = drag (bone vel),
+   both × falloff × per-joint visibility (absent/off-frame joints add nothing).
+3. **`body_force`** — Lookup POP in the force chain (`add_to_force → body_force →
+   bounds_reflect`): samples `body_field` at `Puv` → 4-comp `bodyforce` attribute.
+4. **`bounds_reflect`** folds it into PartVel for ALL particles: `vel +=
+   bodyforce.xy·Bodypush + bodyforce.zw·Bodydrag`.
+
+**Renderer-page pars:** `Bodypush` (0.04 — repel), `Bodydrag` (0.03 — advect),
+`Bodyradius` (0.12 — bone thickness, world-y units). Soup body-response is still
+capped by `Soupmaxspeed`, so parting is gentle; raise `Bodypush` for a bolder
+void. Verify with a live pose: soup should part into the torso/arm silhouette and
+stream along the limbs. (Body is PHYSICS — deliberately NOT in `presets.py`.)
+
+### Emission spray direction
+Movement particles shed within a **forward cone** of the limb's motion (in
+`emitters_chop_script.py`): the launch velocity is the limb's motion vector
+rotated by a random angle ≤ `min(Spawnangjitter + Spawnvelfan·speed_factor, 1.0)`
+rad. So moving up sprays up-ish, never sideways/backward. `Spawnangjitter` (0.45)
+is the at-rest cone half-angle; `Spawnvelfan` (0.6) widens it with speed (broader
+fast-swipe plume), hard-capped at ±~57° so it can't reverse. Launch speed is
+proportional to limb speed (`Spawnvelscale`), so slow motion sheds gently.
 
 ## Forking for another experiment
 

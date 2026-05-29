@@ -147,7 +147,7 @@ add_float(sensing, 'Settleframes', 'Settle Frames (after dropout)',
 # less spiky than side-to-side motion. MediaPipe's z is noisier than x/y,
 # so this also keeps burst detection robust against depth jitter.
 add_float(sensing, 'Zspeedweight', 'Z Speed Weight (emit/burst sensitivity)',
-          0.35, 0.0, 1.0)
+          0.1, 0.0, 1.0)
 
 # Downstream single-knob blend (Lag CHOP references this).
 add_float(sensing, 'Blendtime', 'Blend Time (s)',
@@ -227,18 +227,18 @@ add_float(render, 'Spawnvelscale', 'Spawn Velocity Scale',
 # Angular fan on StartPartvel — tilts the edge sub-emitters' initial
 # velocity outward along the perpendicular direction so the wavefront
 # expands as it travels (cone instead of parallel wall). Center particle
-# (t=0) stays parallel to limb motion; edge particles (t=±0.5) get a
-# perpendicular kick scaled by this * limb_speed. 0 = parallel wavefront,
-# 0.5 = ~27° edge tilt (visible cone), 1.0 = ~45° (strong fan),
-# 1.5+ = explosive burst-outward.
-add_float(render, 'Spawnvelfan', 'Spawn Velocity Fan (0=parallel, 1=cone)',
-          1.2, 0.0, 2.0, clamp_max=False)
-# Speed-independent angular jitter (radians) on each particle's launch
-# direction. The fan scales with limb speed (so slight motion = tight stream);
-# this spreads launch directions even at slow motion → soft shedding spray.
-# 0 = directional, 0.45 ≈ ±26° spread, higher = wider/fuzzier.
-add_float(render, 'Spawnangjitter', 'Spawn Angle Jitter (rad)',
-          0.45, 0.0, 1.57, clamp_max=False)
+# How much the forward emission cone WIDENS with limb speed (radians added to
+# the at-rest half-angle, × speed_factor). The launch is the motion vector
+# rotated within this cone, so spray ALWAYS sheds in the motion direction —
+# never sideways/backward. Total cone is hard-capped at 1.0 rad (±57°) so it
+# can't reverse. 0 = constant-width jet; higher = broader fast-swipe plume.
+add_float(render, 'Spawnvelfan', 'Spawn Cone Speed-Widen (rad)',
+          0.1, 0.0, 1.0, clamp_max=False)
+# At-rest forward-cone half-angle (radians) around the motion direction. Keeps
+# the spray hugging the motion axis (moving up sprays up, not down). 0 = a thin
+# directional jet; 0.1 ≈ ±5.7°; raise for a softer, more fanned shed.
+add_float(render, 'Spawnangjitter', 'Spawn Cone Half-Angle (rad)',
+          0.1, 0.0, 1.0, clamp_max=False)
 
 # Velocity field splatter — base radius of each emitter's gaussian kernel
 # (in 0..1 UV space of the velocity-field TOP). Smaller = tighter blob per
@@ -428,6 +428,15 @@ add_float(render, 'Bodydrag', 'Body Drag (advect soup along motion)',
           0.03, 0.0, 0.2, clamp_max=False)
 add_float(render, 'Bodyradius', 'Body Influence Radius (bone thickness)',
           0.12, 0.01, 0.5, clamp_max=False)
+# Body VIZ — an elegant glowing render of the skeleton (soft capsule bones +
+# joint nodes + energy pulse), composited additively before Bloom (body_viz GLSL
+# TOP → body_comp). Our own body visualization to replace MediaPipe's debug
+# circles. HDR core blooms; keep glow modest so it doesn't wash the frame.
+add_toggle(render, 'Bodyviz', 'Body Viz (glowing skeleton)', True)
+add_float(render, 'Bodyvizwidth', 'Body Viz Width', 0.014, 0.005, 0.1, clamp_max=False)
+add_float(render, 'Bodyvizglow', 'Body Viz Glow', 0.35, 0.0, 5.0, clamp_max=False)
+add_float(render, 'Bodyvizflow', 'Body Viz Flow (energy pulse)', 0.5, 0.0, 1.0)
+add_rgb(render, 'Bodyviztint', 'Body Viz Tint', (0.4, 0.8, 1.0))
 # Steady brightness multiplier for the ambient soup (Lid>=5). The soup is
 # exempt from the Embers decay-to-black so it persists as a thick cloud; this
 # scales how visible it is. Keep below ~ the bloom threshold so the calm soup
@@ -457,6 +466,11 @@ add_float(render, 'Soupmaxspeed', 'Soup Max Speed (calm cap)',
 # the ramp. 0 = static palette spread; ~0.03 = full cycle every ~30s.
 add_float(render, 'Soupcyclespeed', 'Soup Color Cycle Speed',
           0.03, 0.0, 1.0, clamp_max=False)
+# Soup color EVOLVE: slowly rotates the whole palette's HUE over time (rad/sec)
+# so the soup colour drifts through the spectrum, not just sweeping the fixed
+# A/B/C bands. 0 = fixed palette; 0.05 ≈ a full hue cycle every ~2 min.
+add_float(render, 'Soupevolve', 'Soup Color Evolve (hue/sec)',
+          0.05, 0.0, 0.5, clamp_max=False)
 # Soup velocity look: soup speed at which it reads as "fast". Below it, slow;
 # above, it hits full velocity-brightness. Match to the turbulence speed range.
 add_float(render, 'Soupspeedref', 'Soup Speed Reference (fast=ref)',
@@ -522,8 +536,20 @@ add_pulse(look, 'Applypreset', 'Apply Preset')
 # --- Logo attractor (passive-state hero; samples null_logo) ----------------
 # Off / Always / Standby (fades in when no pose, out when a person appears).
 add_menu(look, 'Logomode', 'Logo Mode', ['Off', 'Standby', 'Always'], 'Standby')
-add_float(look, 'Logoattract', 'Logo Attract (pull into shape)', 1.5, 0.0, 4.0, clamp_max=False)
+add_float(look, 'Logoattract', 'Logo Attract (pull into shape)', 0.5, 0.0, 2.0, clamp_max=False)
 add_float(look, 'Logobright', 'Logo Brightness (glow on shape)', 2.5, 0.0, 6.0, clamp_max=False)
+# Logo gather/shape controls. Reach = blur radius of logo_blur (how far the
+# broad pull extends). Gradamp scales the gradient. Trap = velocity damping on
+# the mask so soup STICKS on the bright pixels (fills the shape, not a blob).
+# NOTE: the logo_grad GLSL TOP must be a SIGNED float format (rgba32float) or
+# negative gradient directions clamp to 0 and half the pull is lost.
+add_float(look, 'Logoreach', 'Logo Reach (far pull, blur px)', 180.0, 0.0, 600.0, clamp_max=False)
+add_float(look, 'Logogradamp', 'Logo Gradient Amp', 1.0, 0.0, 8.0, clamp_max=False)
+add_float(look, 'Logotrap', 'Logo Trap (stick on shape)', 0.9, 0.0, 1.0)
+# Liveliness of particles ONCE contained in the logo shape: 0 = static decal
+# (they freeze on the mask), 1 = churning vessel (un-capped 3D curl swirl inside
+# the shape, walled in by the gradient edge). The shape stays legible either way.
+add_float(look, 'Logovigor', 'Logo Vigor (vessel liveliness)', 0.5, 0.0, 1.0)
 add_float(look, 'Logofade', 'Logo Fade (standby crossfade s)', 1.5, 0.05, 10.0, clamp_max=False)
 
 # --- Palette (drives color_attr uniforms; presets recolor via these) -------

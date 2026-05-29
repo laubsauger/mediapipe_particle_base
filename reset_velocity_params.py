@@ -44,7 +44,7 @@ SENSING = {
     'Burstdecay':          0.35,
     'Maxjump':             0.30,
     'Settleframes':        1,
-    'Zspeedweight':        0.35,
+    'Zspeedweight':        0.1,   # low: MediaPipe z (esp. nose depth) is noisy — keep it from triggering emission so emit/burst track real xy motion
     'Blendtime':           0.08,
 }
 
@@ -62,8 +62,8 @@ RENDERER = {
     'Spawnspreadmin':  0.05,   # rest birth zone (enlarged so emission isn't from a point)
     'Spawnperpratio':  0.6,    # perp/along aspect at speed (wider, rounder area)
     'Spawnvelscale':   0.12,   # soft initial launch (was flinging on slight motion)
-    'Spawnvelfan':     1.2,    # cone fan at speed
-    'Spawnangjitter':  0.45,   # speed-independent launch-angle jitter (soft shedding)
+    'Spawnvelfan':     0.1,    # how much the forward cone WIDENS with speed (rad)
+    'Spawnangjitter':  0.1,    # at-rest forward-cone half-angle (rad, ±5.7°); spray hugs motion dir
     # Flow field
     'Fieldradius':     0.05,   # tight splat
     'Fieldforce':      0.45,   # field push magnitude — softer so slight motion doesn't fling
@@ -113,10 +113,17 @@ RENDERER = {
     'Bodypush':        0.04,    # repel strength (soup pushed away from bones)
     'Bodydrag':        0.03,    # advect strength (soup dragged along limb motion)
     'Bodyradius':      0.12,    # bone influence radius (world-y units)
+    # Body VIZ (glowing skeleton render — our replacement for MediaPipe circles).
+    'Bodyviz':         1,       # on
+    'Bodyvizwidth':    0.014,   # bone capsule width
+    'Bodyvizglow':     0.35,    # glow intensity (HDR core blooms; keep modest)
+    'Bodyvizflow':     0.5,     # energy pulse along the limbs
+    'Bodyviztint':     (0.4, 0.8, 1.0),  # cool cyan halo (white core)
     'Soupbright':      1.0,     # steady soup brightness; kept below Bloomthreshold so soup doesn't bloom
     'Soupturb':        0.05,    # drives soup curl drift; saturates the cap below
     'Soupmaxspeed':    0.008,   # hard cap on idle soup speed (the real "calm" knob)
-    'Soupcyclespeed':  0.03,    # soup color-ramp cycle speed over time
+    'Soupcyclespeed':  0.03,    # soup color-ramp cycle speed over time (spatial band sweep)
+    'Soupevolve':      0.05,    # soup palette HUE rotation over time (color drifts through spectrum)
     'Soupspeedref':    0.2,     # soup speed mapped to "fast" for the velocity look
     'Soupvelbloom':    2.0,     # fast-soup brightness/bloom boost
     'Soupcolorscale':  0.6,     # spatial frequency of the soup color gradient (position-based)
@@ -133,9 +140,13 @@ RENDERER = {
     # Logo attractor + brighten (standby screensaver). Logomode: Off/Standby/Always.
     # Standby fades the logo in when no pose is present, out when a person appears.
     'Logomode':        'Standby',
-    'Logoattract':     1.5,    # soup pull up the logo luma gradient (forms the shape)
+    'Logoattract':     0.5,    # soup pull up the logo luma gradient (gentle, edge-distributed)
     'Logobright':      2.5,    # extra glow on soup sitting on the logo mask (legible reveal)
     'Logofade':        1.5,    # standby crossfade seconds
+    'Logoreach':       180.0,  # blur radius (px) = medium reach → pulls to nearest feature, not centroid
+    'Logogradamp':     1.0,    # logo gradient amplification
+    'Logotrap':        0.9,    # velocity damping on the mask (soup STICKS → fills the shape)
+    'Logovigor':       0.5,    # liveliness inside the shape (0=static decal, 1=churning vessel)
 }
 
 

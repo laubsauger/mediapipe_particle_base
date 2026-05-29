@@ -61,6 +61,8 @@ uniform float uSoupturb2;    // strength of the broad/slow second curl layer
 uniform float uSouplayermix; // fraction of soup on layer B (broad) vs A (fine)
 uniform float uLogoattract;  // soup pull toward the logo shape (gradient force)
 uniform float uLogoamt;      // 0..1 standby fade (op('logo_amt')['amt']); gates logo
+uniform float uLogotrap;     // velocity damping ON the logo mask (sticks soup → fills shape)
+uniform float uLogovigor;    // liveliness of contained particles (0=static decal, 1=churning vessel)
 uniform float uBodypush;     // repel strength: particles parted by the skeleton
 uniform float uBodydrag;     // advect strength: particles dragged along limb motion
 
@@ -135,15 +137,12 @@ void main()
         // Two interleaved flow layers: each soup particle follows the broad
         // slow curl (B) or the fine curl (A) by a stable PartId hash, so the
         // field reads as layered structure rather than one uniform drift.
+        // Curl is CALMED as the logo fades in (uLogoamt→1) so the turbulence
+        // stops fighting the attractor and the shape can actually complete.
         float h = fract(sin(float(TDIn_PartId()) * 91.17) * 43758.5453);
-        if (h < uSouplayermix) vel += curl2 * uSoupturb2;
-        else                   vel += curl  * uSoupturb;
-
-        // Logo attractor (standby): pull soup up the logo's luma gradient toward
-        // its bright shape, so the cloud condenses into the logo when no one's
-        // present. ∇luma is in UV; +u→+x, +v→+y (box-aligned). uLogoamt fades it
-        // in/out with Logomode. Capped by uSoupmaxspeed below → gentle settle.
-        vel += vec3(logo.xy, 0.0) * uLogoattract * uLogoamt;
+        float curlcalm = 1.0 - 0.85 * uLogoamt;
+        if (h < uSouplayermix) vel += curl2 * uSoupturb2 * curlcalm;
+        else                   vel += curl  * uSoupturb  * curlcalm;
     }
 
     vel *= max(0.0, 1.0 - uDamping);
@@ -159,8 +158,37 @@ void main()
     // integration), this caps its idle speed so it never reads as fast/turbulent.
     // A limb's flow field can still shove it — it's just capped at uSoupmaxspeed.
     if (lid >= 5) {
+        // Idle calm cap on the curl drift (free soup stays gentle).
         float ss = length(vel);
         if (ss > uSoupmaxspeed) vel *= (uSoupmaxspeed / ss);
+
+        // ---- Logo as a 3D VESSEL ------------------------------------------
+        // `inside` is high for particles sitting on the bright shape.
+        float inside = clamp(logo.w * uLogoamt, 0.0, 1.0);
+
+        // 1. Attract from afar + soft edge WALL. Applied AFTER the calm cap so
+        //    it isn't throttled. The gradient is ~0 inside the bright plateau
+        //    (contents move freely) and strong at the edges (escaping particles
+        //    get pushed back in) → the shape behaves like a container.
+        vel.xy += logo.xy * uLogoattract * uLogoamt;
+
+        // 2. Keep the CONTENTS ALIVE: inject extra (un-capped) 3D curl swirl
+        //    ONLY inside the shape, so contained particles tumble like a filled
+        //    vessel instead of freezing on the mask. uLogovigor = liveliness;
+        //    curl is 3D so they also drift in z → reads as a 3D vessel.
+        vel += curl * (uSoupturb * 5.0 * inside * uLogovigor);
+
+        // 3. Gentle settle (NOT a freeze) so speed doesn't run away — weakened
+        //    by vigor so the swirl persists (vigor 0 → sticky/static like a
+        //    decal; vigor 1 → lively churn inside the shape).
+        vel.xy *= (1.0 - inside * uLogotrap * (1.0 - 0.7 * uLogovigor));
+
+        // 4. Overall logo-speed limit, with headroom for the vessel swirl so
+        //    step 2 isn't immediately clamped away.
+        float lcap = uSoupmaxspeed + uLogoamt * (uLogoattract * 0.5
+                     + uSoupturb * 5.0 * inside * uLogovigor);
+        float ls = length(vel);
+        if (ls > lcap) vel *= (lcap / ls);
     }
 
     // ---- Wall reflection + hard position clamp -----------------------------

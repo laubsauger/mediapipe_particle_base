@@ -54,6 +54,7 @@ uniform float uDepthdim;        // how much to dim particles toward the back (fa
 uniform float uLogobright;      // extra brightness for soup sitting on the logo mask
 uniform float uLogoamt;         // 0..1 standby fade (op('logo_amt')['amt']); gates logo
 uniform float uVelref;          // movement speed mapped to full hot/bloom (slow stays dim)
+uniform float uSoupevolve;      // hue-rotation speed of the soup palette over time (evolving color)
 
 // Soup palette + ember colours come from COMP color pars (uniforms) so PRESETS
 // can recolor the whole look. No TOP sampler (that crashes a GLSL POP).
@@ -63,6 +64,16 @@ uniform vec3 uSoupC;
 uniform vec3 uEmberHot;   // white-hot at birth (keep HDR > 1 so births bloom)
 uniform vec3 uEmberMid;   // mid-life
 uniform vec3 uEmberOld;   // near-death ember
+
+// Rotate a color's hue by angle `a` (radians) around the luminance axis. Used
+// to make the soup palette EVOLVE through the spectrum over time, instead of
+// just sweeping the same fixed A/B/C gradient.
+vec3 hueShift(vec3 c, float a)
+{
+    const vec3 k = vec3(0.57735026919);   // normalize(vec3(1))
+    float cosA = cos(a);
+    return c * cosA + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - cosA);
+}
 
 // Cyclic 3-stop gradient over phase t (A→B→C→A, wraps seamlessly). Smooth,
 // art-directable, preset-driven.
@@ -115,6 +126,9 @@ void main()
         float phase = fract(dot(p.xy, vec2(0.6, 0.8)) * uSoupcolorscale
                             + uTime * uSoupcyclespeed);
         vec3  rampC = soupPalette(phase);
+        // evolve the palette hue over time so the whole soup colour drifts
+        // through the spectrum (not just the fixed A→B→C bands sweeping by).
+        rampC = hueShift(rampC, uTime * uSoupevolve);
         // velocity response: faster soup (turbulence peaks, or a flow-field
         //   shove from a limb) gets brighter and can bloom — so slow vs fast
         //   particles read differently and pose interaction "pops".

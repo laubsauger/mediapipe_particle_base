@@ -256,12 +256,6 @@ def onCook(scriptOp):
             off_x = along_x * local_along + perp_x * local_perp
             off_y = along_y * local_along + perp_y * local_perp
 
-            # Velocity fan: edge sub-emitters (large |rel_perp|) get a
-            # perpendicular kick. Center (rel_perp=0) stays parallel.
-            # Scaled by limb speed, so at rest there's no fan.
-            fan_vx = perp_x * rel_perp * spawn_vel_fan * vmag_xy * spawn_vel_scale
-            fan_vy = perp_y * rel_perp * spawn_vel_fan * vmag_xy * spawn_vel_scale
-
             # Linear remap from mediapipe UV [0,1]² to bounds-box xy.
             # x stretches with the aspect ratio — fills the new wider box.
             wx = bx_min + (x + off_x) * bx_w
@@ -275,16 +269,19 @@ def onCook(scriptOp):
             chans['P0'][idx] = _clamp(wx, bx_min + margin, bx_max - margin)
             chans['P1'][idx] = _clamp(wy, by_min + margin, by_max - margin)
             chans['P2'][idx] = _clamp(wz, bz_min + margin, bz_max - margin)
-            # Launch velocity = limb direction + fan, then rotated by a random
-            # speed-independent angle so the spray sheds in varied directions
-            # (smooth) instead of one tight axis-aligned stream.
-            vlx = base_svx + fan_vx
-            vly = base_svy + fan_vy
-            theta = _RNG.uniform(-1.0, 1.0) * spawn_ang_jitter
+            # Launch velocity: the limb's motion vector (proportional to limb
+            # speed), rotated by a random angle within a FORWARD cone — so the
+            # spray always sheds roughly in the direction of motion, never
+            # sideways or backward. Moving up → particles go up-ish, not down.
+            # The cone half-angle = baseline jitter (Spawnangjitter) widened by
+            # speed (Spawnvelfan × speed_factor) for a broader fast-swipe plume,
+            # hard-capped at ~1 rad (±57°) so it can never reverse direction.
+            cone  = min(spawn_ang_jitter + spawn_vel_fan * speed_factor, 1.0)
+            theta = _RNG.uniform(-1.0, 1.0) * cone
             ct = math.cos(theta)
             st = math.sin(theta)
-            chans['v0'][idx] = vlx * ct - vly * st
-            chans['v1'][idx] = vlx * st + vly * ct
+            chans['v0'][idx] = base_svx * ct - base_svy * st
+            chans['v1'][idx] = base_svx * st + base_svy * ct
             chans['v2'][idx] = svz
             chans['w'][idx]  = w_per
             # id stays the landmark index so per-limb colouring still works
