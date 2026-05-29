@@ -65,14 +65,22 @@ def onCook(scriptOp):
         return
 
     lms = _landmark_list()
-    n = len(lms)
-    if n == 0:
+    n_lm = len(lms)
+    if n_lm == 0:
         scriptOp.copyNumpyArray(np.zeros((1, 1, 4), dtype=np.float32))
         return
 
-    # Build (height=2, width=n, RGBA) array. TD indexes [row][col][channel];
-    # the first row is v=0 at the bottom of the image in UV space. We pack
-    # row0 into index 0 (shader samples at v=0.25 = first row center).
+    # MULTI-PERSON: pack persons × n_lm emitters into the texture so the
+    # velocity field gets contributions from EVERY tracked body. velocity_field
+    # reads uNumEmitters = MAX_PERSONS*n_lm and loops them; absent persons
+    # contribute force_gain=0 → no splat.
+    try:
+        bl = mod.body_logic
+        persons = bl.MAX_PERSONS
+    except Exception:
+        bl = None
+        persons = 1
+    n = persons * n_lm
     buf = np.zeros((2, n, 4), dtype=np.float32)
 
     # Burst gain is combined into the pre-computed force_gain so the shader
@@ -94,19 +102,27 @@ def onCook(scriptOp):
     except Exception:
         z_force_weight = 0.05
 
-    for i, lm in enumerate(lms):
-        x  = _read(src, f'{lm}:x')
-        y  = _read(src, f'{lm}:y')
-        z  = _read(src, f'{lm}:z')
-        vx = _read(src, f'{lm}:vx')
-        vy = _read(src, f'{lm}:vy')
-        vz = _read(src, f'{lm}:vz') * z_force_weight
-        em = _read(src, f'{lm}:emit')
-        bu = _read(src, f'{lm}:burst')
-        vi = _read(src, f'{lm}:visible')
-        force_gain = (em + burst_gain * bu) * vi
-        buf[0, i] = (x, y, z, vi)            # row 0: 3D position + vis gate
-        buf[1, i] = (vx, vy, vz, force_gain) # row 1: 3D velocity + weight
+    def _rd(p, lm, suffix):
+        if bl is None:
+            return _read(src, '%s:%s' % (lm, suffix))
+        return bl.read_person_chan(src, p, lm, suffix, 0.0)
+
+    i = 0
+    for p in range(persons):
+        for lm in lms:
+            x  = _rd(p, lm, 'x')
+            y  = _rd(p, lm, 'y')
+            z  = _rd(p, lm, 'z')
+            vx = _rd(p, lm, 'vx')
+            vy = _rd(p, lm, 'vy')
+            vz = _rd(p, lm, 'vz') * z_force_weight
+            em = _rd(p, lm, 'emit')
+            bu = _rd(p, lm, 'burst')
+            vi = _rd(p, lm, 'visible')
+            force_gain = (em + burst_gain * bu) * vi
+            buf[0, i] = (x, y, z, vi)
+            buf[1, i] = (vx, vy, vz, force_gain)
+            i += 1
 
     scriptOp.copyNumpyArray(buf)
     return

@@ -97,19 +97,12 @@ def onCook(scriptOp):
     landmarks = _landmark_list(getattr(par, 'Landmarks', None) and par.Landmarks.eval()) \
                 or logic.LANDMARKS
 
-    # ---- State (nested per person; survives cook-to-cook) ---------------
+    # ---- State (nested {person: {lm: state}}; survives cook-to-cook) ----
     state = comp.fetch(STORAGE_KEY, None)
-    need_rebuild = (
-        state is None
-        or not isinstance(state, dict)
-        # nested shape: keys are ints (person ids), inner dicts hold landmarks
-        or (state and any(isinstance(k, int) for k in state.keys())
-            and any(set(ps.keys()) != set(landmarks) for ps in state.values() if isinstance(ps, dict)))
-        # legacy flat shape with different landmarks
-        or (state and not any(isinstance(k, int) for k in state.keys())
-            and set(state.keys()) != set(landmarks))
-    )
-    if need_rebuild:
+    if (not isinstance(state, dict)
+            or set(state.keys()) != set(range(persons))
+            or any(set(ps.keys()) != set(landmarks)
+                   for ps in state.values() if isinstance(ps, dict))):
         state = logic.new_state(landmarks, persons=persons)
     else:
         logic.ensure_schema(state, landmarks, persons=persons)
@@ -218,7 +211,7 @@ def onCook(scriptOp):
     # ---- Update logic (handles both flat + nested) -----------------------
     per_landmark, globals_out = logic.update(state, samples, dt, params)
 
-    # ---- Emit channels: per-person `p<P>:<lm>:<suffix>` + legacy aliases -
+    # ---- Emit per-person `p<P>:<lm>:<suffix>` + globals -----------------
     scriptOp.numSamples = 1
     scriptOp.rate = me.time.rate
 
@@ -229,17 +222,7 @@ def onCook(scriptOp):
                 continue
             for suffix in logic.PER_LANDMARK_CHANS:
                 scriptOp.appendChan('p%d:%s:%s' % (p, lm, suffix))[0] = o[suffix]
-        # legacy non-prefixed aliases for person 0 so existing emitters /
-        # downstream code that reads `lag1['nose:vx']` keeps working.
-        if p == 0:
-            for lm in landmarks:
-                o = per_landmark.get(lm) or per_landmark.get('p0:%s' % lm)
-                if o is None:
-                    continue
-                for suffix in logic.PER_LANDMARK_CHANS:
-                    scriptOp.appendChan('%s:%s' % (lm, suffix))[0] = o[suffix]
 
     for g in logic.GLOBAL_CHANS:
         scriptOp.appendChan(g)[0] = globals_out[g]
-
     return
