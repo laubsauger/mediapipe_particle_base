@@ -22,8 +22,7 @@ def fresh_state():
         't_last':   0.0,    # wall time the last cycle completed
         'in_trans': False,  # currently mid-swap?
         't_start':  0.0,    # wall time the current transition started
-        'index':    0,      # which logo (0/1)
-        'swapped':  False,  # has the index flipped this transition yet?
+        'target':   0,      # which logo we're settled on (0/1)
         'primed':   False,  # t_last seeded to first real clock?
     }
 
@@ -36,104 +35,93 @@ def _smoothstep(a, b, x):
 
 
 def step(state, now, cycle_time, switch_dur, enabled=True):
-    """Advance the cycler. Returns (index, attmul, pushmul, trans, state).
+    """Advance the cycler. Returns (blend, morph, state).
 
-    Two clean phases make ONE organic out-then-in motion (not a suck-blast-suck):
-      • SHED   (p<0.5): attract OFF, an outward PUSH pulse blows the soup off
-                        the old shape (pushmul = sin(2πp): 0→1→0).
-      • GATHER (p≥0.5): push OFF, attract fades IN (attmul = smoothstep) so the
-                        scattered soup settles onto the NEW shape. Index flips at
-                        the midpoint, when the soup is most dispersed (hidden).
-      • trans  : a smooth Hann bump (peak at the swap) driving the VISUALS only
-                 (logo-glow fade + colour burst + glow-up).
+    POSITIONAL MORPH (not an alpha blend of the render): `blend` (0..1) is a
+    fractional Switch index — with the Switch TOP's Blend ON it cross-dissolves
+    the two logo IMAGES, so the attractor GRADIENT FIELD smoothly morphs from the
+    old shape to the new one. Attract stays ON throughout, so particles settled
+    on the old shape MIGRATE — they lerp positions to their new homes as the
+    field morphs. `morph` (0..1, Hann bump, peak mid-transition) releases the
+    trap so they flow freely, and drives the visuals (colour burst + glow).
 
-    now/cycle_time/switch_dur as before. enabled False → held, all 0/attract.
-    Pure — unit-testable.
+    `blend` holds at 0 or 1 between swaps (cycle_time), ramps (smoothstep over
+    switch_dur) to the other end during a swap, then holds there. Pure.
     """
     s = dict(state)
     if not s.get('primed'):
         s['t_last'] = now
         s['primed'] = True
+        s.setdefault('target', s.get('index', 0))   # which logo we're settled on
 
     switch_dur = max(1e-3, switch_dur)
+    target = s.get('target', 0)
 
     if not enabled:
         s['in_trans'] = False
-        return s['index'], 1.0, 0.0, 0.0, s     # full attract, no push
+        return float(target), 0.0, s
 
     if not s['in_trans']:
         if (now - s['t_last']) >= max(0.0, cycle_time):
             s['in_trans'] = True
             s['t_start'] = now
-            s['swapped'] = False
-        return s['index'], 1.0, 0.0, 0.0, s
+        return float(target), 0.0, s
 
     p = (now - s['t_start']) / switch_dur          # 0..1 across the swap
     if p >= 1.0:
+        s['target'] = 1 - target                   # now settled on the other logo
         s['in_trans'] = False
         s['t_last'] = now
-        return s['index'], 1.0, 0.0, 0.0, s
+        return float(s['target']), 0.0, s
 
-    if p >= 0.5 and not s['swapped']:              # flip at the dispersed midpoint
-        s['index'] = 1 - s['index']
-        s['swapped'] = True
-
-    if p < 0.5:                                    # SHED: push out, no attract
-        attmul = 0.0
-        pushmul = math.sin(p * 2.0 * math.pi)      # 0→1→0 over the shed half
-        if pushmul < 0.0:
-            pushmul = 0.0
-    else:                                          # GATHER: attract fades in
-        attmul = _smoothstep(0.5, 1.0, p)
-        pushmul = 0.0
-
+    e = _smoothstep(0.0, 1.0, p)                    # eased ramp old→new
+    dest = 1 - target
+    blend = target + (dest - target) * e           # 0→1 or 1→0
     sp = math.sin(p * math.pi)
-    trans = sp * sp                                # smooth visual bump (peak mid)
-    return s['index'], attmul, pushmul, trans, s
+    morph = sp * sp                                # peak mid (trap release + FX)
+    return blend, morph, s
 
 
 if __name__ == '__main__':
     st = fresh_state()
     dt = 1.0 / 60.0
     t = 1000.0   # large clock → priming must prevent an instant swap
-    # First call primes; no transition (full attract, no push).
-    idx, att, push, tr, st = step(st, t, cycle_time=2.0, switch_dur=1.0)
-    assert idx == 0 and att == 1.0 and push == 0.0 and tr == 0.0, (idx, att, push, tr)
+    # First call primes; settled on logo 0 (blend 0), no morph.
+    bl, mo, st = step(st, t, cycle_time=2.0, switch_dur=1.0)
+    assert bl == 0.0 and mo == 0.0 and not st['in_trans'], (bl, mo)
 
-    # Run ~1.9s — still before cycle_time, held at full attract.
+    # Run ~1.9s — still holding on logo 0.
     for _ in range(int(1.9 / dt)):
         t += dt
-        idx, att, push, tr, st = step(st, t, 2.0, 1.0)
-    assert not st['in_trans'] and idx == 0 and att == 1.0, st
+        bl, mo, st = step(st, t, 2.0, 1.0)
+    assert not st['in_trans'] and bl == 0.0, st
 
-    # Cross 2s → transition. Track phases: SHED (push pulse, att 0) before the
-    # flip; GATHER (att fades in, push 0) after.
-    peak_push = 0.0
-    peak_trans = 0.0
-    flip_idx_seen = False
-    att_after_flip = []
-    push_after_flip = []
+    # Cross 2s → blend ramps 0→1 (cross-dissolve), morph bumps, settles at 1.
+    peak_morph = 0.0
+    blends = []
     for i in range(int(1.2 / dt)):
         t += dt
-        idx, att, push, tr, st = step(st, t, 2.0, 1.0)
-        peak_push = max(peak_push, push)
-        peak_trans = max(peak_trans, tr)
-        if idx == 1:
-            flip_idx_seen = True
-            att_after_flip.append(att)
-            push_after_flip.append(push)
-    assert peak_push > 0.95, ("shed push should peak ~1", peak_push)
-    assert peak_trans > 0.95, ("visual bump should peak ~1", peak_trans)
-    assert flip_idx_seen, "index should have flipped to 1"
-    # after the flip we GATHER: attract climbs to 1, push stays 0
-    assert max(att_after_flip) > 0.95, ("attract should fade in", max(att_after_flip))
-    assert max(push_after_flip) < 1e-6, ("no push after flip", max(push_after_flip))
-    # ends back at full attract, no transition
-    assert not st['in_trans'] and att == 1.0 and push == 0.0, (st, att, push)
+        bl, mo, st = step(st, t, 2.0, 1.0)
+        peak_morph = max(peak_morph, mo)
+        blends.append(bl)
+    assert peak_morph > 0.95, ("morph should peak ~1", peak_morph)
+    # blend is monotonic-ish 0→1 and ends at 1 (settled on the other logo)
+    assert blends[-1] == 1.0 and st['target'] == 1, ("settle on logo 1", blends[-1], st)
+    assert max(blends) <= 1.0 and min(blends) >= 0.0
+    # mid-ramp it actually crossed ~0.5 (real positional dissolve, not a jump)
+    assert any(0.3 < b < 0.7 for b in blends), "blend should pass through the middle"
+    assert not st['in_trans'] and mo == 0.0
 
-    # disabled → held, full attract, no push/trans
+    # next swap ramps back 1→0
+    t += 2.0
+    for i in range(int(1.2 / dt)):
+        t += dt
+        bl, mo, st = step(st, t, 2.0, 1.0)
+    assert bl == 0.0 and st['target'] == 0, ("settle back on logo 0", bl, st)
+
+    # disabled → held, morph 0
     st2 = fresh_state()
-    _, att2, push2, tr2, st2 = step(st2, 5000.0, 2.0, 1.0, enabled=False)
-    assert att2 == 1.0 and push2 == 0.0 and tr2 == 0.0
-    print("OK — logo_cycle: prime guards swap; SHED (push pulse, no attract) "
-          "then GATHER (attract fades in, no push); flip at dispersed midpoint.")
+    bl2, mo2, st2 = step(st2, 5000.0, 2.0, 1.0, enabled=False)
+    assert mo2 == 0.0
+    print("OK — logo_cycle: blend cross-dissolves 0↔1 through the middle "
+          "(positional morph), morph bump peaks mid, settles + holds.")

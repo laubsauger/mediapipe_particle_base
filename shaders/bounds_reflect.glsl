@@ -65,8 +65,7 @@ uniform float uLogotrap;     // velocity damping ON the logo mask (sticks soup �
 uniform float uLogovigor;    // liveliness of contained particles (0=static decal, 1=churning vessel)
 uniform float uLogotrans;    // 0..1 visual swap bump (unused here; color_attr uses it)
 uniform float uLogopush;     // outward push-back strength during the swap shockwave
-uniform float uLogoattmul;   // attract multiplier from logo_cycle (0 while shedding, fades in to gather)
-uniform float uLogopushmul;  // push pulse from logo_cycle (blows soup off the old shape)
+uniform float uLogomorph;    // 0..1 mid-swap (cross-dissolve): releases the trap so particles flow to new homes
 uniform float uBodypush;     // repel strength: particles parted by the skeleton
 uniform float uBodydrag;     // advect strength: particles dragged along limb motion
 
@@ -174,12 +173,12 @@ void main()
         //    it isn't throttled. The gradient is ~0 inside the bright plateau
         //    (contents move freely) and strong at the edges (escaping particles
         //    get pushed back in) → the shape behaves like a container.
-        //    SWAP = ONE organic out-then-in motion driven by logo_cycle:
-        //    SHED first (uLogoattmul→0, uLogopushmul pulses) → soup blows off the
-        //    old shape; then GATHER (uLogopushmul→0, uLogoattmul fades to 1) →
-        //    it settles onto the NEW shape. No suck-blast-suck.
-        vel.xy += logo.xy * uLogoattract * uLogoamt * uLogoattmul;
-        vel.xy -= logo.xy * uLogopush    * uLogoamt * uLogopushmul;
+        //    POSITIONAL MORPH on swap: attract stays ON while the logo_cycle
+        //    cross-dissolves the two logo images → this gradient field smoothly
+        //    morphs old→new, so settled particles MIGRATE to their new homes
+        //    (a real position lerp, not an alpha blend). The trap is released by
+        //    uLogomorph so they're free to flow during the morph.
+        vel.xy += logo.xy * uLogoattract * uLogoamt;
 
         // 2. Keep the CONTENTS ALIVE: inject extra (un-capped) 3D curl swirl
         //    ONLY inside the shape, so contained particles tumble like a filled
@@ -191,10 +190,10 @@ void main()
         //    by vigor so the swirl persists (vigor 0 → sticky/static like a
         //    decal; vigor 1 → lively churn inside the shape). RELEASED during a
         //    swap (1 - trans) so particles are free to blow outward.
-        // trap only while ATTRACTING (released during the shed so the soup is
-        // free to blow outward; returns as it gathers onto the new shape).
+        // trap released during the morph so particles flow freely to their new
+        // homes, returns (×1) once settled.
         vel.xy *= (1.0 - inside * uLogotrap * (1.0 - 0.7 * uLogovigor)
-                        * uLogoattmul);
+                        * (1.0 - uLogomorph));
 
         // 4. Overall logo-speed limit, with headroom for the vessel swirl so
         //    step 2 isn't immediately clamped away.

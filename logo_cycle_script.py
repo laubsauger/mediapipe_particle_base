@@ -46,16 +46,12 @@ def onCook(scriptOp):
         pass
 
     scriptOp.numSamples = 1
-    ci = scriptOp.appendChan('index')
-    ca = scriptOp.appendChan('attmul')
-    cp = scriptOp.appendChan('pushmul')
-    ct = scriptOp.appendChan('trans')
+    cb = scriptOp.appendChan('blend')   # fractional switch index (cross-dissolve)
+    cm = scriptOp.appendChan('morph')   # 0..1 mid-transition (trap release + FX)
 
     if lc is None:
-        ci[0] = 0.0
-        ca[0] = 1.0
-        cp[0] = 0.0
-        ct[0] = 0.0
+        cb[0] = 0.0
+        cm[0] = 0.0
         return
 
     st = parent().fetch('logo_cycle_state', None)
@@ -67,11 +63,9 @@ def onCook(scriptOp):
     switch_dur = float(_par('Logoswitchdur', 1.5))
     now = float(absTime.seconds)
 
-    index, attmul, pushmul, trans, st = lc.step(st, now, cycle_time, switch_dur, enabled)
+    blend, morph, st = lc.step(st, now, cycle_time, switch_dur, enabled)
     parent().store('logo_cycle_state', st)
 
-    ci[0] = float(index)
-    ca[0] = float(attmul)
-    cp[0] = float(pushmul)
-    ct[0] = float(trans)
+    cb[0] = float(blend)
+    cm[0] = float(morph)
     return
