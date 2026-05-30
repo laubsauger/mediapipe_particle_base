@@ -178,8 +178,10 @@ def onCook(scriptOp):
                 active_persons.append(p)
                 break
     if not active_persons:
-        active_persons = [0]   # always emit person-0 row so the POP stays alive
-    total = len(active_persons) * n_lm * spawn_count
+        active_persons = [0]
+    # Compute total based on actual iteration; pad numSamples to handle any
+    # transient count mismatch (e.g. live-tuning during the cook).
+    total = max(1, len(active_persons)) * n_lm * spawn_count
 
     # IMPORTANT: set numSamples BEFORE appending channels. Channels inherit
     # their sample count from the op when created; appending after changing
@@ -223,7 +225,10 @@ def onCook(scriptOp):
     def _clamp(v, lo, hi):
         return max(lo, min(hi, v))
 
-    for p in range(persons):
+    # Iterate ONLY active persons — total/numSamples was sized for them.
+    # Iterating range(persons) instead caused idx to walk past total (e.g.
+    # 4·5·18=360 > 90) → "Index invalid or out of range. Value:90" spam.
+    for p in active_persons:
       for lm_i, lm in enumerate(lms):
         x  = _read_p(p, lm, 'x')
         y  = _read_p(p, lm, 'y')

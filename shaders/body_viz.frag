@@ -73,12 +73,14 @@ void main()
     float w = max(uWidth, 1e-4);
 
     float node = 0.0;
-    // Outer loop over persons (body_tex packs up to MAX_PERSONS skeletons,
-    // rows 2p+0 = pos+vis). Absent persons emit visibility 0 → no contribution.
+    // Outer loop over persons; cheap per-person early-out using nose visibility
+    // saves ~75% of inner work in single-person scenes (no more 4× cost).
     for (int pid = 0; pid < MAX_PERSONS; ++pid) {
         int row_pos = 2 * pid;
+        float nose_vis = texelFetch(sTD2DInputs[0], ivec2(0, row_pos), 0).z;
+        if (nose_vis < 0.05) continue;
 
-        // --- bones as soft capsules for this person -----------------------
+        // --- bones as wireframe-stylised capsules -------------------------
         for (int i = 0; i < NBONES; ++i) {
             vec4 ja = texelFetch(sTD2DInputs[0], ivec2(BONES[i].x, row_pos), 0);
             vec4 jb = texelFetch(sTD2DInputs[0], ivec2(BONES[i].y, row_pos), 0);
@@ -92,18 +94,30 @@ void main()
             float t = clamp(dot(P - A, AB) / len2, 0.0, 1.0);
             float d = distance(P, A + t * AB);
 
-            float pulse = 1.0 + uFlow * 0.8 * sin(t * 18.0 - uTime * 3.0);
+            // Animated wireframe rungs: bright bands flowing along the bone
+            // (energy stream feel) + a slow pulse so bones BREATHE, not static.
+            float dash  = 0.55 + 0.45 * sin(t * 36.0 - uTime * 6.0);
+            float pulse = 1.0 + uFlow * 0.7 * sin(t * 10.0 - uTime * 2.5);
+            float modul = mix(pulse, pulse * dash, uFlow);
 
-            halo += vis * exp(-(d * d) / (w * w)) * pulse;
-            core += vis * exp(-(d * d) / (w * w * 0.10));
+            // Soft volumetric halo (the "3D tube") + tight bright SKIN at the
+            // bone surface (wireframe look — visible OUTLINE at the capsule's
+            // edge, hollow centre falls off naturally with d²).
+            float halo_g = exp(-(d * d) / (w * w));
+            float skin_g = exp(-(d * d) / (w * w * 0.25)) * (1.0 - exp(-(d * d) / (w * w * 0.04)));
+            halo += vis * halo_g * modul;
+            core += vis * skin_g * 1.5;            // bright wireframe skin
         }
 
-        // --- joint nodes for this person ----------------------------------
+        // --- joint nodes — sharper, more "control point" feel -------------
         for (int j = 0; j < NJOINTS; ++j) {
             vec4 jt = texelFetch(sTD2DInputs[0], ivec2(j, row_pos), 0);
             if (jt.z < 0.05) continue;
-            float d = distance(P, jt.xy * a);
-            node += jt.z * exp(-(d * d) / (w * w * 0.6));
+            float dj = distance(P, jt.xy * a);
+            // Bright core + soft halo per joint (3D bead at each control point)
+            float core_j = exp(-(dj * dj) / (w * w * 0.15));
+            float halo_j = exp(-(dj * dj) / (w * w * 0.8));
+            node += jt.z * (core_j * 1.3 + halo_j * 0.4);
         }
     }
 
@@ -116,9 +130,13 @@ void main()
                              uTime * uSoupevolve + uLogohueoffset);
     vec3  tint    = mix(uTint, soupCol, clamp(uBlend, 0.0, 1.0));
 
-    // composite: colored soft volume + whiter HDR core + bright nodes
-    vec3  col = tint * (halo * 0.6 + node * 0.9)
-              + vec3(1.0) * (core * 1.4 + node * 0.5);
-    float lum = halo * 0.6 + core * 1.4 + node * 1.1;
+    // Composite using the SOUP TINT for every layer — body reads as the same
+    // material as the field, not a white skeleton slabbed on top. The core was
+    // previously vec3(1.0) which ACES'd to white and made the body feel
+    // detached from the surrounding colour.
+    vec3  hotTint = mix(tint, tint * 1.4 + vec3(0.10), 0.5);  // mildly hotter, still in palette
+    vec3  col = tint    * (halo * 0.55 + node * 0.7)
+              + hotTint * (core * 0.9  + node * 0.35);
+    float lum = halo * 0.55 + core * 0.9 + node * 1.0;
     fragColor = vec4(col * uGlow, clamp(lum * uGlow, 0.0, 1.0));
 }

@@ -507,6 +507,19 @@ add_float(render, 'Curlscale2', 'Curl Scale 2 (broad period)', 2.0, 0.05, 20.0, 
 add_float(render, 'Curlspeed2', 'Curl Speed 2', 0.12, 0.0, 3.0, clamp_max=False)
 add_float(render, 'Souplayermix', 'Soup Layer Mix (B fraction)', 0.5, 0.0, 1.0)
 
+# Soup gradient rotation: slow spin of the colour-band direction so the look
+# breathes/drifts without any pose input. Low values (~0.04 rad/s) feel
+# organic; >0.15 starts to look hasty/flickery.
+add_float(render, 'Soupgradrot', 'Soup Gradient Rotation (rad/s)', 0.04, -1.0, 1.0)
+
+# Cosmic-web filament structure across the background soup. Read by color_attr
+# (gated to Lid>=100 + fades inside the logo/vessel mask so it doesn't fight
+# the movement region). Scale = filament frequency; Gamma = sharpness;
+# Boost = brightness on filaments. Keep modest — clusters are background.
+add_float(render, 'Clusterscale', 'Cluster Filament Scale', 3.5, 0.5, 12.0, clamp_max=False)
+add_float(render, 'Clusterboost', 'Cluster Brightness Boost', 0.4, 0.0, 2.0, clamp_max=False)
+add_float(render, 'Clustergamma', 'Cluster Filament Sharpness', 4.0, 1.0, 16.0, clamp_max=False)
+
 # --- Bloom TOP (post-render) ----------------------------------------------
 # bloom1 Bloom TOP sits between render1 and out2. render1 outputs 16-bit float
 # so HDR (young/fast) particles survive > 1.0 and bloom.

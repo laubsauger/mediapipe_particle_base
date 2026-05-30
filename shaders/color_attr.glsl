@@ -60,6 +60,10 @@ uniform float uLogoburstcolor;  // swap-time glow-up amount (HDR flare through B
 uniform float uLogohueoffset;   // PERSISTENT hue offset (radians) — accumulates per swap, holds
 uniform float uPersonhuestep;   // hue (rad) added per PERSON index so each body wears a distinct tint
 uniform float uLogocharge;      // "charged-in-vessel" look — inside particles brighter + hue-shifted, softened mask
+uniform float uSoupgradrot;     // slow rotation of the soup gradient direction (rad/sec) — alive feel
+uniform float uClusterscale;    // cosmic-web filament noise scale
+uniform float uClusterboost;    // brightness boost on filament peaks (galaxy-cluster look)
+uniform float uClustergamma;    // contrast of the filament structure (higher = sharper filaments)
 
 // Soup palette + ember colours come from COMP color pars (uniforms) so PRESETS
 // can recolor the whole look. No TOP sampler (that crashes a GLSL POP).
@@ -84,10 +88,13 @@ vec3 hueShift(vec3 c, float a)
 // art-directable, preset-driven.
 vec3 soupPalette(float t)
 {
+    // Smooth 3-stop cyclic palette — smoothstep within each segment so colour
+    // transitions ease in/out instead of flicking linearly between stops.
     t = fract(t);
-    if (t < 0.3333)      return mix(uSoupA, uSoupB, t * 3.0);
-    else if (t < 0.6667) return mix(uSoupB, uSoupC, (t - 0.3333) * 3.0);
-    else                 return mix(uSoupC, uSoupA, (t - 0.6667) * 3.0);
+    float u = t * 3.0;                  // 0..3 over A→B→C→A
+    if (t < 0.3333)      return mix(uSoupA, uSoupB, smoothstep(0.0, 1.0, u));
+    else if (t < 0.6667) return mix(uSoupB, uSoupC, smoothstep(0.0, 1.0, u - 1.0));
+    else                 return mix(uSoupC, uSoupA, smoothstep(0.0, 1.0, u - 2.0));
 }
 
 const vec3 kPalette[5] = vec3[](
@@ -128,7 +135,12 @@ void main()
         //   Position-based (not per-particle) so neighbours share color => the
         //   field reads as gradients sweeping across it, not salt-and-pepper noise.
         vec3  p     = TDIn_P().xyz;
-        float phase = fract(dot(p.xy, vec2(0.6, 0.8)) * uSoupcolorscale
+        // Gradient direction ROTATES slowly over time + flows laterally — colour
+        // bands sweep + spin, system feels alive without user input.
+        float gang  = uTime * uSoupgradrot;
+        vec2  gdir  = vec2(cos(gang), sin(gang));
+        vec2  gflow = vec2(sin(uTime * 0.07), cos(uTime * 0.053)) * 0.4;
+        float phase = fract(dot(p.xy + gflow, gdir) * uSoupcolorscale
                             + uTime * uSoupcyclespeed);
         vec3  rampC = soupPalette(phase);
         // evolve the palette hue over time so the soup colour drifts through
@@ -159,6 +171,23 @@ void main()
         float h      = fract(sin(float(TDIn_PartId()) * 12.9898) * 43758.5453);
         float pvar   = 0.65 + 0.35 * h;
         outc = rampC * bright * env * depthf * pvar;
+
+        // COSMIC-WEB CLUSTERS: cheap 3D filament noise → particles whose
+        // position lands on a "filament" (zero-crossing of the sum of sines)
+        // get an extra brightness boost. Creates a galaxy-cluster organic
+        // structure across the soup — bright filaments with voids between.
+        if (uClusterboost > 0.0) {
+            vec3 ps = p * uClusterscale + vec3(0.0, 0.0, uTime * 0.05);
+            float n = sin(ps.x * 1.7 + ps.y * 1.3 + ps.z * 0.9 + uTime * 0.10)
+                    * sin(ps.y * 2.3 + ps.z * 1.7 + uTime * 0.07)
+                    * sin(ps.x * 3.1 - ps.z * 2.4 + uTime * 0.13);
+            float fil = pow(clamp(1.0 - abs(n), 0.0, 1.0), max(uClustergamma, 0.1));
+            // Filaments belong to the BACKGROUND only — fade them inside the
+            // vessel mask so they don't visually fight the logo-fill or the
+            // body-emitted movement region (which sits where the user is).
+            float bgmask = 1.0 - 0.85 * TDIn_logodata().w * uLogoamt;
+            outc *= 1.0 + fil * uClusterboost * bgmask;
+        }
 
         // VESSEL CHARGE: particles whose position falls on the logo mask are
         // the "contents" of the vessel — visually distinguish them from the bg

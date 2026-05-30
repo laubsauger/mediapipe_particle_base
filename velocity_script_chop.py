@@ -201,7 +201,10 @@ def onCook(scriptOp):
             y = y if y is not _SENTINEL else 0.0
             z = z if z is not _SENTINEL else 0.0
             if v_raw is _SENTINEL:
-                person_samples[lm] = (x, y, z, True, True)
+                # No visibility channel for this person → person not tracked.
+                # Default to NOT visible (was True — caused phantom persons 1..3
+                # to read visible=1 in lag1 and pollute the emitter texture).
+                person_samples[lm] = (x, y, z, False, False)
             else:
                 person_samples[lm] = (x, y, z,
                                       v_raw >= vis_thresh,

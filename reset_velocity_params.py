@@ -109,22 +109,30 @@ RENDERER = {
     'Agefalloff':      1.6,     # brightness fade exponent over life
     'Velbloom':        0.12,    # speed → HDR brightness boost
     'Velref':          0.08,    # movement speed mapped to full hot/bloom (slow births stay dim)
-    # Body force field (skeleton parts + drags the soup).
-    'Bodypush':        0.06,    # repel strength (soup pushed away from bones)
-    'Bodydrag':        0.045,   # advect strength (soup dragged along limb motion)
-    'Bodyradius':      0.12,    # bone influence radius (world-y units)
+    # Body force field (skeleton parts + drags the soup) — wider + stronger so
+    # the displacement is clearly visible around the limbs and the soup parts
+    # decisively (was 0.06/0.045/0.12 = too subtle, body felt "slabbed on top").
+    'Bodypush':        0.10,    # repel strength (soup pushed away from bones)
+    'Bodydrag':        0.07,    # advect strength (soup dragged along limb motion)
+    'Bodyradius':      0.18,    # bone influence radius (world-y units)
     # Body VIZ (glowing skeleton render — our replacement for MediaPipe circles).
     'Bodyviz':         1,       # on
-    'Bodyvizwidth':    0.014,   # bone capsule width
-    'Bodyvizglow':     0.35,    # glow intensity (HDR core blooms; keep modest)
-    'Bodyvizflow':     0.5,     # energy pulse along the limbs
+    'Bodyvizwidth':    0.012,   # bone capsule width (slimmer = less dominant)
+    'Bodyvizglow':     0.22,    # glow intensity — kept LOW so the body sits IN the
+                                # soup palette, not above it. Higher = "slabbed-on"
+    'Bodyvizflow':     0.4,     # energy pulse along the limbs
     'Bodyviztint':     (0.4, 0.8, 1.0),  # fallback halo (used at Bodyvizblend=0)
     'Bodyvizblend':    1.0,     # blend body color with soup palette (1=full soup, harmonises)
     'Soupbright':      1.0,     # steady soup brightness; kept below Bloomthreshold so soup doesn't bloom
     'Soupturb':        0.05,    # drives soup curl drift; saturates the cap below
     'Soupmaxspeed':    0.008,   # hard cap on idle soup speed (the real "calm" knob)
-    'Soupcyclespeed':  0.03,    # soup color-ramp cycle speed over time (spatial band sweep)
-    'Soupevolve':      0.05,    # soup palette HUE rotation over time (color drifts through spectrum)
+    'Soupcyclespeed':  0.018,   # soup color-ramp cycle speed — SLOW so colour evolves organically (was 0.03)
+    'Soupevolve':      0.025,   # soup palette HUE rotation over time — slow drift (was 0.05)
+    'Soupgradrot':     0.04,    # slow direction-rotation of the colour bands (rad/s) — alive without input
+    # Cosmic-web filaments (background-only — fades inside logo/vessel mask):
+    'Clusterscale':    3.5,     # filament frequency
+    'Clusterboost':    0.4,     # brightness boost on filament peaks — background, not soup-wide
+    'Clustergamma':    4.0,     # filament sharpness (higher = thinner filaments)
     'Soupspeedref':    0.2,     # soup speed mapped to "fast" for the velocity look
     'Soupvelbloom':    2.0,     # fast-soup brightness/bloom boost
     'Soupcolorscale':  0.6,     # spatial frequency of the soup color gradient (position-based)
