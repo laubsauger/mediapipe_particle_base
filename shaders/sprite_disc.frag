@@ -21,5 +21,9 @@ void main()
     vec2  p = vUV.st - 0.5;
     float d = length(p) * 2.0;
     float a = 1.0 - smoothstep(0.45, 0.80, d);   // solid core → crisp round edge
-    fragColor = vec4(vec3(a), a);
+    // Fake directional shading: top-lit volumetric blob. Upper half brighter,
+    // lower half rim-darkened so every sprite reads as a 3D sphere lit from
+    // above-front instead of a flat additive dot. Subtle (0.7..1.15).
+    float shade = mix(0.70, 1.15, smoothstep(-0.5, 0.5, -p.y));
+    fragColor = vec4(vec3(a * shade), a);
 }

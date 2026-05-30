@@ -188,13 +188,12 @@ void main()
         // so the trail feedback loop (which keeps re-blooming bright pixels)
         // doesn't accumulate to white over many frames.
         vec3 hot = col * (1.0 + 0.5 * mv);
-        // Hot/glow flash is BRIEF — long enough to feel an ember pop, short
-        // enough that COLOUR identity reads almost immediately. Was 0.15
-        // (≈0.75s of life) which combined with trail feedback washed the
-        // whole emission white for ~3s. 0.04 ≈ 0.2s at 5s life.
+        // Very brief HOT IMPULSE at birth (~0.015 of life ≈ 30-100 ms). Reads
+        // as a sharp spark/pop instead of a drawn-out flash, then settles to
+        // colour identity for the bulk of life.
         vec3 ageCol;
-        if (agef < 0.04)      ageCol = mix(hot, col,       smoothstep(0.0, 0.04, agef));
-        else if (agef < 0.60) ageCol = mix(col, uEmberMid, smoothstep(0.04, 0.60, agef));
+        if (agef < 0.015)     ageCol = mix(hot, col,       smoothstep(0.0, 0.015, agef));
+        else if (agef < 0.60) ageCol = mix(col, uEmberMid, smoothstep(0.015, 0.60, agef));
         else                  ageCol = mix(uEmberMid, uEmberOld, smoothstep(0.60, 1.00, agef));
         float bright = pow(1.0 - agef, max(uAgefalloff, 0.01));  // peaks at birth
         ageCol *= bright;

@@ -141,7 +141,7 @@ RENDERER = {
     # Logo attractor + brighten (standby screensaver). Logomode: Off/Standby/Always.
     # Standby fades the logo in when no pose is present, out when a person appears.
     'Logomode':        'Standby',
-    'Logoattract':     0.5,    # soup pull up the logo luma gradient (gentle, edge-distributed)
+    'Logoattract':     0.05,   # soft pull — strong values overshoot and form a halo around the shape
     'Logobright':      2.5,    # extra glow on soup sitting on the logo mask (legible reveal)
     'Logofade':        1.5,    # standby crossfade seconds
     'Logoreach':       180.0,  # blur radius (px) = medium reach → pulls to nearest feature, not centroid

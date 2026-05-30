@@ -539,7 +539,7 @@ add_pulse(look, 'Applypreset', 'Apply Preset')
 # --- Logo attractor (passive-state hero; samples null_logo) ----------------
 # Off / Always / Standby (fades in when no pose, out when a person appears).
 add_menu(look, 'Logomode', 'Logo Mode', ['Off', 'Standby', 'Always'], 'Standby')
-add_float(look, 'Logoattract', 'Logo Attract (pull into shape)', 0.5, 0.0, 2.0, clamp_max=False)
+add_float(look, 'Logoattract', 'Logo Attract (pull into shape)', 0.05, 0.0, 1.0, clamp_max=False)
 add_float(look, 'Logobright', 'Logo Brightness (glow on shape)', 2.5, 0.0, 6.0, clamp_max=False)
 # Logo gather/shape controls. Reach = blur radius of logo_blur (how far the
 # broad pull extends). Gradamp scales the gradient. Trap = velocity damping on
