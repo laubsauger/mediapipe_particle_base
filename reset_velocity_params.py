@@ -97,8 +97,12 @@ RENDERER = {
     'Boundsmaxx':      1.77778,  # 16/9 — emitters_chop remaps x into this range
     'Boundsmaxy':      1.0,
     'Boundsmaxz':      0.15,
-    'Boundsbounce':    0.95,
+    'Boundsbounce':    0.6,    # rebound inward off walls (was 0.3 → particles stuck/accumulated)
     'Boundsmargin':    0.005,
+    # Wall containment: INWARD repel force near each wall (bounds_reflect) so
+    # particles turn back before piling into a cheap rectangular "frame".
+    'Wallrepel':       0.25,   # inward push strength
+    'Wallband':        0.03,   # distance from wall the push ramps over
     # Ambient particle soup (constant population, advected by the same field).
     'Ambientrate':     6000.0,  # pts/s; steady alive ≈ rate × avg-life
     'Ambientpoints':   1250,    # scatter sample count = HARD cap on births/cook (k=min(Ambientrate/60, Ambientpoints)). Keep >= Ambientrate/60 or it throttles the soup.
@@ -130,7 +134,7 @@ RENDERER = {
     'Soupevolve':      0.025,   # soup palette HUE rotation over time — slow drift (was 0.05)
     'Soupgradrot':     0.04,    # slow direction-rotation of the colour bands (rad/s) — alive without input
     'Soupsetspeed':    0.04,    # palette-SET rotation (sets/s): soup crossfades through the color_attr triad bank (set0=preset triad). 0=stay on preset.
-    'Fieldedgefade':   0.05,    # smooth border falloff on the sampled flow field (field_edge TOP) — kills the hard edge that clumped particles at the walls
+    'Fieldedgefade':   0.02,    # smooth border falloff on the sampled flow field (field_edge TOP) — kills the hard edge that clumped particles at the walls
     # Cosmic-web filaments (background-only — fades inside logo/vessel mask):
     'Clusterscale':    3.5,     # filament frequency
     'Clusterboost':    0.4,     # brightness boost on filament peaks — background, not soup-wide
@@ -197,6 +201,7 @@ AUDIO = {
     'Audiosoupdir':      1.0,
     'Audioblur':         0.5,    # organic on-beat defocus blur (beat_blur TOP)
     'Audiobeat':         0.8,    # kick → visible radial push pulse (main "alive on beat" lever)
+    'Audiomidswirl':     0.4,    # mid-peak → rotational swirl burst (2nd organic disturbance)
     # Logo-vessel physics (standby) — ARE drives the trapped material's physics
     'Audiopressure':     0.8,    # low → boundary pressure (Maskattract)
     'Audiocirculation':  0.7,    # mid → internal circulation (Maskvigor)

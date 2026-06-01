@@ -99,6 +99,12 @@ def default_params():
         "drop_turn":      2.3,    # rad — big soup-flow rotation on a real drop
         "snare_turn":     0.4,    # rad — SMALL soup-flow rotation per snare (subtle, frequent direction variety)
         "kick_turn":      0.3,    # rad — soup-flow rotation per KICK (the reliable beat; snare/hat detectors are often dead)
+        "beat_smooth":    0.05,   # softens the kick's instant attack into a quick SWELL → organic, less poppy
+        # mid-peak (novelty) onset → swirl disturbance
+        "mid_base_tau":   0.6,    # slow baseline the mid is compared against (novelty detection)
+        "mid_peak_thresh": 0.12,  # how far mid must rise above its baseline to count as a peak
+        "mid_release":    0.25,   # s — swirl-burst envelope length
+        "blowout_every":  4,      # every Nth kick blows OUT instead of sucking in (variety)
         # LMH material smoothing (vessel "what is the substance made of")
         "mid_smooth":     0.10,   # circulation responds at body-flow rate
         "high_smooth":    0.06,   # surface detail, a touch faster
@@ -120,7 +126,11 @@ def fresh_state(n_spec=15):
         "bass": 0.0, "breath": 0.0, "build": 0.0,
         # de-flickered brightness driver + drop surge state
         "glow": 0.0, "drop": 0.0, "dropdir": 0.0, "prev_breath": 0.0,
-        "prev_snare": 0.0, "prev_kick": 0.0,
+        "prev_snare": 0.0, "prev_kick": 0.0, "beat": 0.0,
+        # mid-peak disturbance (swirl) — onset detection off the continuous mid band
+        "midhit": 0.0, "mid_base": 0.0,
+        # beat polarity: mostly +1 (gather/suck-in), occasionally -1 (blow-out)
+        "beat_count": 0, "beatpolarity": 1.0,
         # LMH material / vessel mood (low/mid/high → pressure/circulation/surface)
         "mid": 0.0, "high": 0.0,
         "pressure": 0.0, "circulation": 0.0, "surface": 0.0,
@@ -138,7 +148,8 @@ def fresh_state(n_spec=15):
 def output_names(n_spec=15):
     return (["kick", "snare", "hat", "pulse", "bass", "breath", "build",
              "glow", "drop", "dropdir",
-             "mid", "high", "pressure", "circulation", "surface"]
+             "mid", "high", "pressure", "circulation", "surface", "beat",
+             "midhit", "beatpolarity"]
             + ["spec%d" % i for i in range(n_spec)])
 
 
@@ -175,6 +186,16 @@ def process(state, features, dt, params):
         g("high"), state["max_high"], dt, params["agc_decay"], params["agc_floor"])
     state["high"] = smooth(state["high"], high_n, dt, params["high_smooth"])
 
+    # mid-PEAK onset (novelty): compare mid to a slow baseline; a rise above it
+    # fires a swirl-burst envelope. A SECOND disturbance, distinct from the kick
+    # gather — driven by the mids, so busy mid sections add organic swirls.
+    state["mid_base"] = smooth(state["mid_base"], state["mid"], dt, params["mid_base_tau"])
+    if (state["mid"] - state["mid_base"] > params["mid_peak_thresh"]
+            and state["midhit"] < 0.4):
+        state["midhit"] = 1.0
+    else:
+        state["midhit"] = state["midhit"] * math.exp(-dt / max(params["mid_release"], 1e-3))
+
     # natural_dynamic is already 0..1 + smoothed by ARE; light smooth only.
     prev_breath = state["breath"]
     state["breath"] = smooth(state["breath"], g("natural_dynamic"), dt, params["breath_smooth"])
@@ -185,6 +206,10 @@ def process(state, features, dt, params):
     # sustained breath + a little transient energy so it swells, never blinks.
     glow_target = max(state["breath"], 0.5 * state["kick"], 0.4 * state["hat"])
     state["glow"] = smooth(state["glow"], glow_target, dt, params["glow_smooth"])
+
+    # `beat` = the kick shaped into an organic SWELL (softened attack) — used for
+    # the on-beat motion surge so it breathes instead of popping.
+    state["beat"] = smooth(state["beat"], state["kick"], dt, params["beat_smooth"])
 
     # ---- drop: rising-edge surge detector ("the drop") -----------------
     # A drop = a fast sustained energy jump. Detect a steep rise in breath above
@@ -209,7 +234,15 @@ def process(state, features, dt, params):
     # when ARE's mid/high drum detectors aren't firing).
     if state["kick"] > 0.5 and state["prev_kick"] <= 0.5:
         state["dropdir"] = math.fmod(state["dropdir"] + params["kick_turn"], 6.2831853)
+        # advance the beat counter and pick polarity: mostly suck-IN (+1), every
+        # Nth kick blow-OUT (−1) so the contractions aren't all the same.
+        state["beat_count"] += 1
+        n = max(2, int(params["blowout_every"]))
+        state["beatpolarity"] = -1.0 if (state["beat_count"] % n == 0) else 1.0
     state["prev_kick"] = state["kick"]
+    # a real drop always blows OUT (big release).
+    if state["drop"] > 0.5:
+        state["beatpolarity"] = -1.0
 
     # ---- build / release from the burst square wave --------------------
     burst = g("burst")
@@ -253,7 +286,8 @@ def process(state, features, dt, params):
         "build": state["build"], "glow": state["glow"], "drop": state["drop"],
         "dropdir": state["dropdir"], "mid": state["mid"], "high": state["high"],
         "pressure": state["pressure"], "circulation": state["circulation"],
-        "surface": state["surface"],
+        "surface": state["surface"], "beat": state["beat"],
+        "midhit": state["midhit"], "beatpolarity": state["beatpolarity"],
     }
     for i in range(n):
         out["spec%d" % i] = state["spec"][i]

@@ -663,6 +663,11 @@ add_float(audio, 'Audioblur',    'Beat Defocus Blur',              0.5, 0.0, 2.0
 # back" pulse on the beat. Applied AFTER the soup/logo speed caps so it isn't
 # crushed. Tune down if too much; this is the main "alive on the beat" lever.
 add_float(audio, 'Audiobeat',    'Beat Push (kick → visible pulse)', 0.8, 0.0, 2.0, clamp_max=False)
+# Mid-peak SWIRL — a rotational burst (tangential), detected off the continuous
+# mid band (ARE's mid drum detector is usually dead), so busy mid sections add a
+# second, organic disturbance distinct from the kick gather. Beat polarity (in
+# audio_logic) also makes some beats blow OUT instead of sucking in.
+add_float(audio, 'Audiomidswirl', 'Mid-peak swirl burst',           0.4, 0.0, 2.0, clamp_max=False)
 # --- Logo-vessel physics (standby): ARE drives the PHYSICAL CONDITION of the
 # material trapped inside the logo, not the visuals. Gated to inside the mask.
 #   low  → boundary pressure   mid → internal circulation   high → surface fizz

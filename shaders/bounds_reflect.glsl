@@ -76,6 +76,8 @@ uniform float uDroprepel;    // audio: radial outward SHOCKWAVE from box centre 
 uniform float uSoupdir;      // audio: soup-flow direction rotation (radians), stepped on each drop so the disturbance changes heading
 uniform float uResonance;    // audio: SEGMENTED-LOGO regional resonance — each logo region churns with its mapped reduced-FFT bin (vessel = resonant body)
 uniform float uSurface;      // audio: HIGH-band surface agitation — fine fizz concentrated at the logo silhouette edge
+uniform float uBeatpol;      // audio: beat polarity (+1 = gather/suck-in, −1 = blow-out) — varies per beat so contractions aren't all the same
+uniform float uMidswirl;     // audio: MID-peak swirl burst — a rotational (tangential) disturbance, distinct from the kick gather
 // uSpectrum[] is auto-declared by TD from the bound CHOP (15 samples) — do NOT
 // declare it here (redeclaration). It holds the normalised reduced-FFT bins.
 
@@ -272,33 +274,58 @@ void main()
     // wall. Particles approaching a wall lose energy rapidly so they never
     // reach it; particles in the middle are untouched.
     {
-        vec3 dmin = pos - uBoxMin;
-        vec3 dmax = uBoxMax - pos;
+        // INWARD repel force near each wall. Killing velocity here (the old
+        // approach) made particles STOP at the wall → they piled into a bright
+        // rectangular "frame" (cheap-looking). Instead push them back toward the
+        // interior BEFORE they reach the wall, so nothing accumulates at the edge.
+        vec3 lo = pos - uBoxMin;     // distance to the min walls (>0 inside)
+        vec3 hi = uBoxMax - pos;     // distance to the max walls
         float band = max(uWallband, 1e-4);
-        // closeness in each axis: 0 deep in the box, 1 right at the wall
-        vec3 cmin = 1.0 - smoothstep(0.0, band, dmin);
-        vec3 cmax = 1.0 - smoothstep(0.0, band, dmax);
-        // ANY axis being near a wall counts. Use max so corner overlap doesn't
-        // pile up multiplicatively.
-        float close = max(max(max(cmin.x, cmax.x),
-                              max(cmin.y, cmax.y)),
-                          max(cmin.z, cmax.z));
-        // Extra per-cook damping in the band. uWallrepel re-purposed as the
-        // damping strength (0 = none, 1 = full stop at the wall).
-        float kill = clamp(close * uWallrepel, 0.0, 0.95);
-        vel *= (1.0 - kill);
+        // ramp 0 (deep inside) → 1 (at the wall), quadratic so the push stays
+        // gentle in the band and firm right at the edge.
+        vec3 pmin = clamp(1.0 - lo / band, 0.0, 1.0); pmin *= pmin;
+        vec3 pmax = clamp(1.0 - hi / band, 0.0, 1.0); pmax *= pmax;
+        // +inward near a min wall, −inward near a max wall.
+        vec3 inward = pmin - pmax;
+        vel += inward * uWallrepel * 0.2;
     }
 
-    // ---- AUDIO DROP shockwave ----------------------------------------------
-    // Big drops push every particle radially OUT from the box centre — like the
-    // logo-swap explosion — so the music physically "breathes" the field. Applied
-    // AFTER the speed caps so it reads as a real burst; the wall clamp below
-    // still contains it. No-op when uDroprepel is 0 (no drop / layer off).
+    // ---- AUDIO BEAT surge (organic) ----------------------------------------
+    // On the beat, amplify the swirly CURL flow rather than blasting radially —
+    // each particle moves along its own noise direction (which animates over
+    // time), so the surge is organic and NEVER the same direction twice. A small
+    // radial term keeps a gentle "breathe out" feel. Applied AFTER the speed caps
+    // so it reads; wall clamp below contains it. No-op when uDroprepel is 0.
     if (uDroprepel > 0.0) {
         vec3 cen = (uBoxMin + uBoxMax) * 0.5;
-        vec3 dd  = pos - cen;
-        float dl = length(dd) + 1e-4;
-        vel += (dd / dl) * uDroprepel;
+        // Contract toward a FOCAL POINT that ORBITS the centre — its angle is
+        // stepped each beat (uSoupdir, which advances per kick). So every beat
+        // gathers from a DIFFERENT direction instead of the same radial pull →
+        // multi-directional, non-repetitive. Two harmonics (uSoupdir + a faster
+        // 1.7× term) so the focus wanders rather than sweeping a plain circle.
+        float a1 = uSoupdir;
+        float a2 = uSoupdir * 1.7 + 1.3;
+        vec2 off = (vec2(cos(a1), sin(a1)) * 0.7 + vec2(cos(a2), sin(a2)) * 0.3);
+        vec2 foc = cen.xy + off * (uBoxMax.x - uBoxMin.x) * 0.28;
+        vec2 toF = foc - pos.xy;
+        vec2 pull = toF / (length(toF) + 1e-4);
+        // moving gather + organic curl overlay. uBeatpol flips suck-IN (+1) vs
+        // blow-OUT (−1) so some beats explode away from the focus instead of
+        // always contracting → not one-dimensional.
+        vel.xy += pull * uDroprepel * 0.5 * uBeatpol;
+        vel    += (curl * 0.6 + curl2 * 0.2) * uDroprepel;
+    }
+
+    // ---- MID-PEAK swirl ----------------------------------------------------
+    // A rotational burst tangential to the centre on mid peaks — a SECOND, more
+    // organic disturbance distinct from the kick's radial gather. Spin direction
+    // flips with uSoupdir so successive swirls don't all rotate the same way.
+    if (uMidswirl > 0.0) {
+        vec3 cen2 = (uBoxMin + uBoxMax) * 0.5;
+        vec2 r    = pos.xy - cen2.xy;
+        vec2 tang = vec2(-r.y, r.x) / (length(r) + 1e-4);
+        float spin = mod(uSoupdir, 6.2831853) > 3.14159265 ? 1.0 : -1.0;
+        vel.xy += tang * spin * uMidswirl;
     }
 
     // ---- Wall reflection + hard position clamp -----------------------------
