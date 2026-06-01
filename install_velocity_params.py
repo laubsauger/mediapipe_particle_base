@@ -549,42 +549,34 @@ look = _page('Look')
 add_menu(look, 'Preset', 'Preset', ['Cosmic', 'Ember', 'Ink', 'Neon'], 'Cosmic')
 add_pulse(look, 'Applypreset', 'Apply Preset')
 
-# --- Logo attractor (passive-state hero; samples null_logo) ----------------
-# Off / Always / Standby (fades in when no pose, out when a person appears).
-add_menu(look, 'Logomode', 'Logo Mode', ['Off', 'Standby', 'Always'], 'Standby')
-add_float(look, 'Logoattract', 'Logo Attract (pull into shape)', 0.05, 0.0, 1.0, clamp_max=False)
-add_float(look, 'Logobright', 'Logo Brightness (glow on shape)', 2.5, 0.0, 6.0, clamp_max=False)
-# Logo gather/shape controls. Reach = blur radius of logo_blur (how far the
-# broad pull extends). Gradamp scales the gradient. Trap = velocity damping on
-# the mask so soup STICKS on the bright pixels (fills the shape, not a blob).
-# NOTE: the logo_grad GLSL TOP must be a SIGNED float format (rgba32float) or
+# --- Mask attractor (FX-side; consumes the in_mask input + in_mask_state CHOP)
+# The COMP now takes a SINGLE pre-composed mask through `in_mask` (TOP) and a
+# 4-channel state CHOP through `in_mask_state` (amt/trans/hueoffset/burstcolor).
+# All the upstream source switching / cycling / standby logic lives EXTERNALLY
+# on /project1/mask_controller (see bootstrap_mask_controller.py). The pars
+# below are the PARTICLE-side response knobs (how strongly the mask deflects
+# the soup, how brightly it glows, etc).
+#
+# NOTE: the mask_grad GLSL TOP must be a SIGNED float format (rgba32float) or
 # negative gradient directions clamp to 0 and half the pull is lost.
-add_float(look, 'Logoreach', 'Logo Reach (far pull, blur px)', 180.0, 0.0, 600.0, clamp_max=False)
-add_float(look, 'Logogradamp', 'Logo Gradient Amp', 1.0, 0.0, 8.0, clamp_max=False)
-add_float(look, 'Logotrap', 'Logo Trap (stick on shape)', 0.9, 0.0, 1.0)
-# Liveliness of particles ONCE contained in the logo shape: 0 = static decal
-# (they freeze on the mask), 1 = churning vessel (un-capped 3D curl swirl inside
-# the shape, walled in by the gradient edge). The shape stays legible either way.
-add_float(look, 'Logovigor', 'Logo Vigor (vessel liveliness)', 0.5, 0.0, 1.0)
-# Auto-cycle between the two logos wired into switch_logo, with a particle
-# "shockwave" at each swap (logo_cycle Script CHOP → switch_logo index +
-# bounds_reflect uLogotrans). The attract briefly inverts to a push so the soup
-# blows off the old shape, then reforms onto the new one.
-add_toggle(look, 'Logocycle', 'Logo Auto-Cycle', True)
-add_float(look, 'Logocycletime', 'Logo Cycle Time (s)', 12.0, 1.0, 120.0, clamp_max=False)
-add_float(look, 'Logoswitchdur', 'Logo Switch Shockwave (s)', 1.5, 0.2, 5.0, clamp_max=False)
-# Swap shockwave punch: Logopush = outward push-back strength (soup blasts off
-# the old shape); Logoburstcolor = hue-by-fly-direction + glow-up so the scatter
-# bursts into varied colours and flares through Bloom.
-add_float(look, 'Logopush', 'Logo Swap Push-Back', 2.0, 0.0, 6.0, clamp_max=False)
-add_float(look, 'Logoburstcolor', 'Logo Swap Glow-Up', 1.0, 0.0, 3.0, clamp_max=False)
-# PERSISTENT hue step per swap (radians). logo_cycle accumulates this each time
-# the logos swap and HOLDS at the new baseline — the colour ramps to a new hue
-# during the morph and stays there (no bounce). Soupevolve keeps drifting from
-# that new baseline. 2.4 rad ≈ 137° (golden-ish) → each swap lands on a
-# distinct colour for a long time before repeating.
-add_float(look, 'Logohuestep', 'Logo Hue Step per Swap (rad)', 2.4, 0.0, 6.283)
-add_float(look, 'Logofade', 'Logo Fade (standby crossfade s)', 1.5, 0.05, 10.0, clamp_max=False)
+add_float(look, 'Maskattract', 'Mask Attract (pull into shape)', 0.05, 0.0, 1.0, clamp_max=False)
+add_float(look, 'Maskbright',  'Mask Brightness (glow on shape)', 2.5, 0.0, 6.0, clamp_max=False)
+add_float(look, 'Maskreach',   'Mask Reach (far pull, blur px)', 180.0, 0.0, 600.0, clamp_max=False)
+add_float(look, 'Maskgradamp', 'Mask Gradient Amp', 1.0, 0.0, 8.0, clamp_max=False)
+add_float(look, 'Masktrap',    'Mask Trap (stick on shape)', 0.9, 0.0, 1.0)
+add_float(look, 'Maskvigor',   'Mask Vigor (vessel liveliness)', 0.5, 0.0, 1.0)
+# Charge/visual emphasis for particles INSIDE the mask (vessel feel).
+add_float(look, 'Maskcharge',  'Mask Charge (vessel glow + tint)', 0.9, 0.0, 2.0, clamp_max=False)
+# Swap-shockwave push-back FX intensity (applied DURING a swap; the `trans`
+# channel of in_mask_state envelopes it).
+add_float(look, 'Maskpush',    'Mask Swap Push-Back', 2.0, 0.0, 6.0, clamp_max=False)
+
+# --- Mask STATE (input fallback floats; used when in_mask_state CHOP is empty)
+# When no state CHOP is wired, these parent pars drive the four channels. With
+# mask_controller wired, the CHOP overrides these. The Mask page lives on the
+# OUTER particle_system COMP (added by bootstrap_particle_system).
+# Listed here only as documentation; install_velocity_params.py runs on
+# velocity_controller, so it can't add them — see the particle_system COMP.
 
 # --- Palette (drives color_attr uniforms; presets recolor via these) -------
 # Soup = cyclic 3-stop gradient A→B→C. Keep peaks below Bloomthreshold so the

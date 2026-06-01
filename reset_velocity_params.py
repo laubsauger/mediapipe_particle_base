@@ -146,22 +146,17 @@ RENDERER = {
     'Feedbackenable':  True,
     'Feedbackfade':    0.6,
     'Feedbackzoom':    1.0,
-    # Logo attractor + brighten (standby screensaver). Logomode: Off/Standby/Always.
-    # Standby fades the logo in when no pose is present, out when a person appears.
-    'Logomode':        'Standby',
-    'Logoattract':     0.05,   # soft pull — strong values overshoot and form a halo around the shape
-    'Logobright':      2.5,    # extra glow on soup sitting on the logo mask (legible reveal)
-    'Logofade':        1.5,    # standby crossfade seconds
-    'Logoreach':       180.0,  # blur radius (px) = medium reach → pulls to nearest feature, not centroid
-    'Logogradamp':     1.0,    # logo gradient amplification
-    'Logotrap':        0.9,    # velocity damping on the mask (soup STICKS → fills the shape)
-    'Logovigor':       0.5,    # liveliness inside the shape (0=static decal, 1=churning vessel)
-    'Logocycle':       1,      # auto-cycle between the two switch_logo inputs
-    'Logocycletime':   12.0,   # seconds a logo holds before the next swap
-    'Logoswitchdur':   1.5,    # swap shockwave duration (particles blow out + reform)
-    'Logopush':        2.0,    # outward push-back strength during the swap
-    'Logoburstcolor':  1.0,    # glow-up amount during the swap (HDR flare through Bloom)
-    'Logohuestep':     2.4,    # hue (rad) added per swap — persistent, no bounce-back
+    # Mask attractor (particle-FX side; consumes `in_mask` + `in_mask_state` from
+    # the external mask_controller). All source-switching / standby-fade /
+    # cycle-shockwave lives OUTSIDE on mask_controller now.
+    'Maskattract':     0.05,   # soft pull — strong values overshoot and form a halo around the shape
+    'Maskbright':      2.5,    # extra glow on soup sitting on the mask (legible reveal)
+    'Maskreach':       180.0,  # blur radius (px) = medium reach → pulls to nearest feature, not centroid
+    'Maskgradamp':     1.0,    # mask gradient amplification
+    'Masktrap':        0.9,    # velocity damping on the mask (soup STICKS → fills the shape)
+    'Maskvigor':       0.5,    # liveliness inside the shape (0=static decal, 1=churning vessel)
+    'Maskcharge':      0.9,    # vessel feel — particles in the mask region get extra glow + hue shift
+    'Maskpush':        2.0,    # swap-shockwave outward push intensity (FX; envelope comes from `trans` channel)
 }
 
 

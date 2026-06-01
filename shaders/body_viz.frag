@@ -31,7 +31,7 @@ uniform float uSoupcolorscale;
 uniform float uSoupcyclespeed;
 uniform float uSoupevolve;
 uniform float uBlend;      // 0 = fixed uTint, 1 = soup's current evolving colour
-uniform float uLogohueoffset;   // PERSISTENT hue offset (radians), same accum as soup
+uniform float uMaskhueoffset;   // PERSISTENT hue offset (radians), same accum as soup
 
 vec3 soupPalette(float t)
 {
@@ -127,7 +127,7 @@ void main()
     // body's location. Same hue accumulator + evolve as the soup → harmonises.
     float phase   = fract(uTime * uSoupcyclespeed);
     vec3  soupCol = hueShift(soupPalette(phase),
-                             uTime * uSoupevolve + uLogohueoffset);
+                             uTime * uSoupevolve + uMaskhueoffset);
     vec3  tint    = mix(uTint, soupCol, clamp(uBlend, 0.0, 1.0));
 
     // Composite using the SOUP TINT for every layer — body reads as the same

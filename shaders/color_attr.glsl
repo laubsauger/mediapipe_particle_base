@@ -51,15 +51,15 @@ uniform float uSoupspeedref;    // soup speed mapped to "fast" (velocity look)
 uniform float uSoupvelbloom;    // fast-soup brightness/bloom boost
 uniform float uSoupcolorscale;  // spatial frequency of the color gradient (bands across the box)
 uniform float uDepthdim;        // how much to dim particles toward the back (fake DoF / depth)
-uniform float uLogobright;      // extra brightness for soup sitting on the logo mask
-uniform float uLogoamt;         // 0..1 standby fade (op('logo_amt')['amt']); gates logo
+uniform float uMaskbright;      // extra brightness for soup sitting on the logo mask
+uniform float uMaskamt;         // 0..1 standby fade (op('logo_amt')['amt']); gates logo
 uniform float uVelref;          // movement speed mapped to full hot/bloom (slow stays dim)
 uniform float uSoupevolve;      // hue-rotation speed of the soup palette over time (evolving color)
-uniform float uLogotrans;       // 0..1 logo-swap shockwave: fades the logo glow out then back
-uniform float uLogoburstcolor;  // swap-time glow-up amount (HDR flare through Bloom)
-uniform float uLogohueoffset;   // PERSISTENT hue offset (radians) — accumulates per swap, holds
+uniform float uMasktrans;       // 0..1 logo-swap shockwave: fades the logo glow out then back
+uniform float uMaskburstcolor;  // swap-time glow-up amount (HDR flare through Bloom)
+uniform float uMaskhueoffset;   // PERSISTENT hue offset (radians) — accumulates per swap, holds
 uniform float uPersonhuestep;   // hue (rad) added per PERSON index so each body wears a distinct tint
-uniform float uLogocharge;      // "charged-in-vessel" look — inside particles brighter + hue-shifted, softened mask
+uniform float uMaskcharge;      // "charged-in-vessel" look — inside particles brighter + hue-shifted, softened mask
 uniform float uSoupgradrot;     // slow rotation of the soup gradient direction (rad/sec) — alive feel
 uniform float uClusterscale;    // cosmic-web filament noise scale
 uniform float uClusterboost;    // brightness boost on filament peaks (galaxy-cluster look)
@@ -147,7 +147,7 @@ void main()
         // the spectrum (continuous). PLUS a PERSISTENT per-swap hue offset that
         // ramps IN SYNC with the field morph and HOLDS afterward — each logo
         // swap shifts the colour to a new baseline and stays there (no bounce).
-        rampC = hueShift(rampC, uTime * uSoupevolve + uLogohueoffset);
+        rampC = hueShift(rampC, uTime * uSoupevolve + uMaskhueoffset);
         // velocity response: faster soup (turbulence peaks, or a flow-field
         //   shove from a limb) gets brighter and can bloom — so slow vs fast
         //   particles read differently and pose interaction "pops".
@@ -155,13 +155,13 @@ void main()
         float bright = uSoupbright * (1.0 + sf * uSoupvelbloom);
         // logo brighten (standby): soup particles that have drifted onto the
         // logo's bright mask glow harder, so the shape reads boldly out of the
-        // cloud. .w = luma mask from c_logo_lookup; uLogoamt fades with Logomode.
+        // cloud. .w = luma mask from c_logo_lookup; uMaskamt fades with Logomode.
         // fade the logo glow out during a swap (1 - trans) so the image-cut +
         // brightness mismatch between the two logos is hidden in the shockwave.
-        bright += TDIn_logodata().w * uLogobright * uLogoamt * (1.0 - uLogotrans);
+        bright += TDIn_maskdata().w * uMaskbright * uMaskamt * (1.0 - uMasktrans);
         // glow up during the swap (HDR → Bloom catches it). No hue change here —
-        // colour shifts happen via uLogohueoffset (persistent, see above).
-        bright *= (1.0 + uLogotrans * uLogoburstcolor * 2.0);
+        // colour shifts happen via uMaskhueoffset (persistent, see above).
+        bright *= (1.0 + uMasktrans * uMaskburstcolor * 2.0);
         // depth cue (fake DoF): particles toward the back of the box (−z) are
         //   dimmer, so the field has depth instead of a flat even mess.
         //   z range ≈ [-0.15, +0.15]; +z is nearer the camera.
@@ -185,7 +185,7 @@ void main()
             // Filaments belong to the BACKGROUND only — fade them inside the
             // vessel mask so they don't visually fight the logo-fill or the
             // body-emitted movement region (which sits where the user is).
-            float bgmask = 1.0 - 0.85 * TDIn_logodata().w * uLogoamt;
+            float bgmask = 1.0 - 0.85 * TDIn_maskdata().w * uMaskamt;
             outc *= 1.0 + fil * uClusterboost * bgmask;
         }
 
@@ -194,10 +194,10 @@ void main()
         // soup with extra brightness and a slight hue offset. Mask is softened
         // via smoothstep so there's no hard outline bleeding into the output;
         // contribution fades smoothly toward the mask edges.
-        float inside = smoothstep(0.10, 0.55, TDIn_logodata().w) * uLogoamt;
-        if (inside > 0.0 && uLogocharge > 0.0) {
-            outc = hueShift(outc, 0.5 * inside * uLogocharge);
-            outc *= 1.0 + inside * uLogocharge * 1.3;
+        float inside = smoothstep(0.10, 0.55, TDIn_maskdata().w) * uMaskamt;
+        if (inside > 0.0 && uMaskcharge > 0.0) {
+            outc = hueShift(outc, 0.5 * inside * uMaskcharge);
+            outc *= 1.0 + inside * uMaskcharge * 1.3;
         }
     } else {
         // ---- MOVEMENT: per-LIMB palette + per-PERSON hue + Embers age ramp.

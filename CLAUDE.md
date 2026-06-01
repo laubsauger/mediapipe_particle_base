@@ -11,45 +11,63 @@ two `*_setup.md` guides for whichever subsystem you're touching.
 ## Architecture at a glance
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  Upstream (third-party)                                          │
-│  ┌───────────────────┐                                           │
-│  │ MediaPipe tox     │  emits <landmark>:x/y/z/visible channels │
-│  │ (blankensmithing) │  in MediaPipe-UV space (0..1)            │
-│  └─────────┬─────────┘                                           │
-└────────────┼─────────────────────────────────────────────────────┘
-             ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  Sensing (this project)                                          │
-│  ┌──────────────────────────────────┐                            │
-│  │ velocity_controller (Base COMP)   │ smooths landmarks, emits  │
-│  │   in_pose → selects → merge1 →    │ velocity, accel, burst,   │
-│  │   velocity_script_chop → lag1 →   │ visibility-gated holds    │
-│  │   null1 → out1                    │                           │
-│  └────────┬─────────────────────────┘                            │
-│           │                                                      │
-│           ├────────────────┬─────────────────┐                   │
-│           ▼                ▼                 ▼                   │
-│  ┌─────────────┐  ┌──────────────────┐  ┌──────────────────┐    │
-│  │ Particle    │  │ beatsaber_       │  │ Other consumers  │    │
-│  │ render-     │  │ controller       │  │ via out1         │    │
-│  │ subgraph    │  │ (Base COMP)      │  │                  │    │
-│  │ (lives      │  │ runs Game.tick() │  │                  │    │
-│  │ inside      │  └────────┬─────────┘  │                  │    │
-│  │ velocity_   │           │            │                  │    │
-│  │ controller) │           ▼            │                  │    │
-│  │             │  ┌──────────────────┐  │                  │    │
-│  │             │  │ beatsaber_       │  │                  │    │
-│  │             │  │ renderer         │  │                  │    │
-│  │             │  │ (Base COMP)      │  │                  │    │
-│  │             │  └──────────────────┘  │                  │    │
-│  └─────────────┘                        └──────────────────┘    │
-└──────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│  Upstream (third-party / external sources)                           │
+│  ┌───────────────────┐  ┌────────────┐  ┌────────────┐               │
+│  │ MediaPipe tox     │  │ Logo TOP A │  │ Depth TOP  │               │
+│  │ (blankensmithing) │  │ + Logo B   │  │ (realsense │               │
+│  └─────────┬─────────┘  └────┬───────┘  │  or noise) │               │
+│            │                 │           └────┬───────┘              │
+└────────────┼─────────────────┼────────────────┼──────────────────────┘
+             ▼                 ▼                ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  /project1                                                           │
+│                                                                      │
+│  ┌──────────────────────────┐    ┌──────────────────────────┐        │
+│  │ mask_controller          │    │ depth_placeholder        │        │
+│  │ (Base COMP)              │    │ (NoiseTOP, swap for      │        │
+│  │  in_mask_a, in_mask_b,   │    │  realsenseTOP later)     │        │
+│  │  in_depth, in_pose       │    └─────────┬────────────────┘        │
+│  │  → switch_mask + cross   │              │                         │
+│  │    + cycle + standby     │              │                         │
+│  │  → out_mask (TOP)        │              │                         │
+│  │  → out_state (CHOP, 4ch) │              │                         │
+│  └────────┬─────────────────┘              │                         │
+│           │                                │                         │
+│           │  out_mask   out_state          │                         │
+│           ▼     │           │              │                         │
+│  ┌──────────────┼───────────┼──────────────┼─────────────────────┐   │
+│  │ particle_system  Base COMP                                    │   │
+│  │   in_mask  ─◀── │           │              │                  │   │
+│  │   in_mask_state─◀── ────────┘              │                  │   │
+│  │   in_depth  ─◀────────────────────────────-┘                  │   │
+│  │   in_pose_* (mediapipe/kinect/orbbec/osc/custom)              │   │
+│  │                                                               │   │
+│  │   Inside: velocity_controller subgraph (sensing + render),    │   │
+│  │   mask chain (null_logo → logo_blur → logo_grad), depth chain │   │
+│  │   (depth_field GLSL TOP → depth_force_pop lookup → bounds_    │   │
+│  │   reflect), mask_state_resolve Script CHOP (CHOP overrides    │   │
+│  │   parent pars).                                               │   │
+│  │                                                               │   │
+│  │   out_render (TOP), out_field (TOP), out_vc_pose (CHOP)       │   │
+│  └────────┬──────────────────────────────────────────────────────┘   │
+│           │                                                          │
+│           │  out_vc_pose                                             │
+│           ▼                                                          │
+│  ┌─────────────────────┐   ┌────────────────────┐                    │
+│  │ beatsaber_          │ → │ beatsaber_renderer │                    │
+│  │ controller          │   │ (Base COMP)        │                    │
+│  │ (Base COMP)         │   └────────────────────┘                    │
+│  └─────────────────────┘                                             │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-Independent vertical slices. The two consumer COMPs (particle render +
-beatsaber) read `velocity_controller/out1` by channel name and never
-touch each other.
+Independent vertical slices. `mask_controller` does ALL source switching /
+blending / cycling / standby fading for the mask; `particle_system` consumes
+ONE mask (TOP) + one 4-channel state (CHOP) and is decoupled from where the
+mask came from. Depth is a SEPARATE 3D force layer (in_depth, sampled at
+each particle's screen UV → 3D push). beatsaber reads pose through
+`particle_system/out_vc_pose` and is independent of the visual side.
 
 ## The two subsystems
 
@@ -126,7 +144,10 @@ Two Base COMPs:
 | `ambient_chop_script.py` | Script CHOP — emits the constant "particle soup": `Ambientpoints` points scattered through the bounds volume each cook, birthing `Ambientrate` pts/s (fractional accumulator), `Lid`=5 sentinel. Merged with `emitters_pop` via `merge_emitters` Merge POP into `particle1`, so the soup is advected/displaced by the same force chain. Self-testable: `python3 ambient_chop_script.py`. |
 | `presets.py` | Pure-Python Look presets (`Cosmic`/`Ember`/`Ink`/`Neon`) — each a bundle of **LOOK-only** par values: palette (soup colors + ember colors + tint) + post-FX (bloom / streak / grade / lens) + trail length. **Deliberately touches NO physics** (soup speed/turbulence, curl, rate, particle size, field force, spawn) so a mood switch never undoes hand-tuned motion. `apply(comp, name)` writes them (RGB tuples → `<name>r/g/b`). Self-testable: `python3 presets.py`. |
 | `apply_preset.py` | Parameter Execute DAT callback (`preset_exec`) — on the COMP's `Applypreset` pulse or `Preset` menu change, imports `presets` and applies the bundle. Fires deferred (next frame). |
-| `logo_amt.py` | Script CHOP callback — outputs channel `amt` (0..1) gating the logo attractor + brighten. `Logomode`: `Off`→0, `Always`→1, `Standby`→fades to 1 when no pose present (sum of `lag1` `*:visible` < 0.5), 0 when a person appears; exponentially smoothed over `Logofade` seconds. Read as a uniform by both `bounds_reflect` (force) and `color_attr` (brightness). |
+| `mask_standby.py` | Script CHOP callback inside `mask_controller` — outputs `amt` (0..1) gating the mask attractor + brightness. `Maskmode`: `Off`→0, `Always`→1, `Standby`→fades to 1 when no pose present (visibility sum on `in_pose` < 0.5), 0 when a person appears; exponentially smoothed over `Maskfade` s. Feeds out_state CHOP. |
+| `mask_cycle.py` + `mask_cycle_chop.py` | Pure-Python cycle logic + its TD callback inside `mask_controller`. Cross-dissolves between in_mask_a / in_mask_b via Switch TOP `blend` index; emits `trans` (Hann swap envelope) + persistent `hueoffset` (no bounce-back). Read by `particle_system`'s shaders through the in_mask_state CHOP. |
+| `mask_state_resolve.py` | Script CHOP callback inside `particle_system` — collapses in_mask_state CHOP (4 ch) + parent pars (Maskamt/trans/hueoffset/burstcolor) into ONE resolved CHOP the shader uniforms bind to. CHOP overrides pars when channels are present. |
+| `bootstrap_mask_controller.py` | One-shot builder for the `/project1/mask_controller` Base COMP (idempotent). |
 | `body_logic.py` | Pure-Python skeleton definition for the body force field: `JOINTS` (13 = head/shoulders/elbows/wrists/hips/knees/ankles with MediaPipe indices) + `BONES` (14 edges as pack-index pairs) + `joint_velocity()` diff helper. Self-testable: `python3 body_logic.py`. |
 | `body_tex_script.py` | Script TOP callback — packs the skeleton from `in_pose` (`<name>:x/y` + `visibility<idx>`) into an NJOINTS×2 RGBA32F texture (row0 = pos+vis, row1 = per-joint velocity, differenced from a stored prev). Feeds `body_field`. `in_pose` shares `lag1`'s coordinate convention, so the field is particle-aligned. |
 | `emitters_tex_script.py` | Script TOP — packs `lag1`'s channels into an N×2 RGBA32F texture for the velocity-field shader. |
@@ -148,8 +169,9 @@ Two Base COMPs:
 | `velocity_field.frag` | GLSL TOP — splats per-emitter gaussians with anisotropic kernel into a 2D RGBA force field. |
 | `bounds_reflect.glsl` | GLSL POP — the force integrator + container: folds `PartForce` into `PartVel` via a nonlinear deadzone/ref/gamma curve, applies `Velocitydamping` + `Maxspeed`, then **hard-clamps `P` to the box AND reflects `PartVel`** on wall hits (Output Attributes = `PartVel P`). The P-clamp is what stops fast particles overshooting/escaping the box — velocity reflection alone lagged a frame and leaked. For soup (`Lid>=5`) it also adds the 2-layer curl drift and the **logo attractor** (`logodata.xy · Logoattract · Logoamt`, capped by `Soupmaxspeed`) so the soup condenses into the logo shape in standby. For ALL particles it adds the **body field** (`bodyforce.xy · Bodypush` repel + `bodyforce.zw · Bodydrag` advect) so the skeleton parts/drags the soup. Uses real `TDIn_*()` syntax. Synced to `bounds_reflect_compute`. |
 | `p_to_uv.glsl` | GLSL POP — writes `Puv` = `P` remapped into box UV (aspect-correct) for `field_sample` to index. Synced to `p_to_uv_compute`. |
-| `color_attr.glsl` | GLSL POP — writes per-particle `Cd`: per-limb palette (`Lid` 0..4) or cool soup base (`Lid>=5`), velocity warm-accent, **Embers age ramp** (white-hot at birth → warm → ember → dark, via `PartAge/PartLifeSpan`), and a velocity HDR boost so fast/young particles bloom. Also reads `TDIn_logodata().w` (logo luma mask, supplied by `c_logo_lookup` in the render chain) → brightens soup sitting on the logo by `Logobright·Logoamt`. Synced to `color_attr_compute`. |
-| `logo_grad.frag` | GLSL **TOP** — turns the logo into a force+mask field for the soup. Input0 = `/project1/null_logo` (SHARP, for the mask + close snap), input1 = `/project1/logo_blur` (heavily blurred, for a FAR-reaching broad gather gradient — blur radius = `Logoreach`). RGB = combined ∇(luma) (broad gB + sharp gS) = attractor toward the shape; A = sharp luma (mask). **The TOP MUST be `rgba32float`** — `useinput` (8-bit) clamps negative gradient directions to 0 and half the pull is lost (cost real debug time). Native Lookup POPs (`logo_force_pop` force chain, `c_logo_lookup` render chain) sample it at `Puv` → 4-comp `logodata` (`.xy` = attract dir, `.w` = mask). `bounds_reflect` pulls soup up the gradient (uncapped, after the soup speed cap), **traps** it on the mask (`logo.w·Logotrap` damping) so particles fill the shape, and treats the shape as a **3D vessel**: the gradient is a soft wall (≈0 inside, strong at edges → contains), while `Logovigor` injects un-capped 3D curl swirl ONLY inside the mask so the contents keep tumbling instead of freezing (0 = static decal, 1 = churning vessel). Synced to `logo_grad_pixel`. |
+| `color_attr.glsl` | GLSL POP — writes per-particle `Cd`: per-limb palette (`Lid` 0..4) or cool soup base (`Lid>=100`), velocity warm-accent, **Embers age ramp** (white-hot at birth → warm → ember → dark, via `PartAge/PartLifeSpan`), and a velocity HDR boost so fast/young particles bloom. Also reads `TDIn_maskdata().w` (luma mask, supplied by `c_logo_lookup` in the render chain) → brightens soup sitting on the mask by `Maskbright·Maskamt`. Cosmic-web filament boost gated to background only (fades inside the vessel). Synced to `color_attr_compute`. |
+| `logo_grad.frag` | GLSL **TOP** — turns the SINGLE incoming mask (from `in_mask` → `null_logo` sharp + `logo_blur` blurred) into a force + mask field. Input0 = `null_logo` (SHARP, for the mask + close snap), input1 = `logo_blur` (heavily blurred, for a FAR-reaching broad gather gradient — blur radius = `Maskreach`). RGB = ∇(luma); A = sharp luma (mask). **The TOP MUST be `rgba32float`** — `useinput` (8-bit) clamps negative gradient directions to 0 and half the pull is lost. Native Lookup POPs (`logo_force_pop` force chain, `c_logo_lookup` render chain) sample it at `Puv` → 4-comp `maskdata` (`.xy` = attract dir, `.w` = mask). `bounds_reflect` pulls soup up the gradient, **traps** it on the mask (`maskdata.w·Masktrap`), treats the shape as a 3D vessel (gradient = soft wall + `Maskvigor` injects 3D curl swirl inside). Synced to `logo_grad_pixel`. The file is still named `logo_grad.frag` for historical reasons — its contract is now "any mask, however blended externally". |
+| `depth_field.frag` | GLSL **TOP** — turns the in_depth TOP (single-channel depth map; 1.0 = closest to camera) into a 3D wall-repel force. RGB = `(-∇d, -d·0.3)` (sideways push along the silhouette gradient + backward push), A = the depth value as a smooth gate. Sampled by `depth_force_pop` Lookup POP at `Puv` → `depthforce` attribute. `bounds_reflect` adds `depthforce.xyz · Depthpush` into the per-particle force sum. Independent of `body_field` — depth covers the continuous surface in between bones (torso, head, hands) where the skeleton can't reach. Pars: `Depthpush`, `Depthgain`, `Depthgradstep`, `Depthmaskthresh`. Synced to `depth_field_pixel`. |
 | `body_field.frag` | GLSL **TOP** — splats the skeleton's BONES (hardcoded MediaPipe edges, must match `body_logic.BONES`) as soft capsules from the `body_tex` joint texture: RG = push (away from nearest bone × falloff × visibility = repel), BA = drag (bone velocity × falloff = advect). Distance is aspect-corrected so `Bodyradius` is round in world units. `body_force` Lookup POP samples it at `Puv` → 4-comp `bodyforce` attribute, read by `bounds_reflect`. Synced to `body_field_pixel`. |
 | `body_viz.frag` | GLSL **TOP** — the elegant glowing render of the skeleton (soft capsule bones + joint nodes + a flowing energy pulse), same `body_tex` joints + bone list as `body_field` so it sits exactly on the displacement. Additive HDR (`rgba16float`) → `body_comp` composites it onto `trail_out` BEFORE `bloom1`, so it blooms like the particles. Our own body visualization (replaces MediaPipe's debug circles at `/project1/pose_tracking/point_render`). Pars: `Bodyviz`/`Bodyvizwidth`/`Bodyvizglow`/`Bodyvizflow`/`Bodyviztint`. Synced to `body_viz_pixel`. |
 | `sprite_disc.frag` | GLSL **TOP** — the particle sprite: a centered soft round disc (`1 - smoothstep(0.45,0.80,dist)`). Replaced the Ramp TOP radial (`sprite_grad`), whose TD radial normalization rendered asymmetric/mostly-white → textured quads read as lit rectangles + washed to white. `particle_mat` (additive Constant MAT) samples this as its color map; black surround = round motes, not squares. Synced to `sprite_disc_pixel`. |

@@ -1,12 +1,15 @@
-// logo_grad.frag
-// =============
-// GLSL TOP — turns the logo image into a force + mask field for the particle
-// soup. Fragment shader sampling its inputs (safe; no GLSL-POP sampler).
+// mask_grad.frag (was logo_grad.frag)
+// ===================================
+// GLSL TOP — turns a SINGLE generic mask image into a force + mask field for
+// the particle soup. Fragment shader sampling its inputs (safe; no GLSL-POP
+// sampler). The mask source itself is arbitrary (logo, depth-derived silhouette,
+// arbitrary alpha map) — all switching/blending is done externally and the
+// component receives ONE mask through in_mask.
 //
-// Input 0 (sTD2DInputs[0]) = null_logo      — SHARP logo (crisp mask + snap)
-// Input 1 (sTD2DInputs[1]) = logo_blur      — heavily BLURRED logo (broad reach)
+// Input 0 (sTD2DInputs[0]) = null_mask      — SHARP mask (crisp mask + snap)
+// Input 1 (sTD2DInputs[1]) = mask_blur      — heavily BLURRED mask (broad reach)
 //
-// Output, sampled by the logo lookups at each particle's Puv → `logodata`:
+// Output, sampled by the mask lookups at each particle's Puv → `maskdata`:
 //   RGB = attractor gradient (toward the bright shape). Two scales summed:
 //     • ∇(blurred luma) — a smooth, FAR-reaching slope so particles are pulled
 //       in from across the frame (the blur radius = how far the reach extends).

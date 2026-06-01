@@ -59,15 +59,16 @@ uniform float uSoupturb;     // gentle base curl drift for ambient soup (Lid>=5)
 uniform float uSoupmaxspeed; // hard cap on idle soup speed (calm soup)
 uniform float uSoupturb2;    // strength of the broad/slow second curl layer
 uniform float uSouplayermix; // fraction of soup on layer B (broad) vs A (fine)
-uniform float uLogoattract;  // soup pull toward the logo shape (gradient force)
-uniform float uLogoamt;      // 0..1 standby fade (op('logo_amt')['amt']); gates logo
-uniform float uLogotrap;     // velocity damping ON the logo mask (sticks soup → fills shape)
-uniform float uLogovigor;    // liveliness of contained particles (0=static decal, 1=churning vessel)
-uniform float uLogotrans;    // 0..1 visual swap bump (unused here; color_attr uses it)
-uniform float uLogopush;     // outward push-back strength during the swap shockwave
-uniform float uLogomorph;    // 0..1 mid-swap (cross-dissolve): releases the trap so particles flow to new homes
+uniform float uMaskattract;  // soup pull toward the logo shape (gradient force)
+uniform float uMaskamt;      // 0..1 standby fade (op('logo_amt')['amt']); gates logo
+uniform float uMasktrap;     // velocity damping ON the logo mask (sticks soup → fills shape)
+uniform float uMaskvigor;    // liveliness of contained particles (0=static decal, 1=churning vessel)
+uniform float uMasktrans;    // 0..1 visual swap bump (unused here; color_attr uses it)
+uniform float uMaskpush;     // outward push-back strength during the swap shockwave
+uniform float uMaskmorph;    // 0..1 mid-swap (cross-dissolve): releases the trap so particles flow to new homes
 uniform float uBodypush;     // repel strength: particles parted by the skeleton
 uniform float uBodydrag;     // advect strength: particles dragged along limb motion
+uniform float uDepthpush;    // 3D wall-repel from the depth map (separate force layer)
 
 void main()
 {
@@ -80,8 +81,9 @@ void main()
     int  lid   = int(TDIn_Lid());
     vec3 curl  = TDIn_NoiseCurl().xyz;   // fine layer (curl_noise)
     vec3 curl2 = TDIn_NoiseCurl2().xyz;  // broad/slow layer (curl_noise2)
-    vec4 logo  = TDIn_logodata();        // .xy = ∇luma (attractor dir), .w = mask
+    vec4 logo  = TDIn_maskdata();        // .xy = ∇luma (attractor dir), .w = mask
     vec4 body  = TDIn_bodyforce();       // .xy = push (repel dir), .zw = drag (limb vel)
+    vec4 depth = TDIn_depthforce();      // .xyz = wall-repel (depth_field), .w = gate
 
     // NaN/Inf guard. NaN P fed into instancing transforms or texture lookups
     // can crash the Vulkan device outright. Clamp to zero here so a single
@@ -131,6 +133,14 @@ void main()
     // off-frame / low-confidence joints contribute nothing (no phantom pushes).
     vel += vec3(body.xy, 0.0) * uBodypush + vec3(body.zw, 0.0) * uBodydrag;
 
+    // Depth field: 3D wall-repel for any particle whose screen-uv samples a
+    // depth surface. depth.xyz is already a push vector (xy = sideways along
+    // -∇depth, z = backward), gated by depth.w (the smooth mask). Applies to
+    // ALL particles so the body shape parts the soup AND deflects movement
+    // sprays. Independent of body_field (skeleton-driven) — depth covers the
+    // continuous surface in between bones (torso, head, hands).
+    vel += depth.xyz * uDepthpush;
+
     // Gentle base turbulence for the ambient soup only (Lid>=5). Curl is
     // otherwise crushed by the deadzone/gamma curve above (tuned for strong
     // movement forces), so apply it DIRECTLY here for soup, scaled by the
@@ -140,10 +150,10 @@ void main()
         // Two interleaved flow layers: each soup particle follows the broad
         // slow curl (B) or the fine curl (A) by a stable PartId hash, so the
         // field reads as layered structure rather than one uniform drift.
-        // Curl is CALMED as the logo fades in (uLogoamt→1) so the turbulence
+        // Curl is CALMED as the logo fades in (uMaskamt→1) so the turbulence
         // stops fighting the attractor and the shape can actually complete.
         float h = fract(sin(float(TDIn_PartId()) * 91.17) * 43758.5453);
-        float curlcalm = 1.0 - 0.85 * uLogoamt;
+        float curlcalm = 1.0 - 0.85 * uMaskamt;
         if (h < uSouplayermix) vel += curl2 * uSoupturb2 * curlcalm;
         else                   vel += curl  * uSoupturb  * curlcalm;
     }
@@ -167,7 +177,7 @@ void main()
 
         // ---- Logo as a 3D VESSEL ------------------------------------------
         // `inside` is high for particles sitting on the bright shape.
-        float inside = clamp(logo.w * uLogoamt, 0.0, 1.0);
+        float inside = clamp(logo.w * uMaskamt, 0.0, 1.0);
 
         // 1. Attract from afar + soft edge WALL. Applied AFTER the calm cap so
         //    it isn't throttled. The gradient is ~0 inside the bright plateau
@@ -177,18 +187,18 @@ void main()
         //    • attract stays ON while the logo_cycle cross-dissolves the two
         //      logo images → the gradient field smoothly morphs old→new, so
         //      particles migrate to their new homes (real position lerp).
-        //    • a simultaneous OUTWARD PUSH pulse (uLogomorph) blasts them off
+        //    • a simultaneous OUTWARD PUSH pulse (uMaskmorph) blasts them off
         //      the old shape mid-swap. Push fades with morph, attract gathers
         //      them onto the NEW shape. So they explode AND reform together —
         //      not in series.
-        vel.xy += logo.xy * uLogoattract * uLogoamt;
-        vel.xy -= logo.xy * uLogopush    * uLogoamt * uLogomorph;
+        vel.xy += logo.xy * uMaskattract * uMaskamt;
+        vel.xy -= logo.xy * uMaskpush    * uMaskamt * uMaskmorph;
 
         // 2. Keep the CONTENTS ALIVE: inject extra (un-capped) 3D curl swirl
         //    ONLY inside the shape, so contained particles tumble like a filled
-        //    vessel instead of freezing on the mask. uLogovigor = liveliness;
+        //    vessel instead of freezing on the mask. uMaskvigor = liveliness;
         //    curl is 3D so they also drift in z → reads as a 3D vessel.
-        vel += curl * (uSoupturb * 5.0 * inside * uLogovigor);
+        vel += curl * (uSoupturb * 5.0 * inside * uMaskvigor);
 
         // 3. Gentle settle (NOT a freeze) so speed doesn't run away — weakened
         //    by vigor so the swirl persists (vigor 0 → sticky/static like a
@@ -196,13 +206,13 @@ void main()
         //    swap (1 - trans) so particles are free to blow outward.
         // trap released during the morph so particles flow freely to their new
         // homes, returns (×1) once settled.
-        vel.xy *= (1.0 - inside * uLogotrap * (1.0 - 0.7 * uLogovigor)
-                        * (1.0 - uLogomorph));
+        vel.xy *= (1.0 - inside * uMasktrap * (1.0 - 0.7 * uMaskvigor)
+                        * (1.0 - uMaskmorph));
 
         // 4. Overall logo-speed limit, with headroom for the vessel swirl so
         //    step 2 isn't immediately clamped away.
-        float lcap = uSoupmaxspeed + uLogoamt * (uLogoattract * 0.5
-                     + uSoupturb * 5.0 * inside * uLogovigor);
+        float lcap = uSoupmaxspeed + uMaskamt * (uMaskattract * 0.5
+                     + uSoupturb * 5.0 * inside * uMaskvigor);
         float ls = length(vel);
         if (ls > lcap) vel *= (lcap / ls);
     }
