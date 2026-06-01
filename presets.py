@@ -43,7 +43,7 @@ PRESETS = {
         'Soupsetspeed': 0.04,
         'Exposure': 1.0, 'Contrast': 1.05, 'Saturation': 1.15,
         'Tint': (0.95, 0.98, 1.12),
-        'Vignette': 0.45, 'Chromab': 0.0025, 'Grain': 0.03,
+        'Vignette': 0.22, 'Chromab': 0.0025, 'Grain': 0.03,
     },
     # Fire — white-hot cores → orange → red embers, sparky, energetic.
     'Ember': {

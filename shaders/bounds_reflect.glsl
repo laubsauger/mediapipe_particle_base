@@ -74,6 +74,10 @@ uniform float uWallrepel;    // soft inward push strength near each bounds wall
 uniform float uWallband;     // distance from the wall over which the push ramps
 uniform float uDroprepel;    // audio: radial outward SHOCKWAVE from box centre on big drops ("the music breathes the particles")
 uniform float uSoupdir;      // audio: soup-flow direction rotation (radians), stepped on each drop so the disturbance changes heading
+uniform float uResonance;    // audio: SEGMENTED-LOGO regional resonance — each logo region churns with its mapped reduced-FFT bin (vessel = resonant body)
+uniform float uSurface;      // audio: HIGH-band surface agitation — fine fizz concentrated at the logo silhouette edge
+// uSpectrum[] is auto-declared by TD from the bound CHOP (15 samples) — do NOT
+// declare it here (redeclaration). It holds the normalised reduced-FFT bins.
 
 void main()
 {
@@ -218,6 +222,29 @@ void main()
         //    vessel instead of freezing on the mask. uMaskvigor = liveliness;
         //    curl is 3D so they also drift in z → reads as a 3D vessel.
         vel += curl * (uSoupturb * 5.0 * inside * uMaskvigor);
+
+        // ---- SEGMENTED LOGO: regional FFT resonance -----------------------
+        // Split the vessel into a grid of regions; each maps to one reduced-FFT
+        // bin (uSpectrum). The trapped material in each region churns with that
+        // frequency band's energy, so different parts of the logo resonate with
+        // different parts of the music — the shape reads as a resonant body with
+        // internal "organs", not a uniform fill. Gated to inside the vessel.
+        if (uResonance > 0.0 && inside > 0.0) {
+            vec3 nrm = (pos - uBoxMin) / max(uBoxMax - uBoxMin, vec3(1e-3));
+            int rx = int(clamp(nrm.x, 0.0, 0.999) * 5.0);   // 0..4 columns
+            int ry = int(clamp(nrm.y, 0.0, 0.999) * 3.0);   // 0..2 rows
+            float band = uSpectrum[ry * 5 + rx];            // 0..14 → bin
+            vel += curl * (band * uResonance * inside);
+        }
+
+        // ---- SURFACE agitation (high band) --------------------------------
+        // Fine fizz concentrated at the silhouette edge (inside·(1-inside) peaks
+        // at the boundary) so thin strokes shimmer and the edge feels porous,
+        // without disturbing the calm interior fill.
+        if (uSurface > 0.0) {
+            float edge = inside * (1.0 - inside) * 4.0;     // peaks at the silhouette
+            vel += curl * (uSurface * (inside * 0.25 + edge));
+        }
 
         // 3. Gentle settle (NOT a freeze) so speed doesn't run away — weakened
         //    by vigor so the swirl persists (vigor 0 → sticky/static like a

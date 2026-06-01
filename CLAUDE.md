@@ -143,7 +143,7 @@ Adding a feature: pure Python module + self-test → TD callback → installer e
 | No glow/bloom | `Bloom*`; needs `render1` 16f + `color_attr` HDR. |
 | Static curl swirls | `curl_noise` Translate-4D `t4d` = `absTime.seconds × Curlspeed`. |
 | Switch look/preset | `Preset`+`Applypreset` → `preset_exec` → `presets.py`. |
-| No / wrong audio reaction | `audio_react` Script CHOP + `audio_logic.py`; Audio page pars (`Audioreact` master). ARE outs pulled via `audio_features` Select CHOP (cross-COMP wires don't connect). |
+| No / wrong audio reaction | `audio_react` Script CHOP + `audio_logic.py`; Audio page (`Audioenable` toggle / `Audioreact` master). ARE wired in via `are_features` Merge (/project1) → `in_audio` In CHOPs (particle_system → velocity_controller). ARE absent → empty → defaults to 0. |
 | Post-FX wrong | Chain `render1 → trail_comp → bloom1 → streak_comp → grade → lens_finish → out2`. |
 | Notes not spawning | `_get_or_build_game()` must prime wall clock before start. |
 | Notes flying wrong way | renderer camera must be `tz=+3`, not negative. |

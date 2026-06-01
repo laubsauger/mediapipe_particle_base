@@ -100,8 +100,9 @@ def onCook(scriptOp):
     parent().store('_audio_state', state)
 
     # Master gate: 0 = layer fully off (outputs all 0 → all consumers fall back
-    # to their hand-tuned base values).
-    master = float(_par('Audioreact', 1.0))
+    # to their hand-tuned base values + the non-audio color rotation keeps running).
+    # Audioenable is a clean toggle on top of the Audioreact depth.
+    master = float(_par('Audioreact', 1.0)) * (1.0 if _par('Audioenable', True) else 0.0)
 
     names = al.output_names(n_spec)
     scriptOp.numSamples = 1

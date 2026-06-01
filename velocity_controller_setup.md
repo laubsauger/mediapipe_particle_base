@@ -1595,17 +1595,28 @@ external `/project1/ARE_v1_2` component analyses the playing track and exposes
 feature CHOPs; we turn them into normalised 0..1 modulation signals and add them
 on top of the hand-tuned base parameters.
 
-**Signal path** (all inside `velocity_controller`):
+**Signal path** — EXPLICIT wired In CHOPs (no hardcoded op paths; survives a
+`/project1` rename; if ARE is absent the merge is simply empty → every channel
+defaults to 0 and nothing breaks):
 
 ```
-ARE outs (drums, global_dyn, lmh, red_nat_fft)
-  → audio_features (Select CHOP, pulls all 24 channels by path)
-  → audio_react (Script CHOP, audio_react_chop.py → mod.audio_logic)
-       outputs (1 samp): kick snare hat pulse bass breath build + spec0..14
-                         (all × master Audioreact)
-  → audio_spec (Select, spec*) → audio_spec_seq (Shuffle 'seqall', 1ch×15samp)
-       → color_attr uniform array uSpectrum[15]
+/project1:  ARE outs (drums, global_dyn, lmh, red_nat_fft)
+              → are_features (Merge CHOP, WIRED)             ── visible wires
+              → particle_system  (in_audio In CHOP, connector 7)
+/particle_system:  in_audio → velocity_controller (in_audio In CHOP, connector 1)
+/velocity_controller:
+   in_audio → audio_react (Script CHOP, audio_react_chop.py → mod.audio_logic)
+       outputs (1 samp): kick snare hat pulse bass breath build glow drop dropdir
+                         mid high pressure circulation surface + spec0..14
+                         (all × master Audioreact × Audioenable toggle)
+   → audio_spec (Select spec*) → audio_spec_seq (Shuffle 'seqall', 1ch×15samp)
+       → uSpectrum[15] uniform array on color_attr AND bounds_reflect
 ```
+
+**Master toggle:** `Audioenable` (Audio page) — off → the whole layer outputs 0,
+every consumer reverts to its hand-tuned base, and the non-audio soup colour
+rotation (`Soupsetspeed` palette bank) keeps running. A/B the reactivity against
+the base look with it. `Audioreact` is the 0..1 master depth on top.
 
 `audio_logic.py` (pure, self-test `python3 audio_logic.py`): peak-hold envelopes
 for the spiky drum detections, one-pole smoothing + a slow running-max AGC for
@@ -1637,3 +1648,38 @@ depths, plus `Audiokickrelease`/`Audiohatrelease`/`Audiobreathsmooth`/`Audiobuil
   `uniform float uSpectrum[15]` from the sample count, so **do NOT** also declare
   it in the shader (redeclaration). It's a uniform array, not a sampler — safe in
   a GLSL POP.
+
+### Logo-vessel audio physics (standby) — "the music breathes the trapped material"
+
+Guiding rule (from the design brief): **ARE does not control what the viewer
+sees directly — it controls the PHYSICAL CONDITION of the particle material
+trapped inside the logo vessel.** All of these are gated to inside the mask
+(`inside = logo.w · Maskamt`), so in active/no-logo mode they're no-ops.
+
+`audio_logic` derives semantic "mood" channels from the ARE bands (AGC-normalised
++ smoothed), exposed on `audio_react`:
+
+| Mood channel | Source | Drives (uniform / par) | Vessel behaviour |
+| --- | --- | --- | --- |
+| `pressure` | `lmh.bass · breath` (slow) | `bounds_reflect.uMaskattract` ×(1+pressure·Audiopressure·2) | bass presses material into the logo walls; heavier, tidal |
+| `circulation` | `lmh.mid` | `bounds_reflect.uMaskvigor` ×(1+circulation·Audiocirculation·1.5) | mids keep the interior flowing — currents, eddies, no dead centre |
+| `surface` | `lmh.high` (capped 0.7) | `bounds_reflect.uSurface` → fine curl at the silhouette | highs agitate the edge — shimmer, porous boundary |
+| `breath`/`glow` | `natural_dynamic` | exposure / soup brightness (smoothed) | the whole vessel breathes with track energy |
+
+**Segmented logo (regional FFT resonance) — the centerpiece.** The 15 reduced-FFT
+bins (`uSpectrum[15]`, the same Shuffle'd `audio_spec_seq` CHOP that color_attr
+binds) are bound to `bounds_reflect` too. Inside the vessel, a particle's
+position is mapped to a grid region (5 cols × 3 rows = 15 cells); each cell reads
+its FFT bin and adds local curl turbulence scaled by `Audioresonance`. So
+different regions of the logo churn with different frequency bands — the shape
+becomes a resonant body with internal "organs" rather than a uniform fill. Map is
+spatial, not chromatic (drives physics, not colour). Edit the grid in
+`bounds_reflect.glsl` (the `SEGMENTED LOGO` block).
+
+Pars (Audio page): `Audiopressure`, `Audiocirculation`, `Audiosurface`,
+`Audioresonance`. All gated to standby via the `inside` mask term.
+
+**Deferred (follow-up):** drums-as-permission events (kick→rare pressure leak when
+the edge is already dense; hat→tiny boundary dust), and Natural-Dynamic →
+trail-memory (`Feedbackfade`) + fill-density (`Ambientrate`). The mood channels
+(`pressure`/`surface`/`drop`/`kick`/`hat`) are already published for these.

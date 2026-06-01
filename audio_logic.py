@@ -93,10 +93,17 @@ def default_params():
         # smoothed hard so exposure/soup-brightness swell instead of strobe.
         "glow_smooth":    0.22,
         # drop surge detector (rising-edge in breath = "the drop")
-        "drop_thresh":    1.0,    # breath rise rate (1/s) that counts as a drop
-        "drop_minlevel":  0.30,   # breath must be at least this high to fire
+        "drop_thresh":    1.8,    # breath rise rate (1/s) that counts as a drop — high so only REAL drops fire, not every kick
+        "drop_minlevel":  0.45,   # breath must be at least this high to fire
         "drop_release":   0.55,   # s — how long the shockwave envelope lasts
-        "drop_turn":      2.3,    # rad — how far the soup flow direction rotates per drop
+        "drop_turn":      2.3,    # rad — big soup-flow rotation on a real drop
+        "snare_turn":     0.4,    # rad — SMALL soup-flow rotation per snare (subtle, frequent direction variety)
+        "kick_turn":      0.3,    # rad — soup-flow rotation per KICK (the reliable beat; snare/hat detectors are often dead)
+        # LMH material smoothing (vessel "what is the substance made of")
+        "mid_smooth":     0.10,   # circulation responds at body-flow rate
+        "high_smooth":    0.06,   # surface detail, a touch faster
+        "pressure_smooth": 0.18,  # low·breath → slow tidal pressure
+        "surface_cap":    0.7,    # cap high-band response (cheap if uncapped)
         # AGC: slow running-max so quiet/loud tracks both normalise
         "agc_decay":      6.0,    # s — how fast the tracked max forgets
         "agc_floor":      0.004,  # below this, treat as silence (no amplification)
@@ -113,9 +120,13 @@ def fresh_state(n_spec=15):
         "bass": 0.0, "breath": 0.0, "build": 0.0,
         # de-flickered brightness driver + drop surge state
         "glow": 0.0, "drop": 0.0, "dropdir": 0.0, "prev_breath": 0.0,
+        "prev_snare": 0.0, "prev_kick": 0.0,
+        # LMH material / vessel mood (low/mid/high → pressure/circulation/surface)
+        "mid": 0.0, "high": 0.0,
+        "pressure": 0.0, "circulation": 0.0, "surface": 0.0,
         "spec": [0.0] * n_spec,
         # AGC running maxima
-        "max_bass": 0.0,
+        "max_bass": 0.0, "max_mid": 0.0, "max_high": 0.0,
         # ONE shared max across all spectrum bins so relative bin heights are
         # preserved (the equalizer shape) instead of each bin self-normalising
         # to full scale and flattening the spectrum.
@@ -126,7 +137,8 @@ def fresh_state(n_spec=15):
 # Canonical output channel order (TD Script CHOP appends in this order).
 def output_names(n_spec=15):
     return (["kick", "snare", "hat", "pulse", "bass", "breath", "build",
-             "glow", "drop", "dropdir"]
+             "glow", "drop", "dropdir",
+             "mid", "high", "pressure", "circulation", "surface"]
             + ["spec%d" % i for i in range(n_spec)])
 
 
@@ -155,6 +167,14 @@ def process(state, features, dt, params):
         g("bass"), state["max_bass"], dt, params["agc_decay"], params["agc_floor"])
     state["bass"] = smooth(state["bass"], bass_n, dt, params["bass_smooth"])
 
+    # mid / high bands (AGC + smooth) — the "material" signals.
+    mid_n, state["max_mid"] = agc_normalize(
+        g("mid"), state["max_mid"], dt, params["agc_decay"], params["agc_floor"])
+    state["mid"] = smooth(state["mid"], mid_n, dt, params["mid_smooth"])
+    high_n, state["max_high"] = agc_normalize(
+        g("high"), state["max_high"], dt, params["agc_decay"], params["agc_floor"])
+    state["high"] = smooth(state["high"], high_n, dt, params["high_smooth"])
+
     # natural_dynamic is already 0..1 + smoothed by ARE; light smooth only.
     prev_breath = state["breath"]
     state["breath"] = smooth(state["breath"], g("natural_dynamic"), dt, params["breath_smooth"])
@@ -179,6 +199,17 @@ def process(state, features, dt, params):
         state["dropdir"] = math.fmod(state["dropdir"] + params["drop_turn"], 6.2831853)
     else:
         state["drop"] = state["drop"] * math.exp(-dt / max(params["drop_release"], 1e-3))
+
+    # snare onset → SMALL soup-flow direction nudge (subtle, frequent). Rising
+    # edge of the snare envelope through 0.5 = one nudge per hit, not per frame.
+    if state["snare"] > 0.5 and state["prev_snare"] <= 0.5:
+        state["dropdir"] = math.fmod(state["dropdir"] + params["snare_turn"], 6.2831853)
+    state["prev_snare"] = state["snare"]
+    # kick onset → soup-flow direction nudge too (the kick is the reliable beat
+    # when ARE's mid/high drum detectors aren't firing).
+    if state["kick"] > 0.5 and state["prev_kick"] <= 0.5:
+        state["dropdir"] = math.fmod(state["dropdir"] + params["kick_turn"], 6.2831853)
+    state["prev_kick"] = state["kick"]
 
     # ---- build / release from the burst square wave --------------------
     burst = g("burst")
@@ -207,11 +238,22 @@ def process(state, features, dt, params):
             sn = 1.0
         state["spec"][i] = smooth(state["spec"][i], sn, dt, params["spec_smooth"])
 
+    # ---- vessel MOOD: "what is the trapped substance made of" ----------
+    # Low = pressure/mass (bass·breath, slow tidal). Mid = circulation (body
+    # flow). High = surface agitation (capped — cheap if uncapped). These drive
+    # the PHYSICS of the material inside the logo vessel, never the visuals.
+    state["pressure"]    = smooth(state["pressure"], state["bass"] * state["breath"],
+                                  dt, params["pressure_smooth"])
+    state["circulation"] = state["mid"]
+    state["surface"]     = min(state["high"], params["surface_cap"])
+
     out = {
         "kick": state["kick"], "snare": state["snare"], "hat": state["hat"],
         "pulse": state["pulse"], "bass": state["bass"], "breath": state["breath"],
         "build": state["build"], "glow": state["glow"], "drop": state["drop"],
-        "dropdir": state["dropdir"],
+        "dropdir": state["dropdir"], "mid": state["mid"], "high": state["high"],
+        "pressure": state["pressure"], "circulation": state["circulation"],
+        "surface": state["surface"],
     }
     for i in range(n):
         out["spec%d" % i] = state["spec"][i]
@@ -291,6 +333,16 @@ if __name__ == "__main__":
         o = process(st_d, {"natural_dynamic": 0.9}, dt, p)
     assert o["drop"] < 0.2, "drop must decay while energy stays flat (no stutter)"
     assert abs(st_d["dropdir"] - fired_dir) < 1e-6, "dropdir must not advance without a new drop"
+
+    # 7b) vessel mood: mid→circulation, high→surface (capped), low·breath→pressure.
+    st_m = fresh_state(4)
+    o = None
+    for _ in range(240):
+        o = process(st_m, {"mid": 0.2, "high": 0.5, "bass": 0.2,
+                           "natural_dynamic": 0.8}, dt, p)
+    assert o["circulation"] > 0.5, ("mid should drive circulation", o["circulation"])
+    assert o["surface"] <= p["surface_cap"] + 1e-9, "surface must be capped"
+    assert o["pressure"] > 0.3, ("low·breath should build pressure", o["pressure"])
 
     # 6b) NaN resilience.
     st5 = fresh_state(4)

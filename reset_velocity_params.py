@@ -130,7 +130,7 @@ RENDERER = {
     'Soupevolve':      0.025,   # soup palette HUE rotation over time — slow drift (was 0.05)
     'Soupgradrot':     0.04,    # slow direction-rotation of the colour bands (rad/s) — alive without input
     'Soupsetspeed':    0.04,    # palette-SET rotation (sets/s): soup crossfades through the color_attr triad bank (set0=preset triad). 0=stay on preset.
-    'Fieldedgefade':   0.10,    # smooth border falloff on the sampled flow field (field_edge TOP) — kills the hard edge that clumped particles at the walls
+    'Fieldedgefade':   0.05,    # smooth border falloff on the sampled flow field (field_edge TOP) — kills the hard edge that clumped particles at the walls
     # Cosmic-web filaments (background-only — fades inside logo/vessel mask):
     'Clusterscale':    3.5,     # filament frequency
     'Clusterboost':    0.4,     # brightness boost on filament peaks — background, not soup-wide
@@ -184,16 +184,24 @@ def _apply(mapping, page_label):
 # Audio page (ARE reactivity) — Punchy defaults
 # ---------------------------------------------------------------------------
 AUDIO = {
+    'Audioenable':       1,      # master ON/OFF toggle (off → base look + color rotation only)
     'Audioreact':        1.0,
     'Audiokick':         0.9,
     'Audiobass':         0.7,
     'Audiobreath':       0.6,
     'Audiohat':          0.7,
-    'Audiosnare':        0.6,
+    'Audiosnare':        0.25,   # subtle backbeat hue (was 0.6 — too flashy)
     'Audiobuild':        0.8,
-    'Audiospectrum':     0.6,
-    'Audiodrop':         0.8,
+    'Audiospectrum':     0.0,    # spectrum colour bands OFF (read as an ugly colored vignette)
+    'Audiodrop':         0.4,
     'Audiosoupdir':      1.0,
+    'Audioblur':         0.5,    # organic on-beat defocus blur (beat_blur TOP)
+    'Audiobeat':         0.8,    # kick → visible radial push pulse (main "alive on beat" lever)
+    # Logo-vessel physics (standby) — ARE drives the trapped material's physics
+    'Audiopressure':     0.8,    # low → boundary pressure (Maskattract)
+    'Audiocirculation':  0.7,    # mid → internal circulation (Maskvigor)
+    'Audiosurface':      0.4,    # high → surface fizz at the silhouette edge
+    'Audioresonance':    0.9,    # reduced-FFT → segmented-logo regional resonance
     'Audiokickrelease':  0.16,
     'Audiohatrelease':   0.07,
     'Audiobreathsmooth': 0.10,

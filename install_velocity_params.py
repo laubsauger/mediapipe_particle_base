@@ -515,7 +515,7 @@ add_float(render, 'Soupgradrot', 'Soup Gradient Rotation (rad/s)', 0.04, -1.0, 1
 # Smooth border falloff on the sampled flow field (field_edge GLSL TOP between
 # field_mix and field_out). Removes the hard pixel→transparent edge at the
 # texture rim that piled particles up along the box walls. 0 = hard edge / off.
-add_float(render, 'Fieldedgefade', 'Field Edge Fade (border)', 0.10, 0.0, 0.3, clamp_max=False)
+add_float(render, 'Fieldedgefade', 'Field Edge Fade (border)', 0.05, 0.0, 0.3, clamp_max=False)
 
 # Soup palette-SET rotation: the soup slowly crossfades through the triad BANK
 # in color_attr.glsl (set 0 = the preset Soupcol triad, sets 1..3 curated) so
@@ -624,7 +624,7 @@ add_rgb(look, 'Tint',  'Tint',              (1.0, 1.0, 1.0))
 
 # --- Lens finish (lens_finish.frag) ---------------------------------------
 add_toggle(look, 'Lensenable', 'Lens Finish Enable', True)
-add_float(look, 'Vignette', 'Vignette', 0.4, 0.0, 1.0)
+add_float(look, 'Vignette', 'Vignette', 0.22, 0.0, 1.0)
 add_float(look, 'Chromab', 'Chromatic Aberration', 0.003, 0.0, 0.05, clamp_max=False)
 add_float(look, 'Grain', 'Film Grain', 0.04, 0.0, 0.3, clamp_max=False)
 
@@ -637,18 +637,40 @@ add_float(look, 'Grain', 'Film Grain', 0.04, 0.0, 0.3, clamp_max=False)
 # the whole layer switches off at Audioreact=0. See velocity_controller_setup.md.
 # ===========================================================================
 audio = _page('Audio')
-add_float(audio, 'Audioreact', 'Audio React (master)', 1.0, 0.0, 1.0)
+# Master ON/OFF — off = the whole audio layer outputs 0, every consumer falls
+# back to its hand-tuned base value, and the (non-audio) soup colour rotation
+# keeps running. Toggle this to A/B the audio reactivity against the base look.
+add_toggle(audio, 'Audioenable', 'Audio Reactivity Enable', True)
+add_float(audio, 'Audioreact', 'Audio React (master depth)', 1.0, 0.0, 1.0)
 # Per-mapping DEPTHS (Punchy defaults). 0 = that mapping off.
 add_float(audio, 'Audiokick',     'Kick → turbulence+bloom',        0.9, 0.0, 3.0, clamp_max=False)
 add_float(audio, 'Audiobass',     'Bass → field force/drift',       0.7, 0.0, 3.0, clamp_max=False)
 add_float(audio, 'Audiobreath',   'Breath → exposure/bloom/bright', 0.6, 0.0, 3.0, clamp_max=False)
 add_float(audio, 'Audiohat',      'Hats → streaks+sparkle',         0.7, 0.0, 3.0, clamp_max=False)
-add_float(audio, 'Audiosnare',    'Snare → color shift',            0.6, 0.0, 3.0, clamp_max=False)
+add_float(audio, 'Audiosnare',    'Snare → color shift',            0.25, 0.0, 3.0, clamp_max=False)
 add_float(audio, 'Audiobuild',    'Build → contract / drop release', 0.8, 0.0, 3.0, clamp_max=False)
-add_float(audio, 'Audiospectrum', 'Spectrum field amount',               0.6, 0.0, 2.0, clamp_max=False)
+# Spectrum colour-band field — OFF by default: it read as an ugly colored
+# vignette pulsing at the frame edges. Raise to opt back in.
+add_float(audio, 'Audiospectrum', 'Spectrum field amount',               0.0, 0.0, 2.0, clamp_max=False)
 # Drop shockwave (radial breath) + per-drop soup-flow direction rotation.
-add_float(audio, 'Audiodrop',    'Drop → repulsion shockwave',     0.8, 0.0, 3.0, clamp_max=False)
+add_float(audio, 'Audiodrop',    'Drop → repulsion shockwave',     0.4, 0.0, 3.0, clamp_max=False)
 add_float(audio, 'Audiosoupdir', 'Soup flow direction (per drop)', 1.0, 0.0, 1.0)
+# Organic on-beat DEFOCUS blur (beat_blur Blur TOP between grade and lens_finish)
+# — replaces the colored spectrum vignette with a soft focus "breath" on kicks/drops.
+add_float(audio, 'Audioblur',    'Beat Defocus Blur',              0.5, 0.0, 2.0, clamp_max=False)
+# Beat PUSH — the kick (the one reliably-firing ARE drum detection) shoves every
+# particle radially outward from the box centre → a visible "breathe out / settle
+# back" pulse on the beat. Applied AFTER the soup/logo speed caps so it isn't
+# crushed. Tune down if too much; this is the main "alive on the beat" lever.
+add_float(audio, 'Audiobeat',    'Beat Push (kick → visible pulse)', 0.8, 0.0, 2.0, clamp_max=False)
+# --- Logo-vessel physics (standby): ARE drives the PHYSICAL CONDITION of the
+# material trapped inside the logo, not the visuals. Gated to inside the mask.
+#   low  → boundary pressure   mid → internal circulation   high → surface fizz
+#   reduced-FFT → SEGMENTED-LOGO regional resonance (each region churns with its band)
+add_float(audio, 'Audiopressure',   'Low → boundary pressure',       0.8, 0.0, 3.0, clamp_max=False)
+add_float(audio, 'Audiocirculation','Mid → internal circulation',    0.7, 0.0, 3.0, clamp_max=False)
+add_float(audio, 'Audiosurface',    'High → surface fizz (edge)',    0.4, 0.0, 3.0, clamp_max=False)
+add_float(audio, 'Audioresonance',  'Logo region resonance (FFT)',   0.9, 0.0, 3.0, clamp_max=False)
 # Envelope / smoothing times (audio_logic).
 add_float(audio, 'Audiokickrelease',  'Kick release (s)',  0.16, 0.01, 1.0, clamp_max=False)
 add_float(audio, 'Audiohatrelease',   'Hat release (s)',   0.07, 0.01, 1.0, clamp_max=False)
