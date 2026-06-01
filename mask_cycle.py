@@ -56,6 +56,15 @@ def step(state, now, cycle_time, switch_dur, enabled=True, hue_step=2.4):
         s.setdefault('hue_accum', 0.0)
         s.setdefault('hue_start', 0.0)
 
+    # Time-jump detection: if absTime rewound (project save/load, perform-mode
+    # restart, manual reset) `now` may be massively LESS than the stored
+    # t_last. Without this guard t_last sits in the future and the cycler
+    # waits forever for `now - t_last >= cycle_time`.
+    if now < s.get('t_last', 0.0) - 1.0:
+        s['t_last'] = now
+        s['t_start'] = now
+        s['in_trans'] = False
+
     switch_dur = max(1e-3, switch_dur)
     target = s.get('target', 0)
     accum = s.get('hue_accum', 0.0)

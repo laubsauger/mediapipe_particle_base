@@ -70,6 +70,8 @@ uniform float uBodypush;     // repel strength: particles parted by the skeleton
 uniform float uBodydrag;     // advect strength: particles dragged along limb motion
 uniform float uSoupfieldgain;// soup-only fraction of the RAW (pre-deadzone)
                              // field force — lets depth/pose flow reach the soup
+uniform float uWallrepel;    // soft inward push strength near each bounds wall
+uniform float uWallband;     // distance from the wall over which the push ramps
 
 void main()
 {
@@ -225,6 +227,32 @@ void main()
                      + uSoupturb * 5.0 * inside * uMaskvigor);
         float ls = length(vel);
         if (ls > lcap) vel *= (lcap / ls);
+    }
+
+    // ---- Edge damping ------------------------------------------------------
+    // Particles drift to the bounds because outward forces (depth ∇d pointing
+    // away from body, curl at periphery, etc.) decay to ~0 in empty areas
+    // near walls — particles coast there and stop. The previous "soft repel"
+    // approach just shifted the accumulation band inward and shrank the
+    // usable area. Better: scrub the velocity itself in a band near each
+    // wall. Particles approaching a wall lose energy rapidly so they never
+    // reach it; particles in the middle are untouched.
+    {
+        vec3 dmin = pos - uBoxMin;
+        vec3 dmax = uBoxMax - pos;
+        float band = max(uWallband, 1e-4);
+        // closeness in each axis: 0 deep in the box, 1 right at the wall
+        vec3 cmin = 1.0 - smoothstep(0.0, band, dmin);
+        vec3 cmax = 1.0 - smoothstep(0.0, band, dmax);
+        // ANY axis being near a wall counts. Use max so corner overlap doesn't
+        // pile up multiplicatively.
+        float close = max(max(max(cmin.x, cmax.x),
+                              max(cmin.y, cmax.y)),
+                          max(cmin.z, cmax.z));
+        // Extra per-cook damping in the band. uWallrepel re-purposed as the
+        // damping strength (0 = none, 1 = full stop at the wall).
+        float kill = clamp(close * uWallrepel, 0.0, 0.95);
+        vel *= (1.0 - kill);
     }
 
     // ---- Wall reflection + hard position clamp -----------------------------

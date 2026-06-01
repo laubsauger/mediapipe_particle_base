@@ -64,6 +64,22 @@ void main()
 {
     vec2 uv = vUV.st;
 
+    // Edge taper: gradient samples that step OUTSIDE [0,1] read the texture's
+    // wrap/extend mode (clamp-to-edge gives a hard jump from edge value back
+    // to 0/whatever-background; either way ∇ blows up at borders). Fade the
+    // whole contribution toward 0 in a thin band along the frame edges so we
+    // can't manufacture phantom force from sampler edge behavior. Width =
+    // ~2× the gradient sample step.
+    float edge_band = max(uGradstep * 2.5, 0.025);
+    float edge_taper = smoothstep(0.0, edge_band, uv.x)
+                     * smoothstep(0.0, edge_band, 1.0 - uv.x)
+                     * smoothstep(0.0, edge_band, uv.y)
+                     * smoothstep(0.0, edge_band, 1.0 - uv.y);
+    if (edge_taper <= 0.0) {
+        fragColor = vec4(0.0);
+        return;
+    }
+
     // 1. Current + previous-frame depth.
     float d      = lumaR(sTD2DInputs[0], uv);
     float d_prev = lumaR(sTD2DInputs[1], uv);
@@ -71,7 +87,7 @@ void main()
     // 2. Smooth presence gate so background noise (depth ~ 0) doesn't move
     //    anything. Acts as the weight `A` in the output so velocity_field's
     //    contract (gaussian weight in alpha) is preserved.
-    float presence = smoothstep(uPresence, uPresence + 0.18, d);
+    float presence = smoothstep(uPresence, uPresence + 0.18, d) * edge_taper;
     if (presence <= 0.0) {
         fragColor = vec4(0.0);
         return;
@@ -79,11 +95,17 @@ void main()
 
     // 3. Spatial gradient: -∇d points from high (body) into low (open soup).
     //    This drives particles to FLOW AROUND the body silhouette — like the
-    //    body parts the soup as it moves through.
+    //    body parts the soup as it moves through. Clamp sample uvs explicitly
+    //    so the gradient at the very edge resolves to 0 instead of relying on
+    //    sampler wrap/extend mode.
     float s = max(uGradstep, 1.0 / float(textureSize(sTD2DInputs[0], 0).x));
+    vec2 uvR = vec2(min(uv.x + s, 1.0), uv.y);
+    vec2 uvL = vec2(max(uv.x - s, 0.0), uv.y);
+    vec2 uvU = vec2(uv.x, min(uv.y + s, 1.0));
+    vec2 uvD = vec2(uv.x, max(uv.y - s, 0.0));
     vec2 grad = vec2(
-        lumaR(sTD2DInputs[0], uv + vec2(s, 0.0)) - lumaR(sTD2DInputs[0], uv - vec2(s, 0.0)),
-        lumaR(sTD2DInputs[0], uv + vec2(0.0, s)) - lumaR(sTD2DInputs[0], uv - vec2(0.0, s))
+        lumaR(sTD2DInputs[0], uvR) - lumaR(sTD2DInputs[0], uvL),
+        lumaR(sTD2DInputs[0], uvU) - lumaR(sTD2DInputs[0], uvD)
     );
     vec2 spat = -grad * uSpatgain;
 
@@ -101,7 +123,11 @@ void main()
     //    3D mass.
     float vz = -d * uZgain;
 
-    vec3 flow = vec3((spat + temp) * uFieldgain, vz * uFieldgain);
+    // Multiply ALL output components by edge_taper so even the per-pixel RGB
+    // flow values fade to 0 at the borders (presence already includes the
+    // taper; XYZ flow uses ∇d directly + Z uses d so they need it applied
+    // explicitly).
+    vec3 flow = vec3((spat + temp) * uFieldgain, vz * uFieldgain) * edge_taper;
 
     // 6. Output: matches velocity_field's contract — RGB = velocity, A = weight.
     //    Field_sample sums weighted contributions via the Composite TOP that
