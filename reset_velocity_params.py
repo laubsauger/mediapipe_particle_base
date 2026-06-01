@@ -130,6 +130,7 @@ RENDERER = {
     'Soupevolve':      0.025,   # soup palette HUE rotation over time — slow drift (was 0.05)
     'Soupgradrot':     0.04,    # slow direction-rotation of the colour bands (rad/s) — alive without input
     'Soupsetspeed':    0.04,    # palette-SET rotation (sets/s): soup crossfades through the color_attr triad bank (set0=preset triad). 0=stay on preset.
+    'Fieldedgefade':   0.10,    # smooth border falloff on the sampled flow field (field_edge TOP) — kills the hard edge that clumped particles at the walls
     # Cosmic-web filaments (background-only — fades inside logo/vessel mask):
     'Clusterscale':    3.5,     # filament frequency
     'Clusterboost':    0.4,     # brightness boost on filament peaks — background, not soup-wide
@@ -179,8 +180,29 @@ def _apply(mapping, page_label):
         print(f"  missing (run install_velocity_params.py first): {missing}")
 
 
+# ---------------------------------------------------------------------------
+# Audio page (ARE reactivity) — Punchy defaults
+# ---------------------------------------------------------------------------
+AUDIO = {
+    'Audioreact':        1.0,
+    'Audiokick':         0.9,
+    'Audiobass':         0.7,
+    'Audiobreath':       0.6,
+    'Audiohat':          0.7,
+    'Audiosnare':        0.6,
+    'Audiobuild':        0.8,
+    'Audiospectrum':     0.6,
+    'Audiodrop':         0.8,
+    'Audiosoupdir':      1.0,
+    'Audiokickrelease':  0.16,
+    'Audiohatrelease':   0.07,
+    'Audiobreathsmooth': 0.10,
+    'Audiobuildattack':  0.45,
+}
+
 _apply(SENSING, 'Sensing')
 _apply(RENDERER, 'Renderer')
+_apply(AUDIO, 'Audio')
 
 # Look page (palette + post-FX) — single source of truth is presets.py.
 # Apply the default 'Cosmic' preset so the look pars reset to a known-good

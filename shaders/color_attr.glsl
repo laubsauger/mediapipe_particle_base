@@ -62,6 +62,18 @@ uniform float uPersonhuestep;   // hue (rad) added per PERSON index so each body
 uniform float uMaskcharge;      // "charged-in-vessel" look — inside particles brighter + hue-shifted, softened mask
 uniform float uSoupgradrot;     // slow rotation of the soup gradient direction (rad/sec) — alive feel
 uniform float uSoupsetspeed;    // palette-SET rotation rate (sets/sec): soup slowly crossfades through the triad bank below. 0 = stay on the preset triad (set 0)
+uniform float uAudiohue;        // audio: snare/backbeat HUE kick (radians), added to soup + movement hue so colour shifts land on the beat
+
+// AUDIO SPECTRUM FIELD: the reduced-FFT bins (normalised 0..1 by audio_react),
+// mapped across the box X so each particle samples the frequency that lives at
+// its position → the soup reads as a living equalizer. uniformarray (NOT a
+// sampler — a GLSL POP must never sample an unbound sampler2D). NOTE: TD
+// auto-declares `uniform float uSpectrum[N]` from the bound CHOP's SAMPLE
+// count (one element per sample), so we must NOT declare it here (redeclaration)
+// and the bound CHOP must be 1 channel × NSPEC samples.
+#define NSPEC 15
+uniform vec2  uSpecbox;         // box X range (min,max) to normalise particle x → bin
+uniform float uAudiospectrum;   // spectrum-field amount (Audiospectrum par); 0 = off
 uniform float uClusterscale;    // cosmic-web filament noise scale
 uniform float uClusterboost;    // brightness boost on filament peaks (galaxy-cluster look)
 uniform float uClustergamma;    // contrast of the filament structure (higher = sharper filaments)
@@ -183,7 +195,7 @@ void main()
         // the spectrum (continuous). PLUS a PERSISTENT per-swap hue offset that
         // ramps IN SYNC with the field morph and HOLDS afterward — each logo
         // swap shifts the colour to a new baseline and stays there (no bounce).
-        rampC = hueShift(rampC, uTime * uSoupevolve + uMaskhueoffset);
+        rampC = hueShift(rampC, uTime * uSoupevolve + uMaskhueoffset + uAudiohue);
         // velocity response: faster soup (turbulence peaks, or a flow-field
         //   shove from a limb) gets brighter and can bloom — so slow vs fast
         //   particles read differently and pose interaction "pops".
@@ -225,6 +237,18 @@ void main()
             outc *= 1.0 + fil * uClusterboost * bgmask;
         }
 
+        // AUDIO SPECTRUM FIELD: map this particle's X across the box to an FFT
+        // bin and brighten by that frequency's energy → a living equalizer that
+        // ripples left(low)→right(high) with the music. No-op when amount/energy 0.
+        if (uAudiospectrum > 0.0) {
+            float fx = clamp((p.x - uSpecbox.x) / max(uSpecbox.y - uSpecbox.x, 1e-3), 0.0, 1.0);
+            float fb = fx * float(NSPEC - 1);
+            int   b0 = int(fb);
+            int   b1 = min(b0 + 1, NSPEC - 1);
+            float amp = mix(uSpectrum[b0], uSpectrum[b1], fract(fb));
+            outc *= 1.0 + amp * uAudiospectrum * 0.6;
+        }
+
         // VESSEL CHARGE: particles whose position falls on the logo mask are
         // the "contents" of the vessel — visually distinguish them from the bg
         // soup with extra brightness and a slight hue offset. Mask is softened
@@ -245,7 +269,7 @@ void main()
         int   limb  = ((lid % 5) + 5) % 5;
         int   pid   = lid / 5;                              // 0..MAX_PERSONS-1
         vec3  ident = uBase + kPalette[limb];
-        ident       = hueShift(ident, float(pid) * uPersonhuestep);
+        ident       = hueShift(ident, float(pid) * uPersonhuestep + uAudiohue);
         vec3  col   = mix(ident, uAccent, clamp(mv, 0.0, uMaxBlend));
 
         // Birth glow-up: just a mild HDR multiplier on the limb COLOUR. Keep

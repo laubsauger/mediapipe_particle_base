@@ -79,6 +79,7 @@ Setup: [`beatsaber_controller_setup.md`](./beatsaber_controller_setup.md),
 - `apply_preset.py` — parexec callback applying a preset on pulse/menu change (deferred).
 - `mask_standby.py`, `mask_cycle.py`+`mask_cycle_chop.py`, `mask_state_resolve.py` — mask gating/cycling/state-resolve inside mask_controller / particle_system.
 - `body_logic.py` (skeleton JOINTS/BONES), `body_tex_script.py` (packs joints→texture), `emitters_tex_script.py` (channels→velocity-field texture).
+- `audio_logic.py` (pure: envelopes/AGC/build-state, self-test) + `audio_react_chop.py` (Script CHOP `audio_react`) — turn ARE (`/project1/ARE_v1_2`) feature CHOPs into 0..1 modulation channels (kick/snare/hat/bass/breath/build/spec0..14, ×master `Audioreact`). Consumed as `base+chan·Audio<x>` on uniform exprs. See setup md "Audio reactivity".
 - `install_*_params.py` (idempotent par installers), `reset_*_params.py` (force-reset to defaults), `bootstrap_*.py` (one-shot COMP builders).
 - `beatsaber_game_tick.py` / `_notes.py` / `_events.py` / `_parexec.py` / `_saber_sop.py` / `_hud.py` — TD callbacks for the game.
 - `painting_*` — older first experiment; reference only, don't break, don't invest.
@@ -142,6 +143,7 @@ Adding a feature: pure Python module + self-test → TD callback → installer e
 | No glow/bloom | `Bloom*`; needs `render1` 16f + `color_attr` HDR. |
 | Static curl swirls | `curl_noise` Translate-4D `t4d` = `absTime.seconds × Curlspeed`. |
 | Switch look/preset | `Preset`+`Applypreset` → `preset_exec` → `presets.py`. |
+| No / wrong audio reaction | `audio_react` Script CHOP + `audio_logic.py`; Audio page pars (`Audioreact` master). ARE outs pulled via `audio_features` Select CHOP (cross-COMP wires don't connect). |
 | Post-FX wrong | Chain `render1 → trail_comp → bloom1 → streak_comp → grade → lens_finish → out2`. |
 | Notes not spawning | `_get_or_build_game()` must prime wall clock before start. |
 | Notes flying wrong way | renderer camera must be `tz=+3`, not negative. |

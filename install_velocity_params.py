@@ -512,6 +512,11 @@ add_float(render, 'Souplayermix', 'Soup Layer Mix (B fraction)', 0.5, 0.0, 1.0)
 # organic; >0.15 starts to look hasty/flickery.
 add_float(render, 'Soupgradrot', 'Soup Gradient Rotation (rad/s)', 0.04, -1.0, 1.0)
 
+# Smooth border falloff on the sampled flow field (field_edge GLSL TOP between
+# field_mix and field_out). Removes the hard pixel→transparent edge at the
+# texture rim that piled particles up along the box walls. 0 = hard edge / off.
+add_float(render, 'Fieldedgefade', 'Field Edge Fade (border)', 0.10, 0.0, 0.3, clamp_max=False)
+
 # Soup palette-SET rotation: the soup slowly crossfades through the triad BANK
 # in color_attr.glsl (set 0 = the preset Soupcol triad, sets 1..3 curated) so
 # the colour doesn't settle into one mood. Units = sets/sec; 0.04 ≈ a new set
@@ -624,7 +629,34 @@ add_float(look, 'Chromab', 'Chromatic Aberration', 0.003, 0.0, 0.05, clamp_max=F
 add_float(look, 'Grain', 'Film Grain', 0.04, 0.0, 0.3, clamp_max=False)
 
 
-print("velocity_controller: Sensing + Renderer + Look pages installed "
+# ===========================================================================
+# Page 4: Audio  —  reactivity to the ARE (Audio Reactive Engine) features.
+# A Script CHOP `audio_react` (audio_react_chop.py + audio_logic.py) turns the
+# ARE feature CHOPs into normalised 0..1 modulation channels; consumers read
+# them as `base + chan·Audio<x>` so audio NEVER overwrites a hand-tuned base and
+# the whole layer switches off at Audioreact=0. See velocity_controller_setup.md.
+# ===========================================================================
+audio = _page('Audio')
+add_float(audio, 'Audioreact', 'Audio React (master)', 1.0, 0.0, 1.0)
+# Per-mapping DEPTHS (Punchy defaults). 0 = that mapping off.
+add_float(audio, 'Audiokick',     'Kick → turbulence+bloom',        0.9, 0.0, 3.0, clamp_max=False)
+add_float(audio, 'Audiobass',     'Bass → field force/drift',       0.7, 0.0, 3.0, clamp_max=False)
+add_float(audio, 'Audiobreath',   'Breath → exposure/bloom/bright', 0.6, 0.0, 3.0, clamp_max=False)
+add_float(audio, 'Audiohat',      'Hats → streaks+sparkle',         0.7, 0.0, 3.0, clamp_max=False)
+add_float(audio, 'Audiosnare',    'Snare → color shift',            0.6, 0.0, 3.0, clamp_max=False)
+add_float(audio, 'Audiobuild',    'Build → contract / drop release', 0.8, 0.0, 3.0, clamp_max=False)
+add_float(audio, 'Audiospectrum', 'Spectrum field amount',               0.6, 0.0, 2.0, clamp_max=False)
+# Drop shockwave (radial breath) + per-drop soup-flow direction rotation.
+add_float(audio, 'Audiodrop',    'Drop → repulsion shockwave',     0.8, 0.0, 3.0, clamp_max=False)
+add_float(audio, 'Audiosoupdir', 'Soup flow direction (per drop)', 1.0, 0.0, 1.0)
+# Envelope / smoothing times (audio_logic).
+add_float(audio, 'Audiokickrelease',  'Kick release (s)',  0.16, 0.01, 1.0, clamp_max=False)
+add_float(audio, 'Audiohatrelease',   'Hat release (s)',   0.07, 0.01, 1.0, clamp_max=False)
+add_float(audio, 'Audiobreathsmooth', 'Breath smooth (s)', 0.10, 0.01, 2.0, clamp_max=False)
+add_float(audio, 'Audiobuildattack',  'Build attack (s)',  0.45, 0.01, 3.0, clamp_max=False)
+
+
+print("velocity_controller: Sensing + Renderer + Look + Audio pages installed "
       "({} params total).".format(
           len([pr for pr in comp.customPars
-               if pr.page.name in ('Sensing', 'Renderer', 'Look')])))
+               if pr.page.name in ('Sensing', 'Renderer', 'Look', 'Audio')])))

@@ -1585,3 +1585,55 @@ Portable bits to lift: the state-on-COMP-via-store/fetch pattern for per-cook
 memory; the `Landmarks` parent-par convention; the idempotent page installer;
 the "Script TOP + Script CHOP read the same CHOP by name" idiom for turning
 sparse semantic channels into dense render inputs without Shuffle CHOPs.
+
+---
+
+## Audio reactivity (ARE — Audio Reactive Engine v1.2)
+
+Audio drives the particles through a non-destructive modulation layer. The
+external `/project1/ARE_v1_2` component analyses the playing track and exposes
+feature CHOPs; we turn them into normalised 0..1 modulation signals and add them
+on top of the hand-tuned base parameters.
+
+**Signal path** (all inside `velocity_controller`):
+
+```
+ARE outs (drums, global_dyn, lmh, red_nat_fft)
+  → audio_features (Select CHOP, pulls all 24 channels by path)
+  → audio_react (Script CHOP, audio_react_chop.py → mod.audio_logic)
+       outputs (1 samp): kick snare hat pulse bass breath build + spec0..14
+                         (all × master Audioreact)
+  → audio_spec (Select, spec*) → audio_spec_seq (Shuffle 'seqall', 1ch×15samp)
+       → color_attr uniform array uSpectrum[15]
+```
+
+`audio_logic.py` (pure, self-test `python3 audio_logic.py`): peak-hold envelopes
+for the spiky drum detections, one-pole smoothing + a slow running-max AGC for
+the continuous bands (so quiet/loud tracks both normalise), a build/release state
+from the `burst` square wave, and a GLOBAL-max spectrum normaliser (preserves the
+equalizer shape).
+
+**Mappings** (consumer reads `op('audio_react')['chan']`, depth = `Audio<x>` par):
+
+| Feature | Consumer (binding) | Effect |
+| --- | --- | --- |
+| `kick` | `bounds_reflect.uSoupturb` ×(1+kick·Audiokick); `color_attr.uSoupvelbloom` += | curl shove + bloom flash on the kick |
+| `bass` | `bounds_reflect.uSoupmaxspeed` ×(1+bass·Audiobass·4) | soup speed ceiling opens → cloud surges with low end |
+| `breath` | `grade.uExposure`, `color_attr.uSoupbright` ×(1+breath·Audiobreath·k) | whole image breathes with track energy |
+| `hat` | `streak_thresh.opacity` ×(1+hat·…); `color_attr.uSoupvelbloom` += | shimmer/streaks on hi-hats |
+| `snare` | `color_attr.uAudiohue` (soup + movement hue) | colour shifts land on the backbeat |
+| `build` | `bounds_reflect.uMaskattract` ×(1+build·Audiobuild·3) | contracts toward the logo/mask during a build |
+| `spec0..14` | `color_attr.uSpectrum[15]` across box X | living equalizer (low freq left → high right) |
+
+**Pars** (Audio page): `Audioreact` master (0 = layer off → exact base values),
+`Audiokick/Audiobass/Audiobreath/Audiohat/Audiosnare/Audiobuild/Audiospectrum`
+depths, plus `Audiokickrelease`/`Audiohatrelease`/`Audiobreathsmooth`/`Audiobuildattack`.
+
+**Gotchas hit building this:**
+- Cross-COMP wires don't connect in TD — pull the ARE outs with a **Select CHOP**
+  by path, not an input wire.
+- GLSL **uniform arrays read SAMPLES, not channels** — a Shuffle CHOP (`seqall`)
+  converts the 15 spectrum channels to 1 channel × 15 samples; TD auto-declares
+  `uniform float uSpectrum[15]` from the sample count, so **do NOT** also declare
+  it in the shader (redeclaration). It's a uniform array, not a sampler — safe in
+  a GLSL POP.

@@ -72,6 +72,8 @@ uniform float uSoupfieldgain;// soup-only fraction of the RAW (pre-deadzone)
                              // field force — lets depth/pose flow reach the soup
 uniform float uWallrepel;    // soft inward push strength near each bounds wall
 uniform float uWallband;     // distance from the wall over which the push ramps
+uniform float uDroprepel;    // audio: radial outward SHOCKWAVE from box centre on big drops ("the music breathes the particles")
+uniform float uSoupdir;      // audio: soup-flow direction rotation (radians), stepped on each drop so the disturbance changes heading
 
 void main()
 {
@@ -166,8 +168,13 @@ void main()
         // stops fighting the attractor and the shape can actually complete.
         float h = fract(sin(float(TDIn_PartId()) * 91.17) * 43758.5453);
         float curlcalm = 1.0 - 0.85 * uMaskamt;
-        if (h < uSouplayermix) vel += curl2 * uSoupturb2 * curlcalm;
-        else                   vel += curl  * uSoupturb  * curlcalm;
+        // Audio: rotate the soup-flow direction (uSoupdir, stepped per drop) so
+        // the disturbance visibly changes heading on each drop.
+        float cs = cos(uSoupdir), sd = sin(uSoupdir);
+        vec3 curlR  = vec3(curl.x  * cs - curl.y  * sd, curl.x  * sd + curl.y  * cs, curl.z);
+        vec3 curl2R = vec3(curl2.x * cs - curl2.y * sd, curl2.x * sd + curl2.y * cs, curl2.z);
+        if (h < uSouplayermix) vel += curl2R * uSoupturb2 * curlcalm;
+        else                   vel += curlR  * uSoupturb  * curlcalm;
     }
 
     vel *= max(0.0, 1.0 - uDamping);
@@ -253,6 +260,18 @@ void main()
         // damping strength (0 = none, 1 = full stop at the wall).
         float kill = clamp(close * uWallrepel, 0.0, 0.95);
         vel *= (1.0 - kill);
+    }
+
+    // ---- AUDIO DROP shockwave ----------------------------------------------
+    // Big drops push every particle radially OUT from the box centre — like the
+    // logo-swap explosion — so the music physically "breathes" the field. Applied
+    // AFTER the speed caps so it reads as a real burst; the wall clamp below
+    // still contains it. No-op when uDroprepel is 0 (no drop / layer off).
+    if (uDroprepel > 0.0) {
+        vec3 cen = (uBoxMin + uBoxMax) * 0.5;
+        vec3 dd  = pos - cen;
+        float dl = length(dd) + 1e-4;
+        vel += (dd / dl) * uDroprepel;
     }
 
     // ---- Wall reflection + hard position clamp -----------------------------
