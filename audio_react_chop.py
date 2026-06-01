@@ -102,12 +102,18 @@ def onCook(scriptOp):
     # Master gate: 0 = layer fully off (outputs all 0 → all consumers fall back
     # to their hand-tuned base values + the non-audio color rotation keeps running).
     # Audioenable is a clean toggle on top of the Audioreact depth.
-    master = float(_par('Audioreact', 1.0)) * (1.0 if _par('Audioenable', True) else 0.0)
+    enable = 1.0 if _par('Audioenable', True) else 0.0
+    master = float(_par('Audioreact', 1.0)) * enable
+
+    # Control/index channels carry a VALUE (mode index, polarity sign, angle), not
+    # a magnitude — gate them by the on/off toggle only, never scale by the depth
+    # (0.5 × mode 2 would select the wrong mode). Magnitude channels use master.
+    CONTROL = ('forcemode', 'beatpolarity', 'dropdir')
 
     names = al.output_names(n_spec)
     scriptOp.numSamples = 1
     scriptOp.rate = me.time.rate
     for nm in names:
         ch = scriptOp.appendChan(nm)
-        ch[0] = float(out.get(nm, 0.0)) * master
+        ch[0] = float(out.get(nm, 0.0)) * (enable if nm in CONTROL else master)
     return

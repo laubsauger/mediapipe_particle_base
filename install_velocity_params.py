@@ -667,7 +667,7 @@ add_float(audio, 'Audiobeat',    'Beat Push (kick → visible pulse)', 0.8, 0.0,
 # mid band (ARE's mid drum detector is usually dead), so busy mid sections add a
 # second, organic disturbance distinct from the kick gather. Beat polarity (in
 # audio_logic) also makes some beats blow OUT instead of sucking in.
-add_float(audio, 'Audiomidswirl', 'Mid-peak swirl burst',           0.4, 0.0, 2.0, clamp_max=False)
+add_float(audio, 'Audiomidswirl', 'Mid-peak swirl burst',           0.1, 0.0, 2.0, clamp_max=False)
 # --- Logo-vessel physics (standby): ARE drives the PHYSICAL CONDITION of the
 # material trapped inside the logo, not the visuals. Gated to inside the mask.
 #   low  → boundary pressure   mid → internal circulation   high → surface fizz

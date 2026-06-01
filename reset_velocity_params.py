@@ -72,7 +72,7 @@ RENDERER = {
     # Damping lives HERE now, not on Particle POP (whose Velocity Damping /
     # Initial Drag stay at 0). See bounds_reflect.glsl.
     'Forcescale':      0.008,  # per-cook force gain (dt*gain) into PartVel
-    'Velocitydamping': 0.15,   # fraction of velocity removed per cook (water feel)
+    'Velocitydamping': 0.22,   # fraction of velocity removed per cook (higher = calmer average motion)
     'Maxspeed':        8.0,    # hard clamp on |PartVel|
     'Forcedeadzone':   3.0,    # |f| below this = no push (kills rest-drift)
     'Forceref':        32.0,   # |f| mapped to full response — higher = more headroom, proportional
@@ -93,10 +93,10 @@ RENDERER = {
     # Bounding box for containment (particle space; x is aspect-correct 16:9).
     'Boundsminx':      0.0,
     'Boundsminy':      0.0,
-    'Boundsminz':     -0.15,
+    'Boundsminz':     -0.4,    # widened Z for real depth/parallax (was -0.15)
     'Boundsmaxx':      1.77778,  # 16/9 — emitters_chop remaps x into this range
     'Boundsmaxy':      1.0,
-    'Boundsmaxz':      0.15,
+    'Boundsmaxz':      0.4,
     'Boundsbounce':    0.6,    # rebound inward off walls (was 0.3 → particles stuck/accumulated)
     'Boundsmargin':    0.005,
     # Wall containment: INWARD repel force near each wall (bounds_reflect) so
@@ -200,8 +200,8 @@ AUDIO = {
     'Audiodrop':         0.4,
     'Audiosoupdir':      1.0,
     'Audioblur':         0.5,    # organic on-beat defocus blur (beat_blur TOP)
-    'Audiobeat':         0.8,    # kick → visible radial push pulse (main "alive on beat" lever)
-    'Audiomidswirl':     0.4,    # mid-peak → rotational swirl burst (2nd organic disturbance)
+    'Audiobeat':         0.6,    # kick → visible radial push pulse (main "alive on beat" lever)
+    'Audiomidswirl':     0.1,    # mid-peak → rotational swirl burst (2nd organic disturbance)
     # Logo-vessel physics (standby) — ARE drives the trapped material's physics
     'Audiopressure':     0.8,    # low → boundary pressure (Maskattract)
     'Audiocirculation':  0.7,    # mid → internal circulation (Maskvigor)

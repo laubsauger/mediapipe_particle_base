@@ -73,6 +73,7 @@ uniform float uAudiohue;        // audio: snare/backbeat HUE kick (radians), add
 // and the bound CHOP must be 1 channel × NSPEC samples.
 #define NSPEC 15
 uniform vec2  uSpecbox;         // box X range (min,max) to normalise particle x → bin
+uniform vec2  uDepthz;          // box Z range (min,max) for the depth-dim cue (tracks bounds, so it works at any Z width)
 uniform float uAudiospectrum;   // spectrum-field amount (Audiospectrum par); 0 = off
 uniform float uClusterscale;    // cosmic-web filament noise scale
 uniform float uClusterboost;    // brightness boost on filament peaks (galaxy-cluster look)
@@ -212,8 +213,8 @@ void main()
         bright *= (1.0 + uMasktrans * uMaskburstcolor * 2.0);
         // depth cue (fake DoF): particles toward the back of the box (−z) are
         //   dimmer, so the field has depth instead of a flat even mess.
-        //   z range ≈ [-0.15, +0.15]; +z is nearer the camera.
-        float dn     = clamp((p.z + 0.15) / 0.30, 0.0, 1.0);   // 0 back, 1 front
+        //   z range tracks the bounds (uDepthz = Boundsminz,maxz); +z = nearer.
+        float dn     = clamp((p.z - uDepthz.x) / max(uDepthz.y - uDepthz.x, 1e-3), 0.0, 1.0);   // 0 back, 1 front
         float depthf = mix(1.0 - uDepthdim, 1.0, dn);
         // per-particle value variation so not every ball is identical brightness.
         float h      = fract(sin(float(TDIn_PartId()) * 12.9898) * 43758.5453);

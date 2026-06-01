@@ -78,8 +78,20 @@ uniform float uResonance;    // audio: SEGMENTED-LOGO regional resonance — eac
 uniform float uSurface;      // audio: HIGH-band surface agitation — fine fizz concentrated at the logo silhouette edge
 uniform float uBeatpol;      // audio: beat polarity (+1 = gather/suck-in, −1 = blow-out) — varies per beat so contractions aren't all the same
 uniform float uMidswirl;     // audio: MID-peak swirl burst — a rotational (tangential) disturbance, distinct from the kick gather
+uniform float uForcemode;    // audio: which beat FORCE MODE (0 rest,1 gather,2 vortex,3 waveform,4 current,5 fold) — cycles on drops, holds a min dwell
+uniform float uModesustain;  // audio: CONTINUOUS energy-scaled drive (not just the beat pulse) so shaping modes (waveform/fold/current) actually build up and read
 // uSpectrum[] is auto-declared by TD from the bound CHOP (15 samples) — do NOT
 // declare it here (redeclaration). It holds the normalised reduced-FFT bins.
+
+// yaw (around Z) + pitch (around X) rotation — used to tumble the shape
+// attractors into different orientations as uSoupdir advances.
+mat3 rotYP(float a, float b)
+{
+    float ca = cos(a), sa = sin(a), cb = cos(b), sb = sin(b);
+    mat3 Rz = mat3(ca, -sa, 0.0,  sa, ca, 0.0,  0.0, 0.0, 1.0);
+    mat3 Rx = mat3(1.0, 0.0, 0.0,  0.0, cb, -sb,  0.0, sb, cb);
+    return Rz * Rx;
+}
 
 void main()
 {
@@ -288,6 +300,17 @@ void main()
         // +inward near a min wall, −inward near a max wall.
         vec3 inward = pmin - pmax;
         vel += inward * uWallrepel * 0.2;
+
+        // Round the rectangular silhouette toward an ELLIPSE: a gentle extra
+        // inward pull only beyond an inscribed ellipse (corners), so the mass
+        // reads as a soft oval — no hard rectangle to see rotating. Corners only,
+        // so the bulk of the frame still fills.
+        vec3 cen3  = (uBoxMin + uBoxMax) * 0.5;
+        vec3 half3 = (uBoxMax - uBoxMin) * 0.5;
+        vec2 nq    = (pos.xy - cen3.xy) / half3.xy;     // 1.0 = on the inscribed ellipse
+        float over = clamp((length(nq) - 0.9) / 0.2, 0.0, 1.0);
+        vel.xy -= ((pos.xy - cen3.xy) / (length(pos.xy - cen3.xy) + 1e-4))
+                  * over * uWallrepel * 0.5;
     }
 
     // ---- AUDIO BEAT surge (organic) ----------------------------------------
@@ -296,24 +319,111 @@ void main()
     // time), so the surge is organic and NEVER the same direction twice. A small
     // radial term keeps a gentle "breathe out" feel. Applied AFTER the speed caps
     // so it reads; wall clamp below contains it. No-op when uDroprepel is 0.
-    if (uDroprepel > 0.0) {
-        vec3 cen = (uBoxMin + uBoxMax) * 0.5;
-        // Contract toward a FOCAL POINT that ORBITS the centre — its angle is
-        // stepped each beat (uSoupdir, which advances per kick). So every beat
-        // gathers from a DIFFERENT direction instead of the same radial pull →
-        // multi-directional, non-repetitive. Two harmonics (uSoupdir + a faster
-        // 1.7× term) so the focus wanders rather than sweeping a plain circle.
-        float a1 = uSoupdir;
-        float a2 = uSoupdir * 1.7 + 1.3;
-        vec2 off = (vec2(cos(a1), sin(a1)) * 0.7 + vec2(cos(a2), sin(a2)) * 0.3);
-        vec2 foc = cen.xy + off * (uBoxMax.x - uBoxMin.x) * 0.28;
-        vec2 toF = foc - pos.xy;
-        vec2 pull = toF / (length(toF) + 1e-4);
-        // moving gather + organic curl overlay. uBeatpol flips suck-IN (+1) vs
-        // blow-OUT (−1) so some beats explode away from the focus instead of
-        // always contracting → not one-dimensional.
-        vel.xy += pull * uDroprepel * 0.5 * uBeatpol;
-        vel    += (curl * 0.6 + curl2 * 0.2) * uDroprepel;
+    if (uDroprepel > 0.0 || uModesustain > 0.0) {
+        vec3 cen   = (uBoxMin + uBoxMax) * 0.5;
+        vec3 bhalf = (uBoxMax - uBoxMin) * 0.5;
+        int  fmode = int(uForcemode + 0.5);
+        // accent = the rhythmic beat pulse; sustain = continuous energy-scaled
+        // drive so a mode keeps shaping the field over its whole dwell (not just
+        // a flicker on each kick). drive = both.
+        float accent = uDroprepel;
+        float drive  = uDroprepel + uModesustain;
+
+        if (fmode == 1) {
+            // GATHER — pull toward an ORBITING focal point (angle stepped per
+            // beat, two harmonics so it wanders); polarity flips suck-IN vs
+            // blow-OUT. Curl overlay keeps it organic, not a clean implosion.
+            float a1 = uSoupdir;
+            float a2 = uSoupdir * 1.7 + 1.3;
+            vec2 off = (vec2(cos(a1), sin(a1)) * 0.7 + vec2(cos(a2), sin(a2)) * 0.3);
+            vec2 foc = cen.xy + off * (uBoxMax.x - uBoxMin.x) * 0.28;
+            vec2 pull = (foc - pos.xy) / (length(foc - pos.xy) + 1e-4);
+            // mostly beat-pulsed (+ a little sustain) so it doesn't collapse the
+            // whole cloud onto the point; the focal point also keeps moving.
+            vel.xy += pull * (accent * 0.45 + uModesustain * 0.2) * uBeatpol;
+            vel    += (curl * 0.65 + curl2 * 0.25) * drive;
+        } else if (fmode == 2) {
+            // VORTEX — soft localized swirl (tangential, radial falloff so it's
+            // not a rigid box rotation). Sustained so it keeps turning, polarity
+            // flips the spin.
+            vec2  r    = pos.xy - cen.xy;
+            float rn   = length(r / bhalf.xy);
+            float fall = smoothstep(0.0, 0.35, rn) * (1.0 - smoothstep(0.65, 1.05, rn));
+            vec2  tang = vec2(-r.y, r.x) / (length(r) + 1e-4);
+            // smooth one-way swirl + curl for organic break-up (no in/out radial
+            // ripple — that read as a back-and-forth wobble).
+            vel.xy += tang * uBeatpol * drive * fall;
+            vel    += curl * 0.6 * drive;
+        } else if (fmode == 3) {
+            // WAVEFORM — the 15 reduced-FFT bins define a height curve across X;
+            // pull each particle toward it so the soup arranges into the
+            // spectrum's SHAPE (audio waveform sculpted from particles). A little
+            // curl keeps it from collapsing to a dead line.
+            vec3  nrm = (pos - uBoxMin) / max(uBoxMax - uBoxMin, vec3(1e-3));
+            int   b   = int(clamp(nrm.x, 0.0, 0.999) * 15.0);
+            float amp = uSpectrum[b];
+            float ty  = uBoxMin.y + (0.25 + amp * 0.6) * (uBoxMax.y - uBoxMin.y);
+            vel.y += (ty - pos.y) * drive * 1.5;          // SUSTAINED → the shape forms
+            vel   += curl * 0.3 * drive;
+        } else if (fmode == 4) {
+            // CURRENT — an organic drifting wind: flows along uSoupdir but its
+            // strength waves sinusoidally across the perpendicular axis (+ curl),
+            // so it reads as flowing ribbons/currents, not a rigid translation.
+            vec2  wind = vec2(cos(uSoupdir), sin(uSoupdir));
+            float w    = sin(dot(pos.xy - cen.xy, vec2(-wind.y, wind.x)) * 4.5);
+            vel.xy += wind * drive * (0.5 + 0.4 * w);
+            vel    += (curl * 0.5 + curl2 * 0.2) * drive;
+        } else if (fmode == 5) {
+            // FOLD — counter-flow shear about the orbiting axis: the two sides
+            // stream in opposite directions and FOLD into each other (taffy-like),
+            // softened so the seam isn't a hard line. SUSTAINED so the fold develops.
+            vec2  ax   = vec2(cos(uSoupdir), sin(uSoupdir));
+            float side = dot(pos.xy - cen.xy, vec2(-ax.y, ax.x)) / bhalf.y;
+            vel.xy += ax * tanh(side * 2.0) * drive * 0.7;
+            vel    += (curl * 0.5 + curl2 * 0.2) * drive;
+        } else if (fmode >= 6) {
+            // SHAPE ATTRACTORS — particles briefly ASSUME an abstract 3D shape,
+            // tumbled into a different orientation by uSoupdir. Pull each particle
+            // toward the nearest point on the shape's surface (sustained drive →
+            // the form coalesces during the dwell, then releases on mode switch).
+            mat3 R    = rotYP(uSoupdir, uSoupdir * 0.5 + 0.7);   // orientation
+            vec3 s    = bhalf * 0.7;                              // shape half-extents (fit box)
+            vec3 pl   = transpose(R) * (pos - cen);              // particle in shape-local space
+            if (fmode == 9) {
+                // TUNNEL — pull onto a cylinder WALL (radial in the local XY) and
+                // FLOW along the local axis (Z) so particles stream through a
+                // corridor. With a wide Z this reads as flying down a tunnel; the
+                // flow direction flips with polarity (toward / away from camera).
+                float Rt   = s.x * 0.55;
+                vec2  wall = pl.xy / (length(pl.xy) + 1e-4) * Rt;
+                vec3  lf   = vec3((wall - pl.xy) * 1.0, uBeatpol * 0.6);  // radial pull + axial flow
+                vel += R * lf * drive;
+                vel += curl * 0.2 * drive;
+            } else {
+                vec3 tl;                                          // target in shape-local space
+                if (fmode == 6) {
+                    // SPHERE/ELLIPSOID shell — points pushed onto the surface radius.
+                    tl = normalize(pl + vec3(1e-4)) * s;
+                } else if (fmode == 7) {
+                    // TORUS — big ring radius in the local XY plane, circular tube.
+                    float Rt = s.x * 0.7, rt = s.x * 0.32;
+                    vec2  c2 = pl.xy / (length(pl.xy) + 1e-4) * Rt;
+                    vec3  q  = pl - vec3(c2, 0.0);
+                    tl = vec3(c2, 0.0) + normalize(q + vec3(1e-4)) * rt;
+                } else {
+                    // SHEET — flatten onto the rotating local Z=0 plane → a tilting
+                    // plane of particles (clear 3D-orientation read).
+                    tl = vec3(pl.xy, 0.0);
+                }
+                vec3 tgt = R * tl + cen;
+                vel += (tgt - pos) * drive * 1.4;
+                vel += curl * 0.25 * drive;                      // keep it alive, not a frozen shell
+            }
+        } else {
+            // REST (mode 0 / default) — downtime. Faint curl breath only, so the
+            // field goes calm between active modes.
+            vel += curl * 0.12 * drive;
+        }
     }
 
     // ---- MID-PEAK swirl ----------------------------------------------------
@@ -321,11 +431,20 @@ void main()
     // organic disturbance distinct from the kick's radial gather. Spin direction
     // flips with uSoupdir so successive swirls don't all rotate the same way.
     if (uMidswirl > 0.0) {
-        vec3 cen2 = (uBoxMin + uBoxMax) * 0.5;
-        vec2 r    = pos.xy - cen2.xy;
-        vec2 tang = vec2(-r.y, r.x) / (length(r) + 1e-4);
+        vec3 cen2  = (uBoxMin + uBoxMax) * 0.5;
+        vec3 half2 = (uBoxMax - uBoxMin) * 0.5;
+        vec2 r     = pos.xy - cen2.xy;
+        // radial falloff: a soft ring (peaks mid-radius, →0 at centre AND edge)
+        // so the swirl is a localized VORTEX, not a rigid rotation of the whole
+        // rectangle. Kills the "rotating rectangle" read.
+        float rn   = length(r / half2.xy);
+        float fall = smoothstep(0.0, 0.35, rn) * (1.0 - smoothstep(0.65, 1.05, rn));
+        vec2 tang  = vec2(-r.y, r.x) / (length(r) + 1e-4);
         float spin = mod(uSoupdir, 6.2831853) > 3.14159265 ? 1.0 : -1.0;
-        vel.xy += tang * spin * uMidswirl;
+        // tangential swirl + curl for organic break-up (dropped the in/out radial
+        // ripple — it read as a back-and-forth wobble).
+        vel.xy += tang * spin * uMidswirl * fall;
+        vel    += curl * (uMidswirl * fall * 0.6);
     }
 
     // ---- Wall reflection + hard position clamp -----------------------------

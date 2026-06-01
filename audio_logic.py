@@ -38,6 +38,15 @@ build, then a kick on the drop reads as an explosion outward.
 
 import math
 
+# Force-mode playlist the beat surge steps through (one step per drop, or every
+# `mode_every` kicks). REST steps (0) are sprinkled in so the field periodically
+# goes calm = downtime/breathing room instead of relentless motion. Mode IDs:
+#   0 REST · 1 GATHER · 2 VORTEX · 3 WAVEFORM · 4 CURRENT · 5 FOLD
+#   6 SPHERE · 7 TORUS · 8 SHEET · 9 TUNNEL  (shape attractors — particles
+#   briefly assume an abstract 3D form, tumbled into a new orientation each time)
+# ~1 in 4 steps is a rest; vortex is rare (it read as a cheap twirl). Edit freely.
+MODE_SEQ = [1, 3, 0, 6, 9, 0, 7, 5, 0, 8, 4, 0, 9, 6, 0, 1, 7, 0, 9, 8, 0, 3, 5, 0]
+
 
 def _finite(v, default=0.0):
     try:
@@ -104,7 +113,10 @@ def default_params():
         "mid_base_tau":   0.6,    # slow baseline the mid is compared against (novelty detection)
         "mid_peak_thresh": 0.12,  # how far mid must rise above its baseline to count as a peak
         "mid_release":    0.25,   # s — swirl-burst envelope length
-        "blowout_every":  4,      # every Nth kick blows OUT instead of sucking in (variety)
+        "bass_base_tau":  1.6,    # slow low-end baseline the kick is compared against
+        "blow_thresh":    0.22,   # how far a kick's low-end must exceed baseline to fully blow OUT (vs gather)
+        "mode_every":     24,     # advance the force mode every N kicks if no drop arrives first (longer dwell = less busy)
+        "mode_min_dwell": 12,     # a mode must hold at least this many kicks before a drop can switch it → time to read/develop
         # LMH material smoothing (vessel "what is the substance made of")
         "mid_smooth":     0.10,   # circulation responds at body-flow rate
         "high_smooth":    0.06,   # surface detail, a touch faster
@@ -129,8 +141,12 @@ def fresh_state(n_spec=15):
         "prev_snare": 0.0, "prev_kick": 0.0, "beat": 0.0,
         # mid-peak disturbance (swirl) — onset detection off the continuous mid band
         "midhit": 0.0, "mid_base": 0.0,
-        # beat polarity: mostly +1 (gather/suck-in), occasionally -1 (blow-out)
-        "beat_count": 0, "beatpolarity": 1.0,
+        # beat polarity: DYNAMICS-driven, continuous −1..+1 (suck-in ↔ blow-out)
+        # from how hard the kick lands vs the recent low-end baseline.
+        "beat_count": 0, "beatpolarity": 1.0, "bass_base": 0.0,
+        # FORCE MODE: index into MODE_SEQ (resolved id in `forcemode`). Steps on
+        # drops + a beat-count fallback; REST steps give occasional downtime.
+        "forcemode": float(MODE_SEQ[0]), "seq_idx": 0, "last_switch": -999,
         # LMH material / vessel mood (low/mid/high → pressure/circulation/surface)
         "mid": 0.0, "high": 0.0,
         "pressure": 0.0, "circulation": 0.0, "surface": 0.0,
@@ -149,7 +165,7 @@ def output_names(n_spec=15):
     return (["kick", "snare", "hat", "pulse", "bass", "breath", "build",
              "glow", "drop", "dropdir",
              "mid", "high", "pressure", "circulation", "surface", "beat",
-             "midhit", "beatpolarity"]
+             "midhit", "beatpolarity", "forcemode"]
             + ["spec%d" % i for i in range(n_spec)])
 
 
@@ -177,6 +193,8 @@ def process(state, features, dt, params):
     bass_n, state["max_bass"] = agc_normalize(
         g("bass"), state["max_bass"], dt, params["agc_decay"], params["agc_floor"])
     state["bass"] = smooth(state["bass"], bass_n, dt, params["bass_smooth"])
+    # slow low-end baseline → lets us tell a HARD kick from an average one.
+    state["bass_base"] = smooth(state["bass_base"], state["bass"], dt, params["bass_base_tau"])
 
     # mid / high bands (AGC + smooth) — the "material" signals.
     mid_n, state["max_mid"] = agc_normalize(
@@ -222,6 +240,13 @@ def process(state, features, dt, params):
         # each drop rotates the soup-flow direction → the disturbance visibly
         # changes heading on the drop (wrapped to keep the float bounded).
         state["dropdir"] = math.fmod(state["dropdir"] + params["drop_turn"], 6.2831853)
+        # and STEPS the force-mode playlist — but only if the current mode has
+        # held its minimum dwell, so frequent drops can't strobe the modes faster
+        # than they can be read.
+        if state["beat_count"] - state["last_switch"] >= int(params["mode_min_dwell"]):
+            state["seq_idx"] = (int(state["seq_idx"]) + 1) % len(MODE_SEQ)
+            state["forcemode"] = float(MODE_SEQ[state["seq_idx"]])
+            state["last_switch"] = state["beat_count"]
     else:
         state["drop"] = state["drop"] * math.exp(-dt / max(params["drop_release"], 1e-3))
 
@@ -237,10 +262,22 @@ def process(state, features, dt, params):
         # advance the beat counter and pick polarity: mostly suck-IN (+1), every
         # Nth kick blow-OUT (−1) so the contractions aren't all the same.
         state["beat_count"] += 1
-        n = max(2, int(params["blowout_every"]))
-        state["beatpolarity"] = -1.0 if (state["beat_count"] % n == 0) else 1.0
+        # DYNAMICS-driven polarity: a kick landing harder than the recent low-end
+        # baseline blows OUT; an average/soft one gathers IN. Continuous, so the
+        # in-between kicks partially do each → musical, not a predictable counter.
+        nov  = state["bass"] - state["bass_base"]
+        blow = max(0.0, min(1.0, nov / max(params["blow_thresh"], 1e-3)))
+        state["beatpolarity"] = 1.0 - 2.0 * blow
+        # beat-count fallback: advance the force mode periodically even without
+        # drops, so a steady non-dropping track still explores all modes.
+        mev = max(2, int(params["mode_every"]))
+        if state["beat_count"] % mev == 0:
+            state["seq_idx"] = (int(state["seq_idx"]) + 1) % len(MODE_SEQ)
+            state["forcemode"] = float(MODE_SEQ[state["seq_idx"]])
+            state["last_switch"] = state["beat_count"]
     state["prev_kick"] = state["kick"]
-    # a real drop always blows OUT (big release).
+    # a real drop always blows OUT (big release) AND switches the force mode →
+    # each drop the disturbance changes character.
     if state["drop"] > 0.5:
         state["beatpolarity"] = -1.0
 
@@ -288,6 +325,7 @@ def process(state, features, dt, params):
         "pressure": state["pressure"], "circulation": state["circulation"],
         "surface": state["surface"], "beat": state["beat"],
         "midhit": state["midhit"], "beatpolarity": state["beatpolarity"],
+        "forcemode": state["forcemode"],
     }
     for i in range(n):
         out["spec%d" % i] = state["spec"][i]
