@@ -58,6 +58,19 @@ def onCook(scriptOp):
         scriptOp.copyNumpyArray(np.zeros((1, 1, 4), dtype=np.float32))
         return
 
+    # Staleness guard — same _pose_same counter written by emitters_tex_script.
+    # Output zero joints when stale so body_field / body_viz silently disappear
+    # instead of locking onto last-known landmarks.
+    try:
+        stale_thresh = int(parent().par.Posestaleframes.eval())
+    except Exception:
+        stale_thresh = 90
+    if int(parent().fetch('_pose_same', 0)) > stale_thresh:
+        joints = bl.JOINTS
+        scriptOp.copyNumpyArray(
+            np.zeros((2 * bl.MAX_PERSONS, len(joints), 4), dtype=np.float32))
+        return
+
     joints = bl.JOINTS
     n = len(joints)
     max_p = bl.MAX_PERSONS

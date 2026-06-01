@@ -70,6 +70,47 @@ def onCook(scriptOp):
         scriptOp.copyNumpyArray(np.zeros((1, 1, 4), dtype=np.float32))
         return
 
+    # STALENESS GUARD: when MediaPipe drops video input (or webrender freezes)
+    # the upstream pose CHOPs keep cooking but the same values just propagate
+    # — visibility stays at the last reported (often 1.0) and x/y stay frozen.
+    # Without this guard the velocity field keeps splatting those frozen
+    # values, soup streaks toward the stale position. Detect staleness by
+    # hashing the raw input sample on each cook; if it hasn't changed for
+    # `Posestaleframes` consecutive cooks, treat the pose as DEAD and emit
+    # zeros (sim degrades gracefully to soup-only behaviour).
+    try:
+        stale_thresh = int(parent().par.Posestaleframes.eval())
+    except Exception:
+        stale_thresh = 90        # ~1.5s at 60fps — long enough to ride out
+                                 # brief MediaPipe stalls, short enough to
+                                 # catch full dropout
+
+    try:
+        # Cheap fingerprint: first-channel value + count of present channels.
+        chans = src.chans()
+        n_chans = len(chans)
+        fp = (n_chans, round(chans[0][0], 6) if n_chans else 0.0)
+        prev_fp = parent().fetch('_pose_fp', None)
+        same_count = int(parent().fetch('_pose_same', 0))
+        if prev_fp is not None and fp == prev_fp:
+            same_count += 1
+        else:
+            same_count = 0
+        parent().store('_pose_fp', fp)
+        parent().store('_pose_same', same_count)
+        if same_count > stale_thresh:
+            # Pose is frozen — emit zero texture so the field stops splatting.
+            try:
+                bl = mod.body_logic
+                persons = bl.MAX_PERSONS
+            except Exception:
+                persons = 1
+            scriptOp.copyNumpyArray(
+                np.zeros((2, persons * n_lm, 4), dtype=np.float32))
+            return
+    except Exception:
+        pass
+
     # MULTI-PERSON: pack persons × n_lm emitters into the texture so the
     # velocity field gets contributions from EVERY tracked body. velocity_field
     # reads uNumEmitters = MAX_PERSONS*n_lm and loops them; absent persons

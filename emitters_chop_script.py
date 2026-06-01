@@ -187,6 +187,22 @@ def onCook(scriptOp):
         for name in ('P0','P1','P2','v0','v1','v2','w','id'):
             scriptOp.appendChan(name)
         return
+
+    # STALENESS GUARD (matches emitters_tex_script): emitters_tex_script writes
+    # `_pose_same` to parent storage tracking consecutive cooks with unchanged
+    # input fingerprint. If pose is frozen (MediaPipe dropped / webrender black),
+    # we don't want to keep spawning particles either — they pile up at
+    # last-known landmark positions, looking like clusters/streaks.
+    try:
+        stale_thresh = int(parent().par.Posestaleframes.eval())
+    except Exception:
+        stale_thresh = 90
+    same = int(parent().fetch('_pose_same', 0))
+    if same > stale_thresh:
+        scriptOp.numSamples = 0
+        for name in ('P0','P1','P2','v0','v1','v2','w','id'):
+            scriptOp.appendChan(name)
+        return
     # Compute total based on actual iteration; pad numSamples to handle any
     # transient count mismatch (e.g. live-tuning during the cook).
     total = len(active_persons) * n_lm * spawn_count
