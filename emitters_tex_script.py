@@ -119,9 +119,22 @@ def onCook(scriptOp):
             em = _rd(p, lm, 'emit')
             bu = _rd(p, lm, 'burst')
             vi = _rd(p, lm, 'visible')
-            force_gain = (em + burst_gain * bu) * vi
-            buf[0, i] = (x, y, z, vi)
-            buf[1, i] = (vx, vy, vz, force_gain)
+            # HARD GATE: when a landmark isn't visible (no pose / dropped /
+            # MediaPipe frozen), zero EVERYTHING for that slot — not just the
+            # force_gain. Otherwise the last-known x/y/vx/vy values keep
+            # splatting into the velocity field while visibility is the only
+            # thing that fell to 0. With the Fielddecay persistence loop the
+            # stale splat then streaks the particles toward the last-known
+            # landmark location for ~0.5s after the pose drops. Zero the
+            # whole slot so the shader's `if (visible < 0.5) continue;` AND
+            # the field's residue go to 0 instantly.
+            if vi < 0.5:
+                buf[0, i] = (0.0, 0.0, 0.0, 0.0)
+                buf[1, i] = (0.0, 0.0, 0.0, 0.0)
+            else:
+                force_gain = (em + burst_gain * bu) * vi
+                buf[0, i] = (x, y, z, vi)
+                buf[1, i] = (vx, vy, vz, force_gain)
             i += 1
 
     scriptOp.copyNumpyArray(buf)

@@ -177,11 +177,19 @@ def onCook(scriptOp):
             if _read_p(p, lm, 'visible', 0.0) > 0.0:
                 active_persons.append(p)
                 break
+    # No pose feed at all → emit ZERO spawns. The earlier fallback active_persons=[0]
+    # caused 90 stale "ghost" particles to spawn at (0,0,0) each cook when MediaPipe
+    # dropped, which then streaked across the soup as the field/curl pushed them.
+    # With total=0 the POP just keeps the ambient soup alive and the sim degrades
+    # gracefully to soup-only behavior — exactly the no-pose fallback we want.
     if not active_persons:
-        active_persons = [0]
+        scriptOp.numSamples = 0
+        for name in ('P0','P1','P2','v0','v1','v2','w','id'):
+            scriptOp.appendChan(name)
+        return
     # Compute total based on actual iteration; pad numSamples to handle any
     # transient count mismatch (e.g. live-tuning during the cook).
-    total = max(1, len(active_persons)) * n_lm * spawn_count
+    total = len(active_persons) * n_lm * spawn_count
 
     # IMPORTANT: set numSamples BEFORE appending channels. Channels inherit
     # their sample count from the op when created; appending after changing
