@@ -68,7 +68,8 @@ uniform float uMaskpush;     // outward push-back strength during the swap shock
 uniform float uMaskmorph;    // 0..1 mid-swap (cross-dissolve): releases the trap so particles flow to new homes
 uniform float uBodypush;     // repel strength: particles parted by the skeleton
 uniform float uBodydrag;     // advect strength: particles dragged along limb motion
-uniform float uDepthpush;    // 3D wall-repel from the depth map (separate force layer)
+uniform float uSoupfieldgain;// soup-only fraction of the RAW (pre-deadzone)
+                             // field force — lets depth/pose flow reach the soup
 
 void main()
 {
@@ -83,7 +84,9 @@ void main()
     vec3 curl2 = TDIn_NoiseCurl2().xyz;  // broad/slow layer (curl_noise2)
     vec4 logo  = TDIn_maskdata();        // .xy = ∇luma (attractor dir), .w = mask
     vec4 body  = TDIn_bodyforce();       // .xy = push (repel dir), .zw = drag (limb vel)
-    vec4 depth = TDIn_depthforce();      // .xyz = wall-repel (depth_field), .w = gate
+    // Depth is now a FLOW FIELD contribution merged into the per-particle
+    // `fieldforce` upstream (depth_field GLSL TOP → field_mix Composite TOP),
+    // not a separate wall-repel attribute. Nothing to read here.
 
     // NaN/Inf guard. NaN P fed into instancing transforms or texture lookups
     // can crash the Vulkan device outright. Clamp to zero here so a single
@@ -111,6 +114,14 @@ void main()
     //   t   = pow(t, gamma)              gamma > 1 = gentler-at-small
     //   |f'| = t * ref                   reshape magnitude
     //   f'  = (f / |f|) * |f'|           preserve direction
+    // RAW force snapshot BEFORE the deadzone curve. The deadzone (tuned for
+    // strong movement-emitter splats) crushes anything below ~uForceDeadzone
+    // to zero — that's correct for movement particles (kills rest-drift) but
+    // it also kills any contribution from the depth-driven flow field which
+    // is small per-pixel. The soup branch below applies the RAW force at a
+    // small gain so the soup actually responds to depth/pose-driven flow.
+    vec3 force_raw = force;
+
     float fmag = length(force);
     if (fmag > 1e-4 && uForceRef > uForceDeadzone) {
         float t = clamp((fmag - uForceDeadzone)
@@ -127,19 +138,18 @@ void main()
     // uDamping=1 zeroes velocity each cook.
     vel += force * uForceScale;
 
+    // Soup-specific: apply the RAW field force (pre-deadzone) at a small gain
+    // so depth/pose flow reaches the ambient soup. Movement particles already
+    // got the curved force above — the deadzone is calibrated for them.
+    if (lid >= 5) {
+        vel += force_raw * uForceScale * uSoupfieldgain;
+    }
+
     // Body field: the performer's skeleton parts the soup (push = away from the
     // nearest bone) and drags it along limb motion (drag = bone velocity).
     // Applies to ALL particles. Per-joint visibility already gated the field, so
     // off-frame / low-confidence joints contribute nothing (no phantom pushes).
     vel += vec3(body.xy, 0.0) * uBodypush + vec3(body.zw, 0.0) * uBodydrag;
-
-    // Depth field: 3D wall-repel for any particle whose screen-uv samples a
-    // depth surface. depth.xyz is already a push vector (xy = sideways along
-    // -∇depth, z = backward), gated by depth.w (the smooth mask). Applies to
-    // ALL particles so the body shape parts the soup AND deflects movement
-    // sprays. Independent of body_field (skeleton-driven) — depth covers the
-    // continuous surface in between bones (torso, head, hands).
-    vel += depth.xyz * uDepthpush;
 
     // Gentle base turbulence for the ambient soup only (Lid>=5). Curl is
     // otherwise crushed by the deadzone/gamma curve above (tuned for strong
