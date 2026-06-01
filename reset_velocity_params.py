@@ -38,7 +38,7 @@ SENSING = {
     'Trustthreshold':      0.75,
     'Velocitysmooth':      0.08,
     'Accelsmooth':         0.05,
-    'Speedscale':          5.0,
+    'Speedscale':          0.9,   # emit saturates at moderate motion (was 5.0/1.5) so normal-speed gestures spawn, not just whips
     'Accelthreshold':      8.0,
     'Accelscale':          40.0,
     'Burstdecay':          0.35,
@@ -54,7 +54,7 @@ SENSING = {
 RENDERER = {
     # Emission
     'Spawnrate':       15000.0,  # informational only (Particle POP uses `w`)
-    'Burstgain':       12.0,
+    'Burstgain':       8.0,
     # Emission region (2D velocity-aligned scatter)
     'Spawncount':      18,
     'Spawnspread':     0.14,   # max along-velocity extent at full speed (enlarged area)
@@ -101,7 +101,7 @@ RENDERER = {
     'Boundsmargin':    0.005,
     # Ambient particle soup (constant population, advected by the same field).
     'Ambientrate':     6000.0,  # pts/s; steady alive ≈ rate × avg-life
-    'Ambientpoints':   240,     # spatial scatter sample count
+    'Ambientpoints':   1250,    # scatter sample count = HARD cap on births/cook (k=min(Ambientrate/60, Ambientpoints)). Keep >= Ambientrate/60 or it throttles the soup.
     # Particle size (drives sphere1 radius inside geo1).
     'Particlesize':    0.006,
     # Age gradient (Embers) + velocity bloom (read by color_attr).
@@ -129,6 +129,7 @@ RENDERER = {
     'Soupcyclespeed':  0.018,   # soup color-ramp cycle speed — SLOW so colour evolves organically (was 0.03)
     'Soupevolve':      0.025,   # soup palette HUE rotation over time — slow drift (was 0.05)
     'Soupgradrot':     0.04,    # slow direction-rotation of the colour bands (rad/s) — alive without input
+    'Soupsetspeed':    0.04,    # palette-SET rotation (sets/s): soup crossfades through the color_attr triad bank (set0=preset triad). 0=stay on preset.
     # Cosmic-web filaments (background-only — fades inside logo/vessel mask):
     'Clusterscale':    3.5,     # filament frequency
     'Clusterboost':    0.4,     # brightness boost on filament peaks — background, not soup-wide

@@ -512,6 +512,12 @@ add_float(render, 'Souplayermix', 'Soup Layer Mix (B fraction)', 0.5, 0.0, 1.0)
 # organic; >0.15 starts to look hasty/flickery.
 add_float(render, 'Soupgradrot', 'Soup Gradient Rotation (rad/s)', 0.04, -1.0, 1.0)
 
+# Soup palette-SET rotation: the soup slowly crossfades through the triad BANK
+# in color_attr.glsl (set 0 = the preset Soupcol triad, sets 1..3 curated) so
+# the colour doesn't settle into one mood. Units = sets/sec; 0.04 ≈ a new set
+# every ~25s, full 4-set loop ~100s. 0 = stay on the preset triad.
+add_float(render, 'Soupsetspeed', 'Soup Palette Set Rotation (sets/s)', 0.04, 0.0, 0.5, clamp_max=False)
+
 # Cosmic-web filament structure across the background soup. Read by color_attr
 # (gated to Lid>=100 + fades inside the logo/vessel mask so it doesn't fight
 # the movement region). Scale = filament frequency; Gamma = sharpness;
@@ -598,8 +604,8 @@ add_float(look, 'Trailthreshold', 'Trail Threshold (speed gate)',
 # --- Anamorphic streaks (threshold → big H/V blur → add over bloom) --------
 add_toggle(look, 'Streakenable', 'Streaks Enable', True)
 add_float(look, 'Streakthresh', 'Streak Threshold', 0.8, 0.0, 4.0, clamp_max=False)
-add_float(look, 'Streaklength', 'Streak Length (px)', 120.0, 0.0, 600.0, clamp_max=False)
-add_float(look, 'Streakintensity', 'Streak Intensity', 0.7, 0.0, 4.0, clamp_max=False)
+add_float(look, 'Streaklength', 'Streak Length (px)', 150.0, 0.0, 600.0, clamp_max=False)
+add_float(look, 'Streakintensity', 'Streak Intensity', 0.85, 0.0, 4.0, clamp_max=False)
 
 # --- Color grade (grade.frag) ---------------------------------------------
 add_toggle(look, 'Gradeenable', 'Grade Enable', True)

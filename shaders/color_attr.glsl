@@ -61,6 +61,7 @@ uniform float uMaskhueoffset;   // PERSISTENT hue offset (radians) — accumulat
 uniform float uPersonhuestep;   // hue (rad) added per PERSON index so each body wears a distinct tint
 uniform float uMaskcharge;      // "charged-in-vessel" look — inside particles brighter + hue-shifted, softened mask
 uniform float uSoupgradrot;     // slow rotation of the soup gradient direction (rad/sec) — alive feel
+uniform float uSoupsetspeed;    // palette-SET rotation rate (sets/sec): soup slowly crossfades through the triad bank below. 0 = stay on the preset triad (set 0)
 uniform float uClusterscale;    // cosmic-web filament noise scale
 uniform float uClusterboost;    // brightness boost on filament peaks (galaxy-cluster look)
 uniform float uClustergamma;    // contrast of the filament structure (higher = sharper filaments)
@@ -85,16 +86,49 @@ vec3 hueShift(vec3 c, float a)
 }
 
 // Cyclic 3-stop gradient over phase t (A→B→C→A, wraps seamlessly). Smooth,
-// art-directable, preset-driven.
-vec3 soupPalette(float t)
+// art-directable. Triad passed in so we can rotate through a palette BANK.
+vec3 soupPalette3(float t, vec3 A, vec3 B, vec3 C)
 {
     // Smooth 3-stop cyclic palette — smoothstep within each segment so colour
     // transitions ease in/out instead of flicking linearly between stops.
     t = fract(t);
     float u = t * 3.0;                  // 0..3 over A→B→C→A
-    if (t < 0.3333)      return mix(uSoupA, uSoupB, smoothstep(0.0, 1.0, u));
-    else if (t < 0.6667) return mix(uSoupB, uSoupC, smoothstep(0.0, 1.0, u - 1.0));
-    else                 return mix(uSoupC, uSoupA, smoothstep(0.0, 1.0, u - 2.0));
+    if (t < 0.3333)      return mix(A, B, smoothstep(0.0, 1.0, u));
+    else if (t < 0.6667) return mix(B, C, smoothstep(0.0, 1.0, u - 1.0));
+    else                 return mix(C, A, smoothstep(0.0, 1.0, u - 2.0));
+}
+
+// Palette BANK — the soup slowly rotates through these triads (crossfading
+// between consecutive sets) so the look never settles into one mood. Set 0 is
+// the PRESET triad (uSoupA/B/C) so presets still drive the primary colour;
+// sets 1..3 are curated companions. Add/edit sets here (bump NSOUPSETS to match).
+const int NSOUPSETS = 4;
+void soupSet(int i, out vec3 A, out vec3 B, out vec3 C)
+{
+    if (i == 1) {            // teal → warm gold → coral  (cool/warm contrast)
+        A = vec3(0.05, 0.55, 0.62); B = vec3(0.92, 0.70, 0.22); C = vec3(0.90, 0.30, 0.34);
+    } else if (i == 2) {     // violet → rose → amber  (dusk)
+        A = vec3(0.45, 0.20, 0.78); B = vec3(0.92, 0.34, 0.60); C = vec3(0.95, 0.62, 0.26);
+    } else if (i == 3) {     // emerald → cyan → deep indigo  (aurora)
+        A = vec3(0.10, 0.72, 0.46); B = vec3(0.14, 0.60, 0.86); C = vec3(0.26, 0.20, 0.72);
+    } else {                 // set 0 — preset-driven triad
+        A = uSoupA; B = uSoupB; C = uSoupC;
+    }
+}
+
+// Blend the bank at a continuous index `bank` (sets/units), wrapping through
+// NSOUPSETS with a smooth crossfade, then sample the cyclic gradient at `t`.
+vec3 soupPaletteBank(float t, float bank)
+{
+    float n  = float(NSOUPSETS);
+    float fb = bank - floor(bank / n) * n;     // wrap to 0..n
+    int   s0 = int(fb);
+    int   s1 = int(mod(float(s0 + 1), n));
+    float bf = smoothstep(0.0, 1.0, fract(fb));
+    vec3 a0, b0, c0, a1, b1, c1;
+    soupSet(s0, a0, b0, c0);
+    soupSet(s1, a1, b1, c1);
+    return soupPalette3(t, mix(a0, a1, bf), mix(b0, b1, bf), mix(c0, c1, bf));
 }
 
 const vec3 kPalette[5] = vec3[](
@@ -142,7 +176,9 @@ void main()
         vec2  gflow = vec2(sin(uTime * 0.07), cos(uTime * 0.053)) * 0.4;
         float phase = fract(dot(p.xy + gflow, gdir) * uSoupcolorscale
                             + uTime * uSoupcyclespeed);
-        vec3  rampC = soupPalette(phase);
+        // Rotate through the palette bank over time (uSoupsetspeed sets/sec);
+        // set 0 is the preset triad so a preset still anchors the look.
+        vec3  rampC = soupPaletteBank(phase, uTime * uSoupsetspeed);
         // evolve the palette hue over time so the soup colour drifts through
         // the spectrum (continuous). PLUS a PERSISTENT per-swap hue offset that
         // ramps IN SYNC with the field morph and HOLDS afterward — each logo
