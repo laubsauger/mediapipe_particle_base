@@ -117,6 +117,18 @@ def default_params():
         "blow_thresh":    0.22,   # how far a kick's low-end must exceed baseline to fully blow OUT (vs gather)
         "mode_every":     24,     # advance the force mode every N kicks if no drop arrives first (longer dwell = less busy)
         "mode_min_dwell": 12,     # a mode must hold at least this many kicks before a drop can switch it → time to read/develop
+        # --- PACING (for slow / atmospheric music) ---
+        "trig_interval":  1,      # fire the force SURGE every Nth kick (1 = every kick; 2-4 = sparser, calmer)
+        "dur_scale":      1.0,    # multiplies all envelope/hold durations (>1 = longer, more evolving/atmospheric)
+        "surge_release":  0.30,   # s — base surge-envelope length (× dur_scale)
+        # --- IDLE evolution (quiet / no music) ---
+        "idle_thresh":    0.18,   # energy below this = "idle" → autonomous gentle evolution fades in
+        "idle_amt":       0.45,   # strength of the idle drive (gentle surges + mode shaping with no audio)
+        "idle_rate":      0.06,   # Hz — slow idle pulse rate (breaths per second)
+        "idle_mode_secs": 14.0,   # advance the force mode every N seconds while idle (keeps shapes evolving)
+        # --- BREATHING ROOM (dynamics-driven minimum time between surges) ---
+        "surge_cd_min":   0.22,   # s — min gap between surges at full intensity (responsive)
+        "surge_cd_calm":  1.6,    # s — EXTRA gap added when calm (low energy) → space to develop, not jerky
         # LMH material smoothing (vessel "what is the substance made of")
         "mid_smooth":     0.10,   # circulation responds at body-flow rate
         "high_smooth":    0.06,   # surface detail, a touch faster
@@ -147,6 +159,11 @@ def fresh_state(n_spec=15):
         # FORCE MODE: index into MODE_SEQ (resolved id in `forcemode`). Steps on
         # drops + a beat-count fallback; REST steps give occasional downtime.
         "forcemode": float(MODE_SEQ[0]), "seq_idx": 0, "last_switch": -999,
+        # gated force surge + idle evolution state
+        "surge": 0.0, "trig_count": 0, "modedrive": 0.0,
+        "idle_phase": 0.0, "idle_mode_timer": 0.0,
+        # dynamics-driven breathing room between surges
+        "time_acc": 0.0, "last_surge_t": -999.0,
         # LMH material / vessel mood (low/mid/high → pressure/circulation/surface)
         "mid": 0.0, "high": 0.0,
         "pressure": 0.0, "circulation": 0.0, "surface": 0.0,
@@ -165,7 +182,7 @@ def output_names(n_spec=15):
     return (["kick", "snare", "hat", "pulse", "bass", "breath", "build",
              "glow", "drop", "dropdir",
              "mid", "high", "pressure", "circulation", "surface", "beat",
-             "midhit", "beatpolarity", "forcemode"]
+             "midhit", "beatpolarity", "forcemode", "surge", "modedrive"]
             + ["spec%d" % i for i in range(n_spec)])
 
 
@@ -180,14 +197,16 @@ def process(state, features, dt, params):
     dt = _finite(dt, 0.0)
     if dt <= 0.0:
         dt = 1.0 / 60.0
+    state["time_acc"] = state.get("time_acc", 0.0) + dt
 
     g = lambda k: _finite(features.get(k, 0.0), 0.0)
+    dur = max(0.05, float(params.get("dur_scale", 1.0)))   # duration multiplier
 
-    # ---- transients: peak-hold envelopes -------------------------------
-    state["kick"]  = env_follow(state["kick"],  g("drums_low"),     dt, params["kick_release"])
-    state["snare"] = env_follow(state["snare"], g("drums_mid"),     dt, params["snare_release"])
-    state["hat"]   = env_follow(state["hat"],   g("drums_high"),    dt, params["hat_release"])
-    state["pulse"] = env_follow(state["pulse"], g("pulse_dynamic"), dt, params["pulse_release"])
+    # ---- transients: peak-hold envelopes (release × dur_scale) ---------
+    state["kick"]  = env_follow(state["kick"],  g("drums_low"),     dt, params["kick_release"]  * dur)
+    state["snare"] = env_follow(state["snare"], g("drums_mid"),     dt, params["snare_release"] * dur)
+    state["hat"]   = env_follow(state["hat"],   g("drums_high"),    dt, params["hat_release"]   * dur)
+    state["pulse"] = env_follow(state["pulse"], g("pulse_dynamic"), dt, params["pulse_release"] * dur)
 
     # ---- continuous bands: AGC-normalise then smooth -------------------
     bass_n, state["max_bass"] = agc_normalize(
@@ -258,16 +277,26 @@ def process(state, features, dt, params):
     # kick onset → soup-flow direction nudge too (the kick is the reliable beat
     # when ARE's mid/high drum detectors aren't firing).
     if state["kick"] > 0.5 and state["prev_kick"] <= 0.5:
-        state["dropdir"] = math.fmod(state["dropdir"] + params["kick_turn"], 6.2831853)
-        # advance the beat counter and pick polarity: mostly suck-IN (+1), every
-        # Nth kick blow-OUT (−1) so the contractions aren't all the same.
         state["beat_count"] += 1
-        # DYNAMICS-driven polarity: a kick landing harder than the recent low-end
-        # baseline blows OUT; an average/soft one gathers IN. Continuous, so the
-        # in-between kicks partially do each → musical, not a predictable counter.
-        nov  = state["bass"] - state["bass_base"]
-        blow = max(0.0, min(1.0, nov / max(params["blow_thresh"], 1e-3)))
-        state["beatpolarity"] = 1.0 - 2.0 * blow
+        state["trig_count"] += 1
+        # PACING: only every Nth kick is a SURGE beat — for slow/atmospheric
+        # music raise trig_interval so the field isn't shoved on every hit.
+        interval = max(1, int(params.get("trig_interval", 1)))
+        # dynamics-driven breathing room: when calm (low energy) require a LONGER
+        # gap between surges so patterns get time to develop and it never hastes;
+        # when intense, the gap shrinks so it stays responsive.
+        energy_now = max(state["glow"], state["breath"])
+        cooldown   = params["surge_cd_min"] + (1.0 - energy_now) * params["surge_cd_calm"]
+        if (state["trig_count"] % interval == 0
+                and (state["time_acc"] - state["last_surge_t"]) >= cooldown):
+            state["last_surge_t"] = state["time_acc"]
+            state["surge"] = 1.0    # fire the force-surge envelope
+            state["dropdir"] = math.fmod(state["dropdir"] + params["kick_turn"], 6.2831853)
+            # DYNAMICS-driven polarity: a kick landing harder than the recent
+            # low-end baseline blows OUT; average/soft gathers IN. Continuous.
+            nov  = state["bass"] - state["bass_base"]
+            blow = max(0.0, min(1.0, nov / max(params["blow_thresh"], 1e-3)))
+            state["beatpolarity"] = 1.0 - 2.0 * blow
         # beat-count fallback: advance the force mode periodically even without
         # drops, so a steady non-dropping track still explores all modes.
         mev = max(2, int(params["mode_every"]))
@@ -276,10 +305,28 @@ def process(state, features, dt, params):
             state["forcemode"] = float(MODE_SEQ[state["seq_idx"]])
             state["last_switch"] = state["beat_count"]
     state["prev_kick"] = state["kick"]
-    # a real drop always blows OUT (big release) AND switches the force mode →
-    # each drop the disturbance changes character.
+    # a real drop always blows OUT (big release).
     if state["drop"] > 0.5:
         state["beatpolarity"] = -1.0
+    # surge envelope decays (length × dur_scale → longer = more atmospheric).
+    state["surge"] = state["surge"] * math.exp(-dt / max(params["surge_release"] * dur, 1e-3))
+
+    # ---- IDLE evolution: when energy is low (quiet / no music), fade in a
+    # gentle autonomous drive so the field keeps breathing + slowly cycling
+    # through modes/shapes instead of going dead. Fades out as audio energy rises.
+    energy = max(state["glow"], state["breath"], state["bass"])
+    idlef  = max(0.0, min(1.0, 1.0 - energy / max(params["idle_thresh"], 1e-3)))
+    state["idle_phase"] = math.fmod(state["idle_phase"] + dt * params["idle_rate"], 1.0)
+    idle_pulse = idlef * params["idle_amt"] * (0.5 + 0.5 * math.sin(state["idle_phase"] * 6.2831853))
+    state["idle_mode_timer"] += dt
+    if idlef > 0.5 and state["idle_mode_timer"] >= params["idle_mode_secs"]:
+        state["idle_mode_timer"] = 0.0
+        state["seq_idx"] = (int(state["seq_idx"]) + 1) % len(MODE_SEQ)
+        state["forcemode"] = float(MODE_SEQ[state["seq_idx"]])
+    # surge the force layer sees = max(audio surge, idle pulse); modedrive = the
+    # sustained shaping drive = max(audio energy, idle baseline).
+    surge_out = max(state["surge"], idle_pulse)
+    state["modedrive"] = max(state["glow"], idlef * params["idle_amt"] * 0.7)
 
     # ---- build / release from the burst square wave --------------------
     burst = g("burst")
@@ -326,6 +373,7 @@ def process(state, features, dt, params):
         "surface": state["surface"], "beat": state["beat"],
         "midhit": state["midhit"], "beatpolarity": state["beatpolarity"],
         "forcemode": state["forcemode"],
+        "surge": surge_out, "modedrive": state["modedrive"],
     }
     for i in range(n):
         out["spec%d" % i] = state["spec"][i]
@@ -415,6 +463,31 @@ if __name__ == "__main__":
     assert o["circulation"] > 0.5, ("mid should drive circulation", o["circulation"])
     assert o["surface"] <= p["surface_cap"] + 1e-9, "surface must be capped"
     assert o["pressure"] > 0.3, ("low·breath should build pressure", o["pressure"])
+
+    # 7c) PACING: trig_interval gates the surge — every Nth kick fires one.
+    def surge_fires(interval, n_onsets):
+        pp = dict(p); pp['trig_interval'] = interval
+        pp['idle_amt'] = 0.0; pp['surge_release'] = 0.05
+        st = fresh_state(4); fires = 0
+        for _ in range(n_onsets):
+            before = st["surge"]
+            process(st, {"drums_low": 1.0, "natural_dynamic": 0.9}, dt, pp)   # onset
+            if st["surge"] > 0.5 and before < 0.5:   # surge jumped (decays same cook)
+                fires += 1
+            for _ in range(60):
+                process(st, {"natural_dynamic": 0.9}, dt, pp)                 # release
+        return fires
+    assert surge_fires(1, 8) == 8, surge_fires(1, 8)
+    assert surge_fires(2, 8) == 4, surge_fires(2, 8)
+    assert surge_fires(4, 8) == 2, surge_fires(4, 8)
+
+    # 7d) IDLE: with NO audio, an autonomous gentle surge keeps evolving.
+    st_i = fresh_state(4); mx = 0.0
+    for _ in range(2500):
+        o = process(st_i, {}, dt, p)
+        mx = max(mx, o["surge"])
+    assert mx > 0.05, ("idle should produce gentle autonomous surges", mx)
+    assert o["modedrive"] > 0.05, ("idle should sustain mode shaping", o["modedrive"])
 
     # 6b) NaN resilience.
     st5 = fresh_state(4)

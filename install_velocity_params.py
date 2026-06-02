@@ -580,7 +580,7 @@ add_float(look, 'Maskvigor',   'Mask Vigor (vessel liveliness)', 0.5, 0.0, 1.0)
 add_float(look, 'Maskcharge',  'Mask Charge (vessel glow + tint)', 0.9, 0.0, 2.0, clamp_max=False)
 # Swap-shockwave push-back FX intensity (applied DURING a swap; the `trans`
 # channel of in_mask_state envelopes it).
-add_float(look, 'Maskpush',    'Mask Swap Push-Back', 2.0, 0.0, 6.0, clamp_max=False)
+add_float(look, 'Maskpush',    'Mask Swap Push-Back', 1.4, 0.0, 6.0, clamp_max=False)
 
 # --- Mask STATE (input fallback floats; used when in_mask_state CHOP is empty)
 # When no state CHOP is wired, these parent pars drive the four channels. With
@@ -663,6 +663,11 @@ add_float(audio, 'Audioblur',    'Beat Defocus Blur',              0.5, 0.0, 2.0
 # back" pulse on the beat. Applied AFTER the soup/logo speed caps so it isn't
 # crushed. Tune down if too much; this is the main "alive on the beat" lever.
 add_float(audio, 'Audiobeat',    'Beat Push (kick → visible pulse)', 0.8, 0.0, 2.0, clamp_max=False)
+# PACING for slow / atmospheric music: fire the force surge every Nth kick
+# (interval) and hold transforms longer (duration). Plus a dynamics-driven
+# breathing-room cooldown in audio_logic spaces surges out when the music is calm.
+add_float(audio, 'Audiointerval', 'Beat Interval (every Nth kick)',  1, 1, 8)
+add_float(audio, 'Audioduration', 'Transform Duration Scale',        1.4, 0.3, 4.0, clamp_max=False)
 # Mid-peak SWIRL — a rotational burst (tangential), detected off the continuous
 # mid band (ARE's mid drum detector is usually dead), so busy mid sections add a
 # second, organic disturbance distinct from the kick gather. Beat polarity (in

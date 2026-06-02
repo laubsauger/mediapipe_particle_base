@@ -94,6 +94,10 @@ def onCook(scriptOp):
     params['hat_release']   = float(_par('Audiohatrelease',   params['hat_release']))
     params['breath_smooth'] = float(_par('Audiobreathsmooth', params['breath_smooth']))
     params['build_attack']  = float(_par('Audiobuildattack',  params['build_attack']))
+    # Pacing for slow / atmospheric music: fire the force surge less often
+    # (interval) and hold transforms longer (duration).
+    params['trig_interval'] = int(_par('Audiointerval', params['trig_interval']))
+    params['dur_scale']     = float(_par('Audioduration', params['dur_scale']))
 
     dt = 1.0 / max(1e-6, me.time.rate)
     out = al.process(state, features, dt, params)

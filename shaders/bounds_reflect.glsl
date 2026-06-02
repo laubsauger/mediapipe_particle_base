@@ -447,6 +447,17 @@ void main()
         vel    += curl * (uMidswirl * fall * 0.6);
     }
 
+    // ---- Final safety on the audio-mode forces ----------------------------
+    // The beat/mode/swirl forces above are added AFTER the main Maxspeed clamp,
+    // so a stacked combination (sustained shape pull + curl + drop + ...) can
+    // run velocity away → Inf → NaN, and a NaN here parks the particle at the
+    // box centre (below) — do that to enough particles and the whole field
+    // collapses to a dot = sudden BLACK SCREEN. Re-clamp + scrub here so the
+    // audio layer can never blow the sim up.
+    if (any(isnan(vel)) || any(isinf(vel))) vel = vec3(0.0);
+    float fspd = length(vel);
+    if (fspd > uMaxSpeed) vel *= (uMaxSpeed / fspd);
+
     // ---- Wall reflection + hard position clamp -----------------------------
     // Reflecting velocity ALONE is not enough to contain particles: the flip
     // lags one integration step, so a fast particle (or one shoved outward by

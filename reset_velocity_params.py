@@ -162,7 +162,7 @@ RENDERER = {
     'Masktrap':        0.9,    # velocity damping on the mask (soup STICKS → fills the shape)
     'Maskvigor':       0.5,    # liveliness inside the shape (0=static decal, 1=churning vessel)
     'Maskcharge':      0.9,    # vessel feel — particles in the mask region get extra glow + hue shift
-    'Maskpush':        2.0,    # swap-shockwave outward push intensity (FX; envelope comes from `trans` channel)
+    'Maskpush':        1.4,    # swap-shockwave outward push (toned down — was too strong/silly)
 }
 
 
@@ -201,6 +201,8 @@ AUDIO = {
     'Audiosoupdir':      1.0,
     'Audioblur':         0.5,    # organic on-beat defocus blur (beat_blur TOP)
     'Audiobeat':         0.6,    # kick → visible radial push pulse (main "alive on beat" lever)
+    'Audiointerval':     1,      # surge every Nth kick (raise for slow/atmospheric)
+    'Audioduration':     1.4,    # transform duration scale (>1 = longer, more evolving)
     'Audiomidswirl':     0.1,    # mid-peak → rotational swirl burst (2nd organic disturbance)
     # Logo-vessel physics (standby) — ARE drives the trapped material's physics
     'Audiopressure':     0.8,    # low → boundary pressure (Maskattract)

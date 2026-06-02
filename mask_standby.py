@@ -26,22 +26,30 @@ def onCook(scriptOp):
     # Pose presence from `in_pose` (CHOP input on mask_controller). Reading
     # visibility forces a per-frame cook dependency. Sum FINITE in-range
     # visibilities; ignore NaN/Inf (MediaPipe emits those on occluded joints).
+    # Presence detection. COUNT confidently-visible landmarks rather than SUM
+    # all visibilities — a plain sum over many landmarks crosses any low
+    # threshold from per-joint noise alone (e.g. 33 joints × ~0.05 = 1.65 > 0.5),
+    # so standby never engaged. A real person lights several joints well above
+    # the confidence floor; ambient noise lights ~none.
+    vis_floor = float(p.par.Maskvisfloor.eval()) if hasattr(p.par, 'Maskvisfloor') else 0.5
+    need      = int(p.par.Maskminjoints.eval()) if hasattr(p.par, 'Maskminjoints') else 3
     present = 0.0
     pose = op('in_pose')
     if pose is not None:
-        s = 0.0
-        # Try a few common channel patterns. Multi-person schema uses
-        # `p<N>:<lm>:visible`; pre-Lag chains may use `<lm>:visible` or
-        # `visibility<idx>`. Accept whichever is present.
-        for pat in ('*:visible', '*:*:visible', 'visibility*'):
+        # Dedupe: a channel can match several patterns; collect unique names.
+        chans = {}
+        for pat in ('*:*:visible', '*:visible', 'visibility*'):
             for c in pose.chans(pat):
-                try:
-                    v = float(c.eval())
-                except Exception:
-                    continue
-                if _m.isfinite(v):
-                    s += max(0.0, min(1.0, v))
-        present = 1.0 if s > 0.5 else 0.0
+                chans[c.name] = c
+        count = 0
+        for c in chans.values():
+            try:
+                v = float(c.eval())
+            except Exception:
+                continue
+            if _m.isfinite(v) and v > vis_floor:
+                count += 1
+        present = 1.0 if count >= max(1, need) else 0.0
 
     if mode == 'Off':
         target = 0.0
