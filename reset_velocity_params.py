@@ -203,7 +203,7 @@ AUDIO = {
     'Audiobeat':         0.6,    # kick → visible radial push pulse (main "alive on beat" lever)
     'Audiointerval':     1,      # surge every Nth kick (raise for slow/atmospheric)
     'Audioduration':     1.4,    # transform duration scale (>1 = longer, more evolving)
-    'Audiomidswirl':     0.1,    # mid-peak → rotational swirl burst (2nd organic disturbance)
+    'Audiomidswirl':     0.06,    # mid-peak → rotational swirl burst (2nd organic disturbance)
     # Logo-vessel physics (standby) — ARE drives the trapped material's physics
     'Audiopressure':     0.8,    # low → boundary pressure (Maskattract)
     'Audiocirculation':  0.7,    # mid → internal circulation (Maskvigor)

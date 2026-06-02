@@ -49,4 +49,7 @@ def onCook(scriptOp):
     scriptOp.appendChan('blend')[0]     = blend
     scriptOp.appendChan('morph')[0]     = morph
     scriptOp.appendChan('hueoffset')[0] = hueoff
+    # swap STYLE for the active transition (0 explode / 1 dissolve), randomised
+    # per swap → bounds_reflect picks explosion vs gentle gather.
+    scriptOp.appendChan('variant')[0]   = float(state.get('variant', 0.0))
     return

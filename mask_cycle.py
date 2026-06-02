@@ -25,6 +25,7 @@
 # to the other end during a swap, then settles.
 
 import math
+import random as _rnd
 
 
 def fresh_state():
@@ -36,6 +37,12 @@ def fresh_state():
         'primed':    False,
         'hue_accum': 0.0,
         'hue_start': 0.0,
+        # which swap STYLE this transition uses, randomised per swap:
+        #   0.0 = EXPLODE (outward push-away shockwave + reform)
+        #   1.0 = DISSOLVE (no blast — particles gather smoothly to the new shape)
+        # kept in state; the callback reads it as the `variant` channel.
+        'variant':   0.0,
+        'swaps':     0,
     }
 
 
@@ -78,6 +85,9 @@ def step(state, now, cycle_time, switch_dur, enabled=True, hue_step=2.4):
             s['in_trans'] = True
             s['t_start'] = now
             s['hue_start'] = accum
+            # pick the swap STYLE for this transition (randomised between the two)
+            s['swaps'] = s.get('swaps', 0) + 1
+            s['variant'] = 1.0 if _rnd.random() < 0.5 else 0.0
         return float(target), 0.0, accum, s
 
     p = (now - s['t_start']) / switch_dur

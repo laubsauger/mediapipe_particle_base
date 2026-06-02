@@ -112,7 +112,7 @@ def onCook(scriptOp):
     # Control/index channels carry a VALUE (mode index, polarity sign, angle), not
     # a magnitude — gate them by the on/off toggle only, never scale by the depth
     # (0.5 × mode 2 would select the wrong mode). Magnitude channels use master.
-    CONTROL = ('forcemode', 'beatpolarity', 'dropdir')
+    CONTROL = ('forcemode', 'beatpolarity', 'dropdir', 'seed')
 
     names = al.output_names(n_spec)
     scriptOp.numSamples = 1

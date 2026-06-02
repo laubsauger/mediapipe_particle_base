@@ -34,22 +34,42 @@ def onCook(scriptOp):
     vis_floor = float(p.par.Maskvisfloor.eval()) if hasattr(p.par, 'Maskvisfloor') else 0.5
     need      = int(p.par.Maskminjoints.eval()) if hasattr(p.par, 'Maskminjoints') else 3
     present = 0.0
+    n_vis = 0
+    count = 0
     pose = op('in_pose')
-    if pose is not None:
-        # Dedupe: a channel can match several patterns; collect unique names.
-        chans = {}
-        for pat in ('*:*:visible', '*:visible', 'visibility*'):
-            for c in pose.chans(pat):
-                chans[c.name] = c
-        count = 0
-        for c in chans.values():
+    if pose is not None and pose.numChans:
+        # DEVICE-ROBUST: scan ALL channels for a visibility/confidence name by
+        # SUBSTRING (works regardless of the pose source's naming — `p0:lm:visible`,
+        # `lm:visible`, `visibility12`, `*_conf`, …). First pass finds the value
+        # scale (some sources emit 0..100 instead of 0..1); second pass counts
+        # joints above the floor on the normalised scale.
+        vchans = []
+        for c in pose.chans():
+            nm = c.name.lower()
+            if 'visib' in nm or nm.startswith('visibility') or nm.endswith(':conf') or '_conf' in nm:
+                vchans.append(c)
+        n_vis = len(vchans)
+        vmax = 0.0
+        raw = []
+        for c in vchans:
             try:
                 v = float(c.eval())
             except Exception:
                 continue
-            if _m.isfinite(v) and v > vis_floor:
-                count += 1
+            if _m.isfinite(v):
+                raw.append(v)
+                if v > vmax:
+                    vmax = v
+        scale = 100.0 if vmax > 1.5 else 1.0      # auto-detect 0..100 sources
+        count = sum(1 for v in raw if (v / scale) > vis_floor)
         present = 1.0 if count >= max(1, need) else 0.0
+    # Debug readout — read on the OTHER device to see why standby isn't flipping:
+    #   op('mask_controller').fetch('_standby_debug')
+    # → {'n_vis': how many visibility channels found, 'count': confident joints,
+    #    'present': 0/1, 'mode': ...}. If n_vis==0 the pose source isn't exposing
+    # a visibility channel under any known name (wire in_pose / check the source).
+    p.store('_standby_debug', {'n_vis': n_vis, 'count': count,
+                               'present': present, 'mode': mode})
 
     if mode == 'Off':
         target = 0.0

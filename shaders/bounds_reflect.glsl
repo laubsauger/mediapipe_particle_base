@@ -79,6 +79,7 @@ uniform float uSurface;      // audio: HIGH-band surface agitation — fine fizz
 uniform float uBeatpol;      // audio: beat polarity (+1 = gather/suck-in, −1 = blow-out) — varies per beat so contractions aren't all the same
 uniform float uMidswirl;     // audio: MID-peak swirl burst — a rotational (tangential) disturbance, distinct from the kick gather
 uniform float uForcemode;    // audio: which beat FORCE MODE (0 rest,1 gather,2 vortex,3 waveform,4 current,5 fold) — cycles on drops, holds a min dwell
+uniform float uSeed;         // audio: per-occurrence RANDOM seed (re-rolled each mode switch) → orientation/size/angle jitter so effects never look identical
 uniform float uModesustain;  // audio: CONTINUOUS energy-scaled drive (not just the beat pulse) so shaping modes (waveform/fold/current) actually build up and read
 // uSpectrum[] is auto-declared by TD from the bound CHOP (15 samples) — do NOT
 // declare it here (redeclaration). It holds the normalised reduced-FFT bins.
@@ -328,19 +329,24 @@ void main()
         // a flicker on each kick). drive = both.
         float accent = uDroprepel;
         float drive  = uDroprepel + uModesustain;
+        // three pseudo-randoms from the per-occurrence seed → each mode instance
+        // gets unique orientation / size / angle so it never looks identical.
+        float h1 = fract(sin(uSeed * 91.7 + 1.3) * 43758.5453);
+        float h2 = fract(sin(uSeed * 47.3 + 11.0) * 24634.6345);
+        float h3 = fract(sin(uSeed * 113.1 + 5.0) * 19349.2148);
 
         if (fmode == 1) {
             // GATHER — pull toward an ORBITING focal point (angle stepped per
             // beat, two harmonics so it wanders); polarity flips suck-IN vs
             // blow-OUT. Curl overlay keeps it organic, not a clean implosion.
-            float a1 = uSoupdir;
-            float a2 = uSoupdir * 1.7 + 1.3;
+            float a1 = uSoupdir + h1 * 6.2831853;          // seed: random start angle
+            float a2 = uSoupdir * 1.7 + 1.3 + h2 * 3.1416;
             vec2 off = (vec2(cos(a1), sin(a1)) * 0.7 + vec2(cos(a2), sin(a2)) * 0.3);
-            vec2 foc = cen.xy + off * (uBoxMax.x - uBoxMin.x) * 0.28;
+            vec2 foc = cen.xy + off * (uBoxMax.x - uBoxMin.x) * (0.18 + 0.22 * h3);  // seed: radius
             vec2 pull = (foc - pos.xy) / (length(foc - pos.xy) + 1e-4);
-            // mostly beat-pulsed (+ a little sustain) so it doesn't collapse the
-            // whole cloud onto the point; the focal point also keeps moving.
-            vel.xy += pull * (accent * 0.45 + uModesustain * 0.2) * uBeatpol;
+            // gentler than before so a blow-out (negative polarity) doesn't shove
+            // a big pillowy negative-space hole; still reads as gather/release.
+            vel.xy += pull * (accent * 0.32 + uModesustain * 0.14) * uBeatpol;
             vel    += (curl * 0.65 + curl2 * 0.25) * drive;
         } else if (fmode == 2) {
             // VORTEX — soft localized swirl (tangential, radial falloff so it's
@@ -369,25 +375,26 @@ void main()
             // CURRENT — an organic drifting wind: flows along uSoupdir but its
             // strength waves sinusoidally across the perpendicular axis (+ curl),
             // so it reads as flowing ribbons/currents, not a rigid translation.
-            vec2  wind = vec2(cos(uSoupdir), sin(uSoupdir));
-            float w    = sin(dot(pos.xy - cen.xy, vec2(-wind.y, wind.x)) * 4.5);
+            vec2  wind = vec2(cos(uSoupdir + h1 * 6.2831853), sin(uSoupdir + h1 * 6.2831853));  // seed: heading
+            float w    = sin(dot(pos.xy - cen.xy, vec2(-wind.y, wind.x)) * (3.0 + 4.0 * h2));   // seed: wave freq
             vel.xy += wind * drive * (0.5 + 0.4 * w);
             vel    += (curl * 0.5 + curl2 * 0.2) * drive;
         } else if (fmode == 5) {
             // FOLD — counter-flow shear about the orbiting axis: the two sides
             // stream in opposite directions and FOLD into each other (taffy-like),
             // softened so the seam isn't a hard line. SUSTAINED so the fold develops.
-            vec2  ax   = vec2(cos(uSoupdir), sin(uSoupdir));
+            vec2  ax   = vec2(cos(uSoupdir + h1 * 3.1416), sin(uSoupdir + h1 * 3.1416));  // seed: fold axis
             float side = dot(pos.xy - cen.xy, vec2(-ax.y, ax.x)) / bhalf.y;
-            vel.xy += ax * tanh(side * 2.0) * drive * 0.7;
+            vel.xy += ax * tanh(side * (1.4 + 1.2 * h2)) * drive * 0.7;                   // seed: fold sharpness
             vel    += (curl * 0.5 + curl2 * 0.2) * drive;
         } else if (fmode >= 6) {
             // SHAPE ATTRACTORS — particles briefly ASSUME an abstract 3D shape,
             // tumbled into a different orientation by uSoupdir. Pull each particle
             // toward the nearest point on the shape's surface (sustained drive →
             // the form coalesces during the dwell, then releases on mode switch).
-            mat3 R    = rotYP(uSoupdir, uSoupdir * 0.5 + 0.7);   // orientation
-            vec3 s    = bhalf * 0.7;                              // shape half-extents (fit box)
+            // seed: random tumble orientation + size, so each shape occurrence differs.
+            mat3 R    = rotYP(uSoupdir + h1 * 6.2831853, uSoupdir * 0.5 + 0.7 + h2 * 3.1416);
+            vec3 s    = bhalf * (0.55 + 0.3 * h3);               // shape half-extents (fit box)
             vec3 pl   = transpose(R) * (pos - cen);              // particle in shape-local space
             if (fmode == 9) {
                 // TUNNEL — pull onto a cylinder WALL (radial in the local XY) and
