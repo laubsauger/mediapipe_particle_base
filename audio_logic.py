@@ -103,22 +103,30 @@ def default_params():
         # smoothed hard so exposure/soup-brightness swell instead of strobe.
         "glow_smooth":    0.22,
         # drop surge detector (rising-edge in breath = "the drop")
-        "drop_thresh":    1.8,    # breath rise rate (1/s) that counts as a drop — high so only REAL drops fire, not every kick
+        "drop_thresh":    2.6,    # breath rise rate (1/s) that counts as a drop — higher = less twitchy (relaxed swells don't trigger)
+        # ABSOLUTE loudness gate: the AGC normalises a quiet track up to full
+        # scale, so relaxed songs read as "loud" and move fast. Scale the drive by
+        # the genuine (un-AGC'd) loudness so relaxed = calm, energetic = lively.
+        "loud_ref":       0.5,    # natural-dynamic level that counts as "full energy"
         "drop_minlevel":  0.45,   # breath must be at least this high to fire
         "drop_release":   0.55,   # s — how long the shockwave envelope lasts
-        "drop_turn":      1.4,    # rad — soup-flow rotation on a real drop (smaller = smoother)
-        "snare_turn":     0.25,   # rad — SMALL soup-flow rotation per snare (subtle direction variety)
-        "kick_turn":      0.15,   # rad — soup-flow rotation per KICK (smaller = smoother, less hectic rotation)
+        "drop_turn":      1.0,    # rad — soup-flow rotation on a real drop (smaller = slower evolution)
+        "snare_turn":     0.12,   # rad — tiny soup-flow rotation per snare
+        "kick_turn":      0.08,   # rad — soup-flow rotation per KICK (small = slow heading evolution, orientation holds)
         "mode_fade_tau":  0.45,   # s — force eases to 0 and back on each mode switch → smooth transitions, not jumps
+        # hue drift (smooth colour, no per-beat blink)
+        "hue_step":       0.5,    # rad nudged forward per snare/beat
+        "hue_drop":       1.1,    # rad nudged on a drop (bigger colour shift)
+        "hue_tau":        0.55,   # s — heavy smoothing so the colour EASES, never snaps
         "beat_smooth":    0.05,   # softens the kick's instant attack into a quick SWELL → organic, less poppy
         # mid-peak (novelty) onset → swirl disturbance
         "mid_base_tau":   0.6,    # slow baseline the mid is compared against (novelty detection)
-        "mid_peak_thresh": 0.12,  # how far mid must rise above its baseline to count as a peak
-        "mid_release":    0.25,   # s — swirl-burst envelope length
+        "mid_peak_thresh": 0.3,   # how far mid must rise above baseline to count as a peak — higher = swirls fire LESS often (only strong mid hits)
+        "mid_release":    0.55,   # s — swirl-burst envelope length (longer = a real swirl, not a flick)
         "bass_base_tau":  1.6,    # slow low-end baseline the kick is compared against
         "blow_thresh":    0.22,   # how far a kick's low-end must exceed baseline to fully blow OUT (vs gather)
-        "mode_every":     24,     # advance the force mode every N kicks if no drop arrives first (longer dwell = less busy)
-        "mode_min_dwell": 12,     # a mode must hold at least this many kicks before a drop can switch it → time to read/develop
+        "mode_every":     48,     # advance the force mode every N kicks if no drop arrives first (long dwell = slow evolution, modes STAY)
+        "mode_min_dwell": 30,     # a mode must hold at least this many kicks before a drop can switch it → it really settles before changing
         # --- PACING (for slow / atmospheric music) ---
         "trig_interval":  1,      # fire the force SURGE every Nth kick (1 = every kick; 2-4 = sparser, calmer)
         "dur_scale":      1.0,    # multiplies all envelope/hold durations (>1 = longer, more evolving/atmospheric)
@@ -131,7 +139,7 @@ def default_params():
         "idle_thresh":    0.42,   # energy below this fades idle IN (chill music included)
         "idle_amt":       0.5,    # strength of the idle drive (gentle surges + mode shaping)
         "idle_rate":      0.07,   # Hz — slow idle pulse rate (breaths per second)
-        "idle_mode_secs": 11.0,   # advance the force mode every N seconds while idle (keeps shapes/explosions evolving)
+        "idle_mode_secs": 22.0,   # advance the force mode every N seconds while idle (slow — a shape holds ~20s before morphing)
         "idle_cycle_min": 0.25,   # idle fade above this advances modes + cycles (so chill, not just silent, evolves)
         # --- BREATHING ROOM (dynamics-driven minimum time between surges) ---
         "surge_cd_min":   0.22,   # s — min gap between surges at full intensity (responsive)
@@ -175,6 +183,9 @@ def fresh_state(n_spec=15):
         # random seed re-rolled each mode/effect occurrence → every instance of a
         # mode looks a bit different (orientation / size / radius / angle jitter).
         "seed": 0.5,
+        # smoothed, ACCUMULATING hue — beats nudge it forward and it EASES there
+        # (never snaps back), so colour drifts instead of blinking on every hit.
+        "hue_accum": 0.0, "hue_smooth": 0.0,
         # gated force surge + idle evolution state
         "surge": 0.0, "trig_count": 0, "modedrive": 0.0,
         "idle_phase": 0.0, "idle_mode_timer": 0.0,
@@ -202,7 +213,7 @@ def output_names(n_spec=15):
     return (["kick", "snare", "hat", "pulse", "bass", "breath", "build",
              "glow", "drop", "dropdir",
              "mid", "high", "pressure", "circulation", "surface", "beat",
-             "midhit", "beatpolarity", "forcemode", "surge", "modedrive", "seed"]
+             "midhit", "beatpolarity", "forcemode", "surge", "modedrive", "seed", "hue"]
             + ["spec%d" % i for i in range(n_spec)])
 
 
@@ -293,6 +304,7 @@ def process(state, features, dt, params):
     if (rise > params["drop_thresh"] and state["breath"] > params["drop_minlevel"]
             and state["drop"] < 0.35):
         state["drop"] = 1.0
+        state["hue_accum"] += params["hue_drop"]   # bigger colour shift on a drop
         # each drop rotates the soup-flow direction → the disturbance visibly
         # changes heading on the drop (wrapped to keep the float bounded).
         state["dropdir"] = math.fmod(state["dropdir"] + params["drop_turn"], 6.2831853)
@@ -336,6 +348,7 @@ def process(state, features, dt, params):
             # asymmetric: full gather-IN (+1), but blow-OUT capped gentle (down to
             # ~−0.4) so it never evacuates a big pillowy negative-space hole.
             state["beatpolarity"] = 1.0 - 1.4 * blow
+            state["hue_accum"] += params["hue_step"]   # drift colour forward on the beat
         # beat-count fallback: advance the force mode periodically even without
         # drops, so a steady non-dropping track still explores all modes.
         mev = max(2, int(params["mode_every"]))
@@ -347,6 +360,8 @@ def process(state, features, dt, params):
     # a real drop blows OUT, but gently (−0.5) so it doesn't punch a hole.
     if state["drop"] > 0.5:
         state["beatpolarity"] = -0.5
+    # hue eases toward its accumulated target → smooth colour drift, no blink.
+    state["hue_smooth"] = smooth(state["hue_smooth"], state["hue_accum"], dt, params["hue_tau"])
     # surge envelope decays (length × dur_scale → longer = more atmospheric).
     state["surge"] = state["surge"] * math.exp(-dt / max(params["surge_release"] * dur, 1e-3))
 
@@ -376,8 +391,11 @@ def process(state, features, dt, params):
     # surge the force layer sees = max(audio surge, idle pulse); modedrive = the
     # sustained shaping drive = max(audio energy, idle baseline). Both eased by
     # the mode-transition fade.
-    surge_out = max(state["surge"] * alive, idle_pulse) * state["mode_fade"]
-    state["modedrive"] = max(state["glow"] * alive, idlef * params["idle_amt"] * 0.7) * state["mode_fade"]
+    # ABSOLUTE loudness (un-AGC'd) → relaxed songs stay genuinely calm; only real
+    # energy drives fast motion. breath is the smoothed natural-dynamic (0..1).
+    loud = max(0.0, min(1.0, state["breath"] / max(params["loud_ref"], 1e-3))) * alive
+    surge_out = max(state["surge"] * loud, idle_pulse) * state["mode_fade"]
+    state["modedrive"] = max(state["glow"] * loud, idlef * params["idle_amt"] * 0.7) * state["mode_fade"]
 
     # ---- build / release from the burst square wave --------------------
     burst = g("burst")
@@ -426,6 +444,7 @@ def process(state, features, dt, params):
         "forcemode": state["forcemode"],
         "surge": surge_out, "modedrive": state["modedrive"],
         "seed": state["seed"],
+        "hue": math.fmod(state["hue_smooth"], 6.2831853),
     }
     for i in range(n):
         out["spec%d" % i] = state["spec"][i]

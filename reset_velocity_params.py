@@ -72,7 +72,7 @@ RENDERER = {
     # Damping lives HERE now, not on Particle POP (whose Velocity Damping /
     # Initial Drag stay at 0). See bounds_reflect.glsl.
     'Forcescale':      0.008,  # per-cook force gain (dt*gain) into PartVel
-    'Velocitydamping': 0.22,   # fraction of velocity removed per cook (higher = calmer average motion)
+    'Velocitydamping': 0.16,   # fraction of velocity removed per cook (lower = movements carry longer/further)
     'Maxspeed':        8.0,    # hard clamp on |PartVel|
     'Forcedeadzone':   3.0,    # |f| below this = no push (kills rest-drift)
     'Forceref':        32.0,   # |f| mapped to full response — higher = more headroom, proportional
@@ -200,7 +200,8 @@ AUDIO = {
     'Audiodrop':         0.4,
     'Audiosoupdir':      1.0,
     'Audioblur':         0.5,    # organic on-beat defocus blur (beat_blur TOP)
-    'Audiobeat':         0.6,    # kick → visible radial push pulse (main "alive on beat" lever)
+    'Audiobeat':         0.85,   # main force depth (loud-gate keeps relaxed calm)
+    'Audioloudref':      0.5,    # loudness gate: natural-dynamic level = full energy (lower = reactive on quiet music)
     'Audiointerval':     1,      # surge every Nth kick (raise for slow/atmospheric)
     'Audioduration':     1.4,    # transform duration scale (>1 = longer, more evolving)
     'Audiomidswirl':     0.06,    # mid-peak → rotational swirl burst (2nd organic disturbance)

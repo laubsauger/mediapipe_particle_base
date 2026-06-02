@@ -98,6 +98,10 @@ def onCook(scriptOp):
     # (interval) and hold transforms longer (duration).
     params['trig_interval'] = int(_par('Audiointerval', params['trig_interval']))
     params['dur_scale']     = float(_par('Audioduration', params['dur_scale']))
+    # loudness gate: natural-dynamic level that counts as "full energy". LOWER =
+    # the layer reaches full strength on quieter music (more reactive); HIGHER =
+    # only loud parts drive strong motion (relaxed stays calm). Key tuning knob.
+    params['loud_ref']      = float(_par('Audioloudref', params['loud_ref']))
 
     dt = 1.0 / max(1e-6, me.time.rate)
     out = al.process(state, features, dt, params)

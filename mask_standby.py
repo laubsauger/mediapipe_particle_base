@@ -76,7 +76,40 @@ def onCook(scriptOp):
     elif mode == 'Always':
         target = 1.0
     else:  # Standby
-        target = 1.0 - present
+        base = 1.0 - present     # 1 when nobody's there (logo screensaver), 0 when present
+        # OPTIONAL periodic branding pulse: instead of the logo sitting at full
+        # the whole time, fade it IN every `Maskpulseinterval` seconds (fade →
+        # hold → fade out), so standby is mostly free soup with the branding
+        # surfacing occasionally. Person present still overrides to 0.
+        pulse_on = bool(p.par.Maskpulse.eval()) if hasattr(p.par, 'Maskpulse') else False
+        if pulse_on:
+            interval = max(2.0, float(p.par.Maskpulseinterval.eval())
+                           if hasattr(p.par, 'Maskpulseinterval') else 30.0)
+            hold = float(p.par.Maskpulsehold.eval()) if hasattr(p.par, 'Maskpulsehold') else 6.0
+            pf   = max(0.1, float(p.par.Maskpulsefade.eval()) if hasattr(p.par, 'Maskpulsefade') else 3.0)
+            # The visible window (fade+hold+fade) must fit inside the interval with
+            # an off-gap, else the logo never fades back out (always on). Scale it
+            # down to 80% of the interval when it would overflow.
+            window = 2.0 * pf + hold
+            if window > interval * 0.8:
+                k = (interval * 0.8) / window
+                pf *= k
+                hold *= k
+            t = absTime.seconds % interval
+            if t < pf:
+                env = t / pf                                  # fade in
+            elif t < pf + hold:
+                env = 1.0                                     # hold (branding visible)
+            elif t < pf + hold + pf:
+                env = 1.0 - (t - pf - hold) / pf              # fade out
+            else:
+                env = 0.0                                     # away until next interval
+            # the branding pulse PUSHES THROUGH regardless of presence — it shows
+            # even while joints are visible. Between pulses (env=0) it's away and
+            # the field is free for interaction.
+            target = env
+        else:
+            target = base
 
     # Exponential smoothing toward target. Guard the stored prev — `amt`
     # multiplies the mask force in shaders; a single Inf there blows up every

@@ -344,9 +344,9 @@ void main()
             vec2 off = (vec2(cos(a1), sin(a1)) * 0.7 + vec2(cos(a2), sin(a2)) * 0.3);
             vec2 foc = cen.xy + off * (uBoxMax.x - uBoxMin.x) * (0.18 + 0.22 * h3);  // seed: radius
             vec2 pull = (foc - pos.xy) / (length(foc - pos.xy) + 1e-4);
-            // gentler than before so a blow-out (negative polarity) doesn't shove
-            // a big pillowy negative-space hole; still reads as gather/release.
-            vel.xy += pull * (accent * 0.32 + uModesustain * 0.14) * uBeatpol;
+            // strong enough to actually gather; blow-out stays gentle via the
+            // capped polarity (≈−0.4) so it still doesn't punch a hole.
+            vel.xy += pull * (accent * 0.5 + uModesustain * 0.5) * uBeatpol;
             vel    += (curl * 0.65 + curl2 * 0.25) * drive;
         } else if (fmode == 2) {
             // VORTEX — soft localized swirl (tangential, radial falloff so it's
@@ -356,10 +356,11 @@ void main()
             float rn   = length(r / bhalf.xy);
             float fall = smoothstep(0.0, 0.35, rn) * (1.0 - smoothstep(0.65, 1.05, rn));
             vec2  tang = vec2(-r.y, r.x) / (length(r) + 1e-4);
-            // smooth one-way swirl + curl for organic break-up (no in/out radial
-            // ripple — that read as a back-and-forth wobble).
-            vel.xy += tang * uBeatpol * drive * fall;
-            vel    += curl * 0.6 * drive;
+            // STEADY spin direction for the whole occurrence (from the seed) — NOT
+            // uBeatpol, which flipped left/right every beat. A real sustained twirl.
+            float spin = (h2 > 0.5) ? 1.0 : -1.0;
+            vel.xy += tang * spin * drive * 2.8 * fall;   // proper strong twirl
+            vel    += curl * 0.35 * drive;
         } else if (fmode == 3) {
             // WAVEFORM — the 15 reduced-FFT bins define a height curve across X;
             // pull each particle toward it so the soup arranges into the
@@ -369,24 +370,24 @@ void main()
             int   b   = int(clamp(nrm.x, 0.0, 0.999) * 15.0);
             float amp = uSpectrum[b];
             float ty  = uBoxMin.y + (0.25 + amp * 0.6) * (uBoxMax.y - uBoxMin.y);
-            vel.y += (ty - pos.y) * drive * 1.5;          // SUSTAINED → the shape forms
-            vel   += curl * 0.3 * drive;
+            vel.y += (ty - pos.y) * drive * 2.8;          // strong SUSTAINED pull → the waveform forms
+            vel   += curl * 0.2 * drive;
         } else if (fmode == 4) {
             // CURRENT — an organic drifting wind: flows along uSoupdir but its
             // strength waves sinusoidally across the perpendicular axis (+ curl),
             // so it reads as flowing ribbons/currents, not a rigid translation.
             vec2  wind = vec2(cos(uSoupdir + h1 * 6.2831853), sin(uSoupdir + h1 * 6.2831853));  // seed: heading
             float w    = sin(dot(pos.xy - cen.xy, vec2(-wind.y, wind.x)) * (3.0 + 4.0 * h2));   // seed: wave freq
-            vel.xy += wind * drive * (0.5 + 0.4 * w);
-            vel    += (curl * 0.5 + curl2 * 0.2) * drive;
+            vel.xy += wind * drive * (0.9 + 0.6 * w);
+            vel    += (curl * 0.4 + curl2 * 0.2) * drive;
         } else if (fmode == 5) {
             // FOLD — counter-flow shear about the orbiting axis: the two sides
             // stream in opposite directions and FOLD into each other (taffy-like),
             // softened so the seam isn't a hard line. SUSTAINED so the fold develops.
             vec2  ax   = vec2(cos(uSoupdir + h1 * 3.1416), sin(uSoupdir + h1 * 3.1416));  // seed: fold axis
             float side = dot(pos.xy - cen.xy, vec2(-ax.y, ax.x)) / bhalf.y;
-            vel.xy += ax * tanh(side * (1.4 + 1.2 * h2)) * drive * 0.7;                   // seed: fold sharpness
-            vel    += (curl * 0.5 + curl2 * 0.2) * drive;
+            vel.xy += ax * tanh(side * (1.4 + 1.2 * h2)) * drive * 1.3;                   // seed: fold sharpness
+            vel    += (curl * 0.4 + curl2 * 0.2) * drive;
         } else if (fmode >= 6) {
             // SHAPE ATTRACTORS — particles briefly ASSUME an abstract 3D shape,
             // tumbled into a different orientation by uSoupdir. Pull each particle
@@ -403,9 +404,9 @@ void main()
                 // flow direction flips with polarity (toward / away from camera).
                 float Rt   = s.x * 0.55;
                 vec2  wall = pl.xy / (length(pl.xy) + 1e-4) * Rt;
-                vec3  lf   = vec3((wall - pl.xy) * 1.0, uBeatpol * 0.6);  // radial pull + axial flow
+                vec3  lf   = vec3((wall - pl.xy) * 2.2, uBeatpol * 0.9);  // strong radial pull + axial flow
                 vel += R * lf * drive;
-                vel += curl * 0.2 * drive;
+                vel += curl * 0.15 * drive;
             } else {
                 vec3 tl;                                          // target in shape-local space
                 if (fmode == 6) {
@@ -423,8 +424,8 @@ void main()
                     tl = vec3(pl.xy, 0.0);
                 }
                 vec3 tgt = R * tl + cen;
-                vel += (tgt - pos) * drive * 1.4;
-                vel += curl * 0.25 * drive;                      // keep it alive, not a frozen shell
+                vel += (tgt - pos) * drive * 2.8;                // strong → the shape actually coalesces
+                vel += curl * 0.15 * drive;                      // a touch of life, doesn't disperse the form
             }
         } else {
             // REST (mode 0 / default) — downtime. Faint curl breath only, so the
