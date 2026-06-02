@@ -36,6 +36,10 @@ Pars (Mask page)
   Maskfade       standby crossfade seconds
   Maskburstcolor HDR multiplier on the swap-time glow (paired with `morph`)
   Maskdepthmix   0=logos only, 1=depth only; intermediate blends both
+  Maskvisfloor   per-joint visibility floor for presence detection
+  Maskminjoints  how many joints must clear the floor to count as "present"
+  Maskpulse      toggle — periodic branding pulse in standby
+  Maskpulseinterval / Maskpulsehold / Maskpulsefade  the pulse timing (seconds)
 
 Usage
 -----
@@ -101,6 +105,15 @@ _ensure_float(pg, 'Maskhuestep',   'Hue Step / Swap (rad)', 2.4, -6.28, 6.28)
 _ensure_float(pg, 'Maskfade',      'Standby Fade (s)',  1.5, 0.0, 6.0,  cmax=False)
 _ensure_float(pg, 'Maskburstcolor','Swap Burst Color',  1.0, 0.0, 4.0,  cmax=False)
 _ensure_float(pg, 'Maskdepthmix',  'Depth Mix (0=logos, 1=depth)', 0.0, 0.0, 1.0)
+# Presence detection (device-robust standby — count confidently-visible joints).
+_ensure_float(pg, 'Maskvisfloor',   'Visibility Floor',       0.5, 0.0, 1.0)
+_ensure_float(pg, 'Maskminjoints',  'Min Joints Present',     3,   1.0, 10.0)
+# Optional periodic branding pulse in standby (logo fades in every N seconds,
+# pushing through even when someone is present).
+_ensure_toggle(pg, 'Maskpulse',         'Standby Logo Pulse', False)
+_ensure_float(pg, 'Maskpulseinterval',  'Logo Pulse Interval (s)', 30.0, 4.0, 120.0, cmax=False)
+_ensure_float(pg, 'Maskpulsehold',      'Logo Pulse Hold (s)',      6.0, 0.0, 30.0,  cmax=False)
+_ensure_float(pg, 'Maskpulsefade',      'Logo Pulse Fade (s)',      3.0, 0.2, 15.0,  cmax=False)
 
 
 # -------------------------------------------------------------------- inputs
