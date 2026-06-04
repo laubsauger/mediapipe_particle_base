@@ -328,8 +328,10 @@ void main()
         // accent = the rhythmic beat pulse; sustain = continuous energy-scaled
         // drive so a mode keeps shaping the field over its whole dwell (not just
         // a flicker on each kick). drive = both.
-        float accent = uDroprepel;
-        float drive  = uDroprepel + uModesustain;
+        // Modes are driven by the SMOOTH sustained drive so the motion flows
+        // instead of jerking on every beat. The per-beat surge contributes only a
+        // little here — its punch lives in the radial push block (uDroprepel) below.
+        float drive = uModesustain + uDroprepel * 0.15;
         // three pseudo-randoms from the per-occurrence seed → each mode instance
         // gets unique orientation / size / angle so it never looks identical.
         float h1 = fract(sin(uSeed * 91.7 + 1.3) * 43758.5453);
@@ -345,9 +347,9 @@ void main()
             vec2 off = (vec2(cos(a1), sin(a1)) * 0.7 + vec2(cos(a2), sin(a2)) * 0.3);
             vec2 foc = cen.xy + off * (uBoxMax.x - uBoxMin.x) * (0.18 + 0.22 * h3);  // seed: radius
             vec2 pull = (foc - pos.xy) / (length(foc - pos.xy) + 1e-4);
-            // strong enough to actually gather; blow-out stays gentle via the
-            // capped polarity (≈−0.4) so it still doesn't punch a hole.
-            vel.xy += pull * (accent * 0.5 + uModesustain * 0.5) * uBeatpol;
+            // smooth sustained gather (no per-beat accent spike); polarity sets
+            // suck-in vs gentle blow-out.
+            vel.xy += pull * drive * 0.6 * uBeatpol;
             vel    += (curl * 0.65 + curl2 * 0.25) * drive;
         } else if (fmode == 2) {
             // VORTEX — soft localized swirl (tangential, radial falloff so it's
