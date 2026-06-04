@@ -115,9 +115,10 @@ def default_params():
         "kick_turn":      0.08,   # rad — soup-flow rotation per KICK (small = slow heading evolution, orientation holds)
         "mode_fade_tau":  0.45,   # s — force eases to 0 and back on each mode switch → smooth transitions, not jumps
         # hue drift (smooth colour, no per-beat blink)
-        "hue_step":       0.5,    # rad nudged forward per snare/beat
-        "hue_drop":       1.1,    # rad nudged on a drop (bigger colour shift)
+        "hue_step":       0.35,   # rad nudged per beat (random direction, bounded)
+        "hue_drop":       0.6,    # rad nudged on a drop
         "hue_tau":        0.55,   # s — heavy smoothing so the colour EASES, never snaps
+        "hue_max":        0.7,    # rad — hue stays within ±this of the base palette → never spins into green/yellow
         "beat_smooth":    0.05,   # softens the kick's instant attack into a quick SWELL → organic, less poppy
         # mid-peak (novelty) onset → swirl disturbance
         "mid_base_tau":   0.6,    # slow baseline the mid is compared against (novelty detection)
@@ -304,7 +305,9 @@ def process(state, features, dt, params):
     if (rise > params["drop_thresh"] and state["breath"] > params["drop_minlevel"]
             and state["drop"] < 0.35):
         state["drop"] = 1.0
-        state["hue_accum"] += params["hue_drop"]   # bigger colour shift on a drop
+        _hm = params["hue_max"]
+        state["hue_accum"] = max(-_hm, min(_hm,
+            state["hue_accum"] + (_RND.random() - 0.5) * 2.0 * params["hue_drop"]))
         # each drop rotates the soup-flow direction → the disturbance visibly
         # changes heading on the drop (wrapped to keep the float bounded).
         state["dropdir"] = math.fmod(state["dropdir"] + params["drop_turn"], 6.2831853)
@@ -348,7 +351,10 @@ def process(state, features, dt, params):
             # asymmetric: full gather-IN (+1), but blow-OUT capped gentle (down to
             # ~−0.4) so it never evacuates a big pillowy negative-space hole.
             state["beatpolarity"] = 1.0 - 1.4 * blow
-            state["hue_accum"] += params["hue_step"]   # drift colour forward on the beat
+            # bounded random-walk hue → wanders near the base palette, never the full wheel
+            _hm = params["hue_max"]
+            state["hue_accum"] = max(-_hm, min(_hm,
+                state["hue_accum"] + (_RND.random() - 0.5) * 2.0 * params["hue_step"]))
         # beat-count fallback: advance the force mode periodically even without
         # drops, so a steady non-dropping track still explores all modes.
         mev = max(2, int(params["mode_every"]))

@@ -112,7 +112,7 @@ add_float(sensing, 'Trustthreshold', 'Trust Threshold (commit last-good)',
 add_float(sensing, 'Velocitysmooth', 'Velocity Smooth (s)',
           0.08, 0.0, 0.5, clamp_max=False)
 add_float(sensing, 'Accelsmooth', 'Accel Smooth (s)',
-          0.05, 0.0, 0.5, clamp_max=False)
+          0.0, 0.0, 0.5, clamp_max=False)   # 0 = no spectrum-wide hue spin (stays in palette)
 
 # Speed normalisation — raw units/s divided by this hits emit=1.
 # 0..1 space; 5.0 means "moving all the way across the frame in 0.2s = full emit".
@@ -473,7 +473,7 @@ add_float(render, 'Soupcyclespeed', 'Soup Color Cycle Speed',
 # so the soup colour drifts through the spectrum, not just sweeping the fixed
 # A/B/C bands. 0 = fixed palette; 0.05 ≈ a full hue cycle every ~2 min.
 add_float(render, 'Soupevolve', 'Soup Color Evolve (hue/sec)',
-          0.05, 0.0, 0.5, clamp_max=False)
+          0.0, 0.0, 0.5, clamp_max=False)   # 0 = no spectrum-wide hue spin (stays in palette)
 # Soup velocity look: soup speed at which it reads as "fast". Below it, slow;
 # above, it hits full velocity-brightness. Match to the turbulence speed range.
 add_float(render, 'Soupspeedref', 'Soup Speed Reference (fast=ref)',

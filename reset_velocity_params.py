@@ -72,7 +72,7 @@ RENDERER = {
     # Damping lives HERE now, not on Particle POP (whose Velocity Damping /
     # Initial Drag stay at 0). See bounds_reflect.glsl.
     'Forcescale':      0.008,  # per-cook force gain (dt*gain) into PartVel
-    'Velocitydamping': 0.16,   # fraction of velocity removed per cook (lower = movements carry longer/further)
+    'Velocitydamping': 0.19,   # fraction of velocity removed per cook (eased speed)
     'Maxspeed':        8.0,    # hard clamp on |PartVel|
     'Forcedeadzone':   3.0,    # |f| below this = no push (kills rest-drift)
     'Forceref':        32.0,   # |f| mapped to full response — higher = more headroom, proportional
@@ -131,7 +131,8 @@ RENDERER = {
     'Soupturb':        0.05,    # drives soup curl drift; saturates the cap below
     'Soupmaxspeed':    0.008,   # hard cap on idle soup speed (the real "calm" knob)
     'Soupcyclespeed':  0.018,   # soup color-ramp cycle speed — SLOW so colour evolves organically (was 0.03)
-    'Soupevolve':      0.025,   # soup palette HUE rotation over time — slow drift (was 0.05)
+    'Soupevolve':      0.0,     # hue spin OFF — kept palette in blue/purple (no sweep into green/yellow)
+    'Personhuestep':   0.4,     # per-person tint rotation, small so multi-person stays cool (was 1.5)
     'Soupgradrot':     0.04,    # slow direction-rotation of the colour bands (rad/s) — alive without input
     'Soupsetspeed':    0.04,    # palette-SET rotation (sets/s): soup crossfades through the color_attr triad bank (set0=preset triad). 0=stay on preset.
     'Fieldedgefade':   0.02,    # smooth border falloff on the sampled flow field (field_edge TOP) — kills the hard edge that clumped particles at the walls

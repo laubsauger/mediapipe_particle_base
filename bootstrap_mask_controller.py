@@ -101,7 +101,7 @@ _ensure_menu (pg, 'Maskmode',      'Mode', ['Off','Standby','Always'], 'Standby'
 _ensure_toggle(pg, 'Maskcycle',    'Auto Cycle Sources', True)
 _ensure_float(pg, 'Maskcycletime', 'Cycle Time (s)',   12.0, 0.0, 60.0,  cmax=False)
 _ensure_float(pg, 'Maskswitchdur', 'Switch Duration (s)', 1.5, 0.05, 8.0, cmax=False)
-_ensure_float(pg, 'Maskhuestep',   'Hue Step / Swap (rad)', 2.4, -6.28, 6.28)
+_ensure_float(pg, 'Maskhuestep',   'Hue Step / Swap (rad)', 0.0, -6.28, 6.28)
 _ensure_float(pg, 'Maskfade',      'Standby Fade (s)',  1.5, 0.0, 6.0,  cmax=False)
 _ensure_float(pg, 'Maskburstcolor','Swap Burst Color',  1.0, 0.0, 4.0,  cmax=False)
 _ensure_float(pg, 'Maskdepthmix',  'Depth Mix (0=logos, 1=depth)', 0.0, 0.0, 1.0)

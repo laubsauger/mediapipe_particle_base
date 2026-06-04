@@ -80,6 +80,7 @@ uniform float uBeatpol;      // audio: beat polarity (+1 = gather/suck-in, −1 
 uniform float uMidswirl;     // audio: MID-peak swirl burst — a rotational (tangential) disturbance, distinct from the kick gather
 uniform float uForcemode;    // audio: which beat FORCE MODE (0 rest,1 gather,2 vortex,3 waveform,4 current,5 fold) — cycles on drops, holds a min dwell
 uniform float uSeed;         // audio: per-occurrence RANDOM seed (re-rolled each mode switch) → orientation/size/angle jitter so effects never look identical
+uniform float uTime;         // absTime.seconds — slow continuous tumble for the shape attractors (3D feel)
 uniform float uModesustain;  // audio: CONTINUOUS energy-scaled drive (not just the beat pulse) so shaping modes (waveform/fold/current) actually build up and read
 // uSpectrum[] is auto-declared by TD from the bound CHOP (15 samples) — do NOT
 // declare it here (redeclaration). It holds the normalised reduced-FFT bins.
@@ -393,8 +394,11 @@ void main()
             // tumbled into a different orientation by uSoupdir. Pull each particle
             // toward the nearest point on the shape's surface (sustained drive →
             // the form coalesces during the dwell, then releases on mode switch).
-            // seed: random tumble orientation + size, so each shape occurrence differs.
-            mat3 R    = rotYP(uSoupdir + h1 * 6.2831853, uSoupdir * 0.5 + 0.7 + h2 * 3.1416);
+            // Random START orientation (seed) + a slow CONTINUOUS tumble (uTime)
+            // about both yaw and pitch → the shape rotates through 3D while held,
+            // giving a clear three-dimensional read instead of a flat decal.
+            mat3 R    = rotYP(uSoupdir + h1 * 6.2831853 + uTime * 0.13,
+                              uSoupdir * 0.5 + 0.7 + h2 * 3.1416 + uTime * 0.09);
             vec3 s    = bhalf * (0.55 + 0.3 * h3);               // shape half-extents (fit box)
             vec3 pl   = transpose(R) * (pos - cen);              // particle in shape-local space
             if (fmode == 9) {

@@ -118,12 +118,14 @@ vec3 soupPalette3(float t, vec3 A, vec3 B, vec3 C)
 const int NSOUPSETS = 4;
 void soupSet(int i, out vec3 A, out vec3 B, out vec3 C)
 {
-    if (i == 1) {            // teal → warm gold → coral  (cool/warm contrast)
-        A = vec3(0.05, 0.55, 0.62); B = vec3(0.92, 0.70, 0.22); C = vec3(0.90, 0.30, 0.34);
-    } else if (i == 2) {     // violet → rose → amber  (dusk)
-        A = vec3(0.45, 0.20, 0.78); B = vec3(0.92, 0.34, 0.60); C = vec3(0.95, 0.62, 0.26);
-    } else if (i == 3) {     // emerald → cyan → deep indigo  (aurora)
-        A = vec3(0.10, 0.72, 0.46); B = vec3(0.14, 0.60, 0.86); C = vec3(0.26, 0.20, 0.72);
+    // Palette sets deliberately kept in the BLUE/PURPLE/MAGENTA range — the
+    // environment didn't want yellow/green, so no warm/green stops here.
+    if (i == 1) {            // deep blue → violet → magenta
+        A = vec3(0.10, 0.25, 0.78); B = vec3(0.42, 0.18, 0.82); C = vec3(0.72, 0.22, 0.78);
+    } else if (i == 2) {     // indigo → purple → blue-cyan
+        A = vec3(0.18, 0.18, 0.72); B = vec3(0.46, 0.22, 0.86); C = vec3(0.16, 0.46, 0.88);
+    } else if (i == 3) {     // violet → magenta-pink → blue
+        A = vec3(0.45, 0.20, 0.84); B = vec3(0.78, 0.26, 0.72); C = vec3(0.22, 0.34, 0.90);
     } else {                 // set 0 — preset-driven triad
         A = uSoupA; B = uSoupB; C = uSoupC;
     }
@@ -144,11 +146,13 @@ vec3 soupPaletteBank(float t, float bank)
     return soupPalette3(t, mix(a0, a1, bf), mix(b0, b1, bf), mix(c0, c1, bf));
 }
 
+// Movement limb palette — kept in the cool BLUE/PURPLE/MAGENTA range (no
+// red/yellow/green, per the environment's colour brief).
 const vec3 kPalette[5] = vec3[](
-    vec3(0.95, 0.30, 0.20),  // Lid 0 — left_wrist  (warm red)
+    vec3(0.30, 0.42, 0.95),  // Lid 0 — left_wrist  (blue)
     vec3(0.20, 0.65, 0.95),  // Lid 1 — right_wrist (cyan)
-    vec3(0.95, 0.85, 0.20),  // Lid 2 — left_ankle  (yellow)
-    vec3(0.55, 0.95, 0.30),  // Lid 3 — right_ankle (lime)
+    vec3(0.55, 0.30, 0.95),  // Lid 2 — left_ankle  (violet)
+    vec3(0.40, 0.55, 0.95),  // Lid 3 — right_ankle (periwinkle)
     vec3(0.85, 0.40, 0.95)   // Lid 4 — nose        (magenta)
 );
 

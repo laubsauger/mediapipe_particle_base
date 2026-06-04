@@ -35,8 +35,8 @@ PRESETS = {
     # Deep space — cool blues/violets/magenta, soft glowing dust, calm.
     'Cosmic': {
         'Soupcola': (0.10, 0.30, 0.72), 'Soupcolb': (0.42, 0.18, 0.82),
-        'Soupcolc': (0.16, 0.58, 0.85),
-        'Emberhot': (1.5, 1.7, 2.4), 'Embermid': (0.35, 0.55, 1.5),
+        'Soupcolc': (0.22, 0.30, 0.88),
+        'Emberhot': (1.5, 1.6, 2.4), 'Embermid': (0.35, 0.30, 1.5),
         'Emberold': (0.08, 0.12, 0.45),
         'Bloomstrength': 1.2, 'Bloomthreshold': 1.05, 'Feedbackfade': 0.55,
         'Streakenable': 1.0, 'Streakintensity': 0.85, 'Streaklength': 150.0,
@@ -74,8 +74,8 @@ PRESETS = {
     # Neon / cyber — saturated electric cyan/magenta/lime, punchy, strong glow.
     'Neon': {
         'Soupcola': (0.05, 0.65, 0.75), 'Soupcolb': (0.70, 0.10, 0.65),
-        'Soupcolc': (0.45, 0.75, 0.10),
-        'Emberhot': (2.2, 2.2, 2.4), 'Embermid': (0.1, 1.2, 1.0),
+        'Soupcolc': (0.30, 0.22, 0.82),
+        'Emberhot': (2.2, 2.2, 2.4), 'Embermid': (0.30, 0.55, 1.5),
         'Emberold': (0.5, 0.05, 0.5),
         'Bloomstrength': 1.8, 'Bloomthreshold': 0.9, 'Feedbackfade': 0.68,
         'Streakenable': 1.0, 'Streakintensity': 1.1, 'Streaklength': 180.0,
