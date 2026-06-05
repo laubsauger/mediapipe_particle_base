@@ -302,17 +302,9 @@ void main()
         // +inward near a min wall, −inward near a max wall.
         vec3 inward = pmin - pmax;
         vel += inward * uWallrepel * 0.2;
-
-        // Round the rectangular silhouette toward an ELLIPSE: a gentle extra
-        // inward pull only beyond an inscribed ellipse (corners), so the mass
-        // reads as a soft oval — no hard rectangle to see rotating. Corners only,
-        // so the bulk of the frame still fills.
-        vec3 cen3  = (uBoxMin + uBoxMax) * 0.5;
-        vec3 half3 = (uBoxMax - uBoxMin) * 0.5;
-        vec2 nq    = (pos.xy - cen3.xy) / half3.xy;     // 1.0 = on the inscribed ellipse
-        float over = clamp((length(nq) - 0.9) / 0.2, 0.0, 1.0);
-        vel.xy -= ((pos.xy - cen3.xy) / (length(pos.xy - cen3.xy) + 1e-4))
-                  * over * uWallrepel * 0.5;
+        // (Removed the elliptical silhouette-rounding — it forced the whole mass
+        // into an oval regardless of mode. Containment is now just the soft
+        // per-axis wall push above.)
     }
 
     // ---- AUDIO BEAT surge (organic) ----------------------------------------
@@ -401,7 +393,7 @@ void main()
             // giving a clear three-dimensional read instead of a flat decal.
             mat3 R    = rotYP(uSoupdir + h1 * 6.2831853 + uTime * 0.13,
                               uSoupdir * 0.5 + 0.7 + h2 * 3.1416 + uTime * 0.09);
-            vec3 s    = bhalf * (0.55 + 0.3 * h3);               // shape half-extents (fit box)
+            vec3 s    = bhalf * (0.33 + 0.18 * h3);              // smaller → reads as a distinct form, not a frame-filling blob
             vec3 pl   = transpose(R) * (pos - cen);              // particle in shape-local space
             if (fmode == 9) {
                 // TUNNEL — pull onto a cylinder WALL (radial in the local XY) and
@@ -420,7 +412,7 @@ void main()
                     tl = normalize(pl + vec3(1e-4)) * s;
                 } else if (fmode == 7) {
                     // TORUS — big ring radius in the local XY plane, circular tube.
-                    float Rt = s.x * 0.7, rt = s.x * 0.32;
+                    float Rt = s.x * 0.8, rt = s.x * 0.22;   // thinner tube → clear ring/hole
                     vec2  c2 = pl.xy / (length(pl.xy) + 1e-4) * Rt;
                     vec3  q  = pl - vec3(c2, 0.0);
                     tl = vec3(c2, 0.0) + normalize(q + vec3(1e-4)) * rt;

@@ -203,6 +203,9 @@ AUDIO = {
     'Audioblur':         0.5,    # organic on-beat defocus blur (beat_blur TOP)
     'Audiobeat':         0.85,   # main force depth (loud-gate keeps relaxed calm)
     'Audioloudref':      0.5,    # loudness gate: natural-dynamic level = full energy (lower = reactive on quiet music)
+    'Audiomodesel':      'Sequential',  # Sequential / Random / Fixed
+    'Audiomodefixed':    'Gather',       # which effect when Fixed
+    'Audioisolate':      0,             # isolate the selected mode (no overlays) for analysis
     'Audiointerval':     1,      # surge every Nth kick (raise for slow/atmospheric)
     'Audioduration':     1.4,    # transform duration scale (>1 = longer, more evolving)
     'Audiomidswirl':     0.06,    # mid-peak → rotational swirl burst (2nd organic disturbance)

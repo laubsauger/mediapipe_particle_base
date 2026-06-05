@@ -102,6 +102,13 @@ def onCook(scriptOp):
     # the layer reaches full strength on quieter music (more reactive); HIGHER =
     # only loud parts drive strong motion (relaxed stays calm). Key tuning knob.
     params['loud_ref']      = float(_par('Audioloudref', params['loud_ref']))
+    # Manual mode selection: Sequential (cycle) / Random / Fixed (hold one).
+    msel = getattr(parent().par, 'Audiomodesel', None)
+    if msel is not None:
+        params['mode_select'] = ('sequential', 'random', 'fixed')[int(msel.menuIndex)]
+    mfix = getattr(parent().par, 'Audiomodefixed', None)
+    if mfix is not None:
+        params['mode_fixed'] = int(mfix.menuIndex)   # menu index == mode id
 
     dt = 1.0 / max(1e-6, me.time.rate)
     out = al.process(state, features, dt, params)
@@ -118,10 +125,19 @@ def onCook(scriptOp):
     # (0.5 × mode 2 would select the wrong mode). Magnitude channels use master.
     CONTROL = ('forcemode', 'beatpolarity', 'dropdir', 'seed')
 
+    # ISOLATE: zero the additive disturbances (drop radial push, mid-swirl, the
+    # per-beat surge) so ONLY the selected force mode runs on its smooth sustained
+    # drive — for analysing/tuning a single effect cleanly.
+    isolate = bool(_par('Audioisolate', False))
+    OVERLAY = ('surge', 'drop', 'midhit')
+
     names = al.output_names(n_spec)
     scriptOp.numSamples = 1
     scriptOp.rate = me.time.rate
     for nm in names:
         ch = scriptOp.appendChan(nm)
-        ch[0] = float(out.get(nm, 0.0)) * (enable if nm in CONTROL else master)
+        val = float(out.get(nm, 0.0))
+        if isolate and nm in OVERLAY:
+            val = 0.0
+        ch[0] = val * (enable if nm in CONTROL else master)
     return

@@ -48,6 +48,21 @@ import random as _RND
 # ~1 in 4 steps is a rest; vortex is rare (it read as a cheap twirl). Edit freely.
 MODE_SEQ = [1, 3, 0, 6, 9, 0, 7, 5, 0, 8, 4, 0, 9, 6, 0, 1, 7, 0, 9, 8, 0, 3, 5, 0]
 
+# Mode ids ↔ names (for the Fixed selector dropdown; index = id).
+MODE_NAMES = ["Rest", "Gather", "Vortex", "Waveform", "Current", "Fold",
+              "Sphere", "Torus", "Sheet", "Tunnel"]
+
+
+def _pick_mode(state, params):
+    """Advance the force mode per the selection mode: 'random' jumps to a random
+    step of the playlist, anything else steps it in order. (Fixed is handled in
+    process() — it just holds mode_fixed and never calls this.)"""
+    if params.get("mode_select", "sequential") == "random":
+        state["seq_idx"] = _RND.randrange(len(MODE_SEQ))
+    else:
+        state["seq_idx"] = (int(state["seq_idx"]) + 1) % len(MODE_SEQ)
+    state["forcemode"] = float(MODE_SEQ[state["seq_idx"]])
+
 
 def _finite(v, default=0.0):
     try:
@@ -128,10 +143,15 @@ def default_params():
         "blow_thresh":    0.22,   # how far a kick's low-end must exceed baseline to fully blow OUT (vs gather)
         "mode_every":     48,     # advance the force mode every N kicks if no drop arrives first (long dwell = slow evolution, modes STAY)
         "mode_min_dwell": 30,     # a mode must hold at least this many kicks before a drop can switch it → it really settles before changing
+        # MODE SELECTION: 'sequential' = cycle the playlist, 'random' = random
+        # step each change, 'fixed' = hold mode_fixed (manual selection).
+        "mode_select":    "sequential",
+        "mode_fixed":     1,      # which mode id to hold when mode_select == 'fixed'
         # --- PACING (for slow / atmospheric music) ---
         "trig_interval":  1,      # fire the force SURGE every Nth kick (1 = every kick; 2-4 = sparser, calmer)
         "dur_scale":      1.0,    # multiplies all envelope/hold durations (>1 = longer, more evolving/atmospheric)
         "surge_release":  0.30,   # s — base surge-envelope length (× dur_scale)
+        "drive_release":  2.8,    # s — the SUSTAINED drive HOLDS its level this long after energy → effects run their full motion instead of dying in a few hundred ms
         # --- IDLE / LOW-ENERGY evolution (quiet, CHILL, or no music) ---
         # idle fades in PROPORTIONALLY as energy drops below idle_thresh — so even
         # gentle/chill music (sparse beats) keeps getting autonomous morphs/shapes
@@ -188,7 +208,7 @@ def fresh_state(n_spec=15):
         # (never snaps back), so colour drifts instead of blinking on every hit.
         "hue_accum": 0.0, "hue_smooth": 0.0,
         # gated force surge + idle evolution state
-        "surge": 0.0, "trig_count": 0, "modedrive": 0.0,
+        "surge": 0.0, "trig_count": 0, "modedrive": 0.0, "drive_env": 0.0,
         "idle_phase": 0.0, "idle_mode_timer": 0.0,
         # dynamics-driven breathing room between surges
         "time_acc": 0.0, "last_surge_t": -999.0,
@@ -230,6 +250,9 @@ def process(state, features, dt, params):
     if dt <= 0.0:
         dt = 1.0 / 60.0
     state["time_acc"] = state.get("time_acc", 0.0) + dt
+    # FIXED selection: hold the chosen mode, ignore all auto-advancing below.
+    if params.get("mode_select", "sequential") == "fixed":
+        state["forcemode"] = float(int(params.get("mode_fixed", 1)))
 
     g = lambda k: _finite(features.get(k, 0.0), 0.0)
     dur = max(0.05, float(params.get("dur_scale", 1.0)))   # duration multiplier
@@ -314,9 +337,9 @@ def process(state, features, dt, params):
         # and STEPS the force-mode playlist — but only if the current mode has
         # held its minimum dwell, so frequent drops can't strobe the modes faster
         # than they can be read.
-        if state["beat_count"] - state["last_switch"] >= int(params["mode_min_dwell"]):
-            state["seq_idx"] = (int(state["seq_idx"]) + 1) % len(MODE_SEQ)
-            state["forcemode"] = float(MODE_SEQ[state["seq_idx"]])
+        if (params.get("mode_select", "sequential") != "fixed"
+                and state["beat_count"] - state["last_switch"] >= int(params["mode_min_dwell"])):
+            _pick_mode(state, params)
             state["last_switch"] = state["beat_count"]
     else:
         state["drop"] = state["drop"] * math.exp(-dt / max(params["drop_release"], 1e-3))
@@ -358,9 +381,8 @@ def process(state, features, dt, params):
         # beat-count fallback: advance the force mode periodically even without
         # drops, so a steady non-dropping track still explores all modes.
         mev = max(2, int(params["mode_every"]))
-        if state["beat_count"] % mev == 0:
-            state["seq_idx"] = (int(state["seq_idx"]) + 1) % len(MODE_SEQ)
-            state["forcemode"] = float(MODE_SEQ[state["seq_idx"]])
+        if params.get("mode_select", "sequential") != "fixed" and state["beat_count"] % mev == 0:
+            _pick_mode(state, params)
             state["last_switch"] = state["beat_count"]
     state["prev_kick"] = state["kick"]
     # a real drop blows OUT, but gently (−0.5) so it doesn't punch a hole.
@@ -381,10 +403,11 @@ def process(state, features, dt, params):
     state["idle_phase"] = math.fmod(state["idle_phase"] + dt * params["idle_rate"], 1.0)
     idle_pulse = idlef * params["idle_amt"] * (0.5 + 0.5 * math.sin(state["idle_phase"] * 6.2831853))
     state["idle_mode_timer"] += dt
-    if idlef > params["idle_cycle_min"] and state["idle_mode_timer"] >= params["idle_mode_secs"]:
+    if (params.get("mode_select", "sequential") != "fixed"
+            and idlef > params["idle_cycle_min"]
+            and state["idle_mode_timer"] >= params["idle_mode_secs"]):
         state["idle_mode_timer"] = 0.0
-        state["seq_idx"] = (int(state["seq_idx"]) + 1) % len(MODE_SEQ)
-        state["forcemode"] = float(MODE_SEQ[state["seq_idx"]])
+        _pick_mode(state, params)
 
     # ---- smooth MODE TRANSITIONS: when the force mode changes, dip the drive to
     # 0 and ease it back so the field flows between modes instead of jumping.
@@ -401,7 +424,13 @@ def process(state, features, dt, params):
     # energy drives fast motion. breath is the smoothed natural-dynamic (0..1).
     loud = max(0.0, min(1.0, state["breath"] / max(params["loud_ref"], 1e-3))) * alive
     surge_out = max(state["surge"] * loud, idle_pulse) * state["mode_fade"]
-    state["modedrive"] = max(state["glow"] * loud, idlef * params["idle_amt"] * 0.7) * state["mode_fade"]
+    # SUSTAINED drive: hold the recent energy level with a slow release so the
+    # mode force stays up for seconds (effects complete their motion) instead of
+    # collapsing between beats. Rises instantly with energy, falls slowly.
+    drive_target = state["glow"] * loud
+    state["drive_env"] = max(drive_target,
+                             state["drive_env"] * math.exp(-dt / max(params["drive_release"], 1e-3)))
+    state["modedrive"] = max(state["drive_env"], idlef * params["idle_amt"] * 0.7) * state["mode_fade"]
 
     # ---- build / release from the burst square wave --------------------
     burst = g("burst")

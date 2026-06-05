@@ -669,6 +669,9 @@ add_float(audio, 'Audiobeat',    'Beat Push (kick → visible pulse)', 0.8, 0.0,
 add_float(audio, 'Audiointerval', 'Beat Interval (every Nth kick)',  1, 1, 8)
 add_float(audio, 'Audioduration', 'Transform Duration Scale',        1.4, 0.3, 4.0, clamp_max=False)
 add_float(audio, 'Audioloudref',  'Loudness Gate (full-energy level)', 0.5, 0.05, 1.5, clamp_max=False)
+add_menu(audio, 'Audiomodesel',  'Mode Selection', ['Sequential','Random','Fixed'], 'Sequential')
+add_menu(audio, 'Audiomodefixed', 'Fixed Mode', ['Rest','Gather','Vortex','Waveform','Current','Fold','Sphere','Torus','Sheet','Tunnel'], 'Gather')
+add_toggle(audio, 'Audioisolate', 'Isolate Mode (no overlays)', False)
 # Mid-peak SWIRL — a rotational burst (tangential), detected off the continuous
 # mid band (ARE's mid drum detector is usually dead), so busy mid sections add a
 # second, organic disturbance distinct from the kick gather. Beat polarity (in
